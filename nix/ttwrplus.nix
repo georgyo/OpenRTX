@@ -36,12 +36,14 @@
 
 let
   # west.yml projects. zephyr's `import: submanifests` imports nothing at this
-  # revision (the directory only holds a README and an example).
+  # revision (the directory only holds a README and an example). west does
+  # not fetch submodules, so neither do we (mcuboot has some).
   zephyrRev = "a4de2eb3d1756c445d2e2ecb72e6d562674c118b";
   westProjects = [
     {
       path = "zephyr";
       src = fetchgit {
+        fetchSubmodules = false;
         url = "https://github.com/zephyrproject-rtos/zephyr";
         rev = zephyrRev;
         hash = "sha256-2glrzbtpPjHw5NUBSjEKz2Qhenklv3mTmaU4ATdbUIY=";
@@ -50,6 +52,7 @@ let
     {
       path = "bootloader/mcuboot";
       src = fetchgit {
+        fetchSubmodules = false;
         url = "https://github.com/zephyrproject-rtos/mcuboot";
         rev = "9bf7ce8c5fe8152836a6e00bd4444153bd950342";
         hash = "sha256-Q76cIJmrejdIyoxC4SyBOBDHkjRjbEDnTXFlNWzQYtM=";
@@ -58,6 +61,7 @@ let
     {
       path = "modules/hal/espressif";
       src = fetchgit {
+        fetchSubmodules = false;
         url = "https://github.com/zephyrproject-rtos/hal_espressif";
         rev = "80d910ca89eab9bce03f59a4ade33f1fc30ce0ad";
         hash = "sha256-XR0jZsMUq6LZ8QtpiBJzuvydv3jkxgroT2vV7rtSp3U=";
