@@ -59,7 +59,15 @@ jobs:
         with:
           server-url: ${{ env.NIKS3_SERVER }}
       - name: Build
-        run: nix build -L .#openrtx-${{ matrix.target }} .#flash-${{ matrix.target }}
+        run: nix build -L .#openrtx-${{ matrix.target }}
+      # Not every radio has a flashing recipe (rt4d has none yet).
+      - name: Build flash app
+        run: |
+          if nix eval '.#packages.x86_64-linux.flash-${{ matrix.target }}' --apply 'drv: drv.name' >/dev/null 2>&1; then
+            nix build -L '.#flash-${{ matrix.target }}'
+          else
+            echo "no flash app for ${{ matrix.target }}"
+          fi
       - name: List outputs
         run: ls -la result/
 
