@@ -50,8 +50,10 @@ uint32_t usb_serial_available(void);
  *
  * Returns -1 immediately (without writing any data) if the USB device is
  * not mounted, avoiding an indefinite block when the cable is unplugged.
- * Also returns -1 if no forward progress is made within ~50 ms (transfer
- * stalled while mounted), clearing the TX FIFO before returning.
+ * Also returns -1 if no forward progress is made within
+ * USB_SERIAL_WRITE_TIMEOUT_MS (default 50 ms; transfer stalled while
+ * mounted), clearing the TX FIFO before returning. The wait is a kernel
+ * sleep, not a busy loop.
  *
  * Thread-safe: concurrent callers are serialised by an internal mutex.
  * Do not call this function from within a tinyUSB callback, as it may
