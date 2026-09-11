@@ -49,9 +49,9 @@ uint32_t getBusClock(const uint8_t bus);
  * @param periph: peripheral base address
  * @return bus clock frequency in Hz or zero in case of errors.
  */
-static constexpr uint32_t rcc_getPeriphClock(const void *periph)
+static inline uint32_t rcc_getPeriphClock(const void *periph)
 {
-    uint32_t addr = reinterpret_cast<uint32_t>(periph);
+    uint32_t addr = reinterpret_cast<uintptr_t>(periph);
 
     switch(addr & 0xFFFF0000) {
         case APB1PERIPH_BASE:
