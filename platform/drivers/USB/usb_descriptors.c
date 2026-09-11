@@ -31,6 +31,8 @@
 
 #include "interfaces/platform.h"
 #include "tusb.h"
+#include "hwconfig.h"
+#include <stdio.h>
 
 /* A combination of interfaces must have a unique product id, since PC will save device driver after the first plug.
  * Same VID/PID with different interface e.g MSC (first), then CDC (later) will possibly cause system error on PC.
@@ -102,8 +104,14 @@ uint8_t const desc_fs_configuration[] =
      * bit, Linux may leave the link in USB suspend while the host is idle; bulk
      * IN may not run until the bus leaves suspend.
      */
+    /*
+     * The radio runs from its battery and VDD33USB is fed from the board's
+     * 3.3V rail (USBREGEN stays off), so nothing is drawn from VBUS:
+     * declare the device self powered.
+     */
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN,
-                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+                          TUSB_DESC_CONFIG_ATT_SELF_POWERED |
+                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 2),
 
     // 1st CDC: Interface number, string index, EP notification address and
     // size, EP data address (out, in) and size.
@@ -129,12 +137,38 @@ static const char* string_desc_arr [] =
 {
     (const char[]) { 0x09, 0x04 }, // 0: is supported language is English (0x0409)
     "OpenRTX",                     // 1: Manufacturer
-    "",                            // 2: Product
-    "",                            // 3: Serials, should use chip ID
+    "",                            // 2: Product, filled from hwInfo
+    "",                            // 3: Serial, filled from the MCU UID
     "OpenRTX CDC",                 // 4: CDC Interface
 };
 
 static uint16_t _desc_str[32];
+
+/*
+ * Product name from the platform hardware info and serial number from the
+ * MCU's 96-bit unique ID, so that every radio gets a distinct
+ * /dev/serial/by-id entry on the host.
+ */
+static const char *dynamicString(uint8_t index)
+{
+    static char serial[25];
+
+    switch (index) {
+        case 2:
+            return platform_getHwInfo()->name;
+
+        case 3: {
+            const uint32_t *uid = (const uint32_t *)UID_BASE;
+            snprintf(serial, sizeof(serial), "%08lX%08lX%08lX",
+                     (unsigned long)uid[2], (unsigned long)uid[1],
+                     (unsigned long)uid[0]);
+            return serial;
+        }
+
+        default:
+            return NULL;
+    }
+}
 
 // Invoked when received GET STRING DESCRIPTOR request
 // Application return pointer to descriptor, whose contents must exist long
@@ -157,7 +191,8 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid)
 
         if(!(index < sizeof(string_desc_arr)/sizeof(string_desc_arr[0]))) return NULL;
 
-        const char* str = string_desc_arr[index];
+        const char* str = dynamicString(index);
+        if(str == NULL) str = string_desc_arr[index];
 
         // Cap at max char
         chr_count = strlen(str);
