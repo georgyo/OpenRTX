@@ -32,6 +32,13 @@ int nvm_getPart(const uint32_t idx, const uint32_t part,
             return -EINVAL;
 
         *pInfo = desc->partitions[part - 1];
+
+        // Reject partitions lying outside the memory area: the accessors
+        // below only bound-check against the partition size. Written to be
+        // safe against integer overflow.
+        if ((pInfo->offset > desc->size)
+            || (pInfo->size > (desc->size - pInfo->offset)))
+            return -EINVAL;
     }
 
     return 0;
@@ -49,8 +56,9 @@ int nvm_read(const uint32_t idx, const uint32_t part, uint32_t offset,
         return ret;
 
     // Accesses exceeding the nvm->size boundary are caught by this check,
-    // provided that the partition table is well defined.
-    if ((offset + len) > np.size)
+    // provided that the partition table is well defined. Written to be safe
+    // against integer overflow of offset + len.
+    if ((offset > np.size) || (len > (np.size - offset)))
         return -EINVAL;
 
     // Index already validated by nvm_getPart
@@ -71,7 +79,7 @@ int nvm_write(const uint32_t idx, const uint32_t part, uint32_t offset,
     if (ret < 0)
         return ret;
 
-    if ((offset + len) > np.size)
+    if ((offset > np.size) || (len > (np.size - offset)))
         return -EINVAL;
 
     nvm = &nvmTab.areas[idx];
@@ -91,7 +99,7 @@ int nvm_erase(const uint32_t idx, const uint32_t part, uint32_t offset,
     if (ret < 0)
         return ret;
 
-    if ((offset + size) > np.size)
+    if ((offset > np.size) || (size > (np.size - offset)))
         return -EINVAL;
 
     nvm = &nvmTab.areas[idx];
