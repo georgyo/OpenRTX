@@ -81,6 +81,13 @@ void W25Qx_init(const struct nvmDevice *dev)
     // TODO: Implement sleep to increase power saving
     W25Qx_wakeup(dev);
 
+    // The chip needs tRES1 (3us for the W25Q128/W25Q256) after the release
+    // from power-down before it accepts any other instruction: without this
+    // wait the "enter 4-byte address mode" command below and the first reads
+    // are silently ignored whenever the chip was left in power-down state by
+    // a previous run (e.g. warm restart after W25Qx_sleep()).
+    delayUs(5);
+
 #ifdef CONFIG_W25Qx_EXT_ADDR
     const uint8_t cmd = CMD_EXADD;
 
