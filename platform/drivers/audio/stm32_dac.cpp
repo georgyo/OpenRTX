@@ -257,7 +257,7 @@ static int stm32dac_sync(struct streamCtx *ctx, uint8_t dirty)
         void *ptr = state->stream.idleBuf();
         size_t writeSize = ctx->bufSize/2;
         S16toU12(reinterpret_cast< int16_t *>(ptr), writeSize);
-        miosix::markBufferBeforeDmaWrite(ctx->buffer, writeSize*sizeof(int16_t));
+        miosix::markBufferBeforeDmaWrite(ptr, writeSize*sizeof(int16_t));
     }
 
    bool ok = state->stream.sync();

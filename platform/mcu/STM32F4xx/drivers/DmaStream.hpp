@@ -35,7 +35,9 @@ public:
      * @param s: pointer to the DMA stream peripheral.
      * @param IRQn: DMA stream IRQ number.
      */
-    StreamHandler(DMA_Stream_TypeDef *s, IRQn_Type IRQn) : IRQn(IRQn), stream(s)
+    StreamHandler(DMA_Stream_TypeDef *s, IRQn_Type IRQn) : stopTransfer(false),
+        transferSize(0), IRQn(IRQn), streamEndCallback(nullptr), stream(s),
+        waiting(nullptr)
     { }
 
     /**
@@ -182,11 +184,18 @@ public:
      */
     void IRQhandler(const uint32_t irqFlags)
     {
-        (void) irqFlags;
-
         using namespace miosix;
 
-        if(((stream->CR & DMA_SxCR_CIRC) == 0) || (stopTransfer == true))
+        /*
+         * On a transfer error the hardware disables the stream, treat it as
+         * the end of the transfer so that the end callback runs and the stream
+         * is not left marked as running with a thread waiting forever.
+         * Flags are aligned to the stream 0 bit positions by readIrqFlags().
+         */
+        bool error = (irqFlags & DMA_LISR_TEIF0) != 0;
+
+        if(((stream->CR & DMA_SxCR_CIRC) == 0) || (stopTransfer == true)
+           || error)
         {
             stream->CR &= ~DMA_SxCR_EN;
             stopTransfer = false;
