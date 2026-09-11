@@ -47,7 +47,7 @@ static void gpioShiftReg_set(const struct gpioDev *dev, const uint8_t pin)
     const size_t byte = (cfg->numOutputs - 1 - pin) / 8;
     const size_t bit  = pin % 8;
 
-    if(pin > cfg->numOutputs)
+    if(pin >= cfg->numOutputs)
         return;
 
     __disable_irq();
@@ -68,7 +68,7 @@ static void gpioShiftReg_clear(const struct gpioDev *dev, const uint8_t pin)
     const size_t byte = (cfg->numOutputs - 1 - pin) / 8;
     const size_t bit  = pin % 8;
 
-    if(pin > cfg->numOutputs)
+    if(pin >= cfg->numOutputs)
         return;
 
     __disable_irq();
@@ -88,7 +88,7 @@ static bool gpioShiftReg_read(const struct gpioDev *dev, const uint8_t pin)
     const size_t byte = (cfg->numOutputs - 1 - pin) / 8;
     const size_t bit  = pin % 8;
 
-    if(pin > cfg->numOutputs)
+    if(pin >= cfg->numOutputs)
         return false;
 
     return ((cfg->outData[byte] & (1 << bit)) != 0) ? true : false;
