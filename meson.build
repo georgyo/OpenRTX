@@ -1257,6 +1257,16 @@ gpio_shiftreg_test = executable('gpio_shiftreg_test',
                                 include_directories : linux_inc,
                                 dependencies        : [threads_dep, catch2_dep],
                                 link_args           : linux_l_args)
+# The NMEA ring buffer is not part of the Linux emulator build: compile it
+# into its test with the same buffer size used by the radios.
+nmea_rbuf_test_opts = unit_test_opts + {
+    'c_args'  : linux_c_args   + ['-DCONFIG_NMEA_RBUF_SIZE=128'],
+    'cpp_args': linux_cpp_args + ['-DCONFIG_NMEA_RBUF_SIZE=128']}
+
+nmea_rbuf_test = executable('nmea_rbuf_test',
+                            sources : unit_test_src + ['platform/drivers/GPS/nmea_rbuf.c',
+                                                       'tests/unit/nmea_rbuf.cpp'],
+                            kwargs  : nmea_rbuf_test_opts)
 
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
@@ -1273,3 +1283,4 @@ test('DSP Oversampling Test', dsp_oversampling_test)
 test('GFX Text Test',        gfx_text_test)
 test('NVM EEEP Test',        nvm_eeep_test)
 test('GPIO Shift Register Test', gpio_shiftreg_test)
+test('NMEA Ring Buffer Test', nmea_rbuf_test)
