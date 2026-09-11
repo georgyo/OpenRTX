@@ -1278,6 +1278,33 @@ knob_direction_test = executable('knob_direction_test',
 m17_opmode_ptt_test = executable('m17_opmode_ptt_test',
                                   sources : unit_test_src + ['tests/unit/M17_opmode_ptt.cpp'],
                                   kwargs  : unit_test_opts)
+# Audio thread-safety tests: they link only the modules under test, together
+# with a fake audio driver provided by the test itself, and wrap pthread_join()
+# to reproduce the Miosix join semantics (not available with the macOS linker).
+if build_machine.system() != 'darwin'
+  audio_threading_test = executable('audio_threading_test',
+                                    sources : ['openrtx/src/core/audio_codec.c',
+                                               'openrtx/src/core/audio_stream.c',
+                                               'openrtx/src/core/audio_path.cpp',
+                                               'openrtx/src/core/dsp.cpp',
+                                               'tests/unit/audio_threading.cpp'],
+                                    c_args              : linux_c_args,
+                                    cpp_args            : linux_cpp_args,
+                                    include_directories : linux_inc,
+                                    dependencies        : [threads_dep, codec2_dep, catch2_dep],
+                                    link_args           : linux_l_args + ['-Wl,--wrap=pthread_join'])
+endif
+
+# HR_Cx000 DAC driver test, built against the fake HR_C6000 in tests/unit/fake
+# which shadows the real header.
+cx000_dac_test = executable('cx000_dac_test',
+                            sources : ['platform/drivers/audio/Cx000_dac.cpp',
+                                       'tests/unit/cx000_dac.cpp'],
+                            c_args              : linux_c_args,
+                            cpp_args            : linux_cpp_args,
+                            include_directories : ['tests/unit/fake'] + linux_inc,
+                            dependencies        : [threads_dep, catch2_dep],
+                            link_args           : linux_l_args)
 
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
@@ -1298,3 +1325,7 @@ test('NMEA Ring Buffer Test', nmea_rbuf_test)
 test('DSP Mic Gain Test',    dsp_mic_gain_test)
 test('Knob Direction Test',  knob_direction_test)
 test('M17 OpMode PTT Test',  m17_opmode_ptt_test)
+if build_machine.system() != 'darwin'
+  test('Audio Threading Test', audio_threading_test)
+endif
+test('Cx000 DAC Test',       cx000_dac_test)
