@@ -99,10 +99,11 @@ arguments are passed through to `radio_tool`, `dfu-util`, the GD-77 loader or
   `remove-references-to` because the toolchain's own libc carries its store
   path in its debug info, and the derivation refuses to reference the
   toolchain at runtime.
-* `meson.build` calls `subproject('codec2')` and `subproject('XPowersLib')`
-  unconditionally and `find_program('radio_tool')` is required, so every
-  derivation gets the pinned subprojects via `MESON_PACKAGE_CACHE_DIR` and a
-  real `radio_tool` on `PATH`. The `tinyusb` wrap is unused and not fetched.
+* `meson.build` calls `subproject('codec2')`, `subproject('XPowersLib')` and
+  `subproject('tinyusb')` unconditionally and `find_program('radio_tool')` is
+  required, so every derivation gets the pinned subprojects via
+  `MESON_PACKAGE_CACHE_DIR` and a real `radio_tool` on `PATH`. Only the
+  CS7000P firmware compiles tinyusb (its USB CDC serial console).
 * The Zephyr build fetches the three `west.yml` projects at their pinned
   revisions and turns them into local git repositories with a `manifest-rev`
   branch, which is what `west` needs to treat them as up to date. Those
