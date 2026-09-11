@@ -63,6 +63,27 @@ static uint8_t carrier_boot_notify_remaining;
  */
 static pthread_mutex_t cdc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/*
+ * Upper bound for the hardware ready flags polled in usb_serial_init(), in
+ * 10 us steps: HSI48 starts in a few microseconds and the VDD33USB detector
+ * settles in well under a millisecond, so 10 ms is generous.  Polling without
+ * a bound would hang the main thread at boot on a board where VDD33USB is not
+ * supplied, and this driver is initialised on every boot.
+ */
+#define USB_READY_POLL_STEPS 1000
+
+static bool usb_wait_flag(volatile const uint32_t *reg, uint32_t mask)
+{
+    for (uint32_t i = 0; i < USB_READY_POLL_STEPS; i++) {
+        if ((*reg & mask) != 0) {
+            return true;
+        }
+        delayUs(10);
+    }
+
+    return false;
+}
+
 #if CFG_TUD_CDC_NOTIFY
 /*
  * Assert DCD/DSR via SERIAL_STATE so Linux cdc-acm treats the port as having
@@ -132,7 +153,8 @@ void usb_serial_init(void)
      * is sufficient; only the detector is needed.
      */
     PWR->CR3 |= PWR_CR3_USB33DEN;
-    while (!(PWR->CR3 & PWR_CR3_USB33RDY)) {
+    if (!usb_wait_flag(&PWR->CR3, PWR_CR3_USB33RDY)) {
+        return;
     }
 
     /* Enable GPIOA clock (AHB4 on STM32H7) and configure USB_DN/USB_DP */
@@ -146,7 +168,8 @@ void usb_serial_init(void)
 
     /* Enable HSI48 and wait for it to be ready */
     RCC->CR |= RCC_CR_HSI48ON;
-    while ((RCC->CR & RCC_CR_HSI48RDY) == 0) {
+    if (!usb_wait_flag(&RCC->CR, RCC_CR_HSI48RDY)) {
+        return;
     }
 
     /*
