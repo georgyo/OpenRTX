@@ -153,9 +153,11 @@ int _write_r(struct _reent *ptr, int fd, const void *buf, size_t cnt)
         pthread_mutex_unlock(&stdio_usb_mutex);
         return (int)cnt;
     }
+#else
+    (void) fd;
+    (void) buf;
+    (void) cnt;
 #endif
-
-    (void) ptr;
 
     /* If fd is not stdout or stderr */
     ptr->_errno = EBADF;
