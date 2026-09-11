@@ -1238,6 +1238,26 @@ gfx_text_test = executable('gfx_text_test',
                             sources : unit_test_src + ['tests/unit/gfx_text.cpp'],
                             kwargs  : unit_test_opts)
 
+# Self-contained: the test provides its own NVM table backed by a fake flash,
+# so the Linux NVM driver must not be linked in.
+nvm_eeep_test = executable('nvm_eeep_test',
+                           sources : ['platform/drivers/NVM/eeep.c',
+                                      'openrtx/src/core/nvmem_access.c',
+                                      'tests/unit/nvm_eeep.cpp'],
+                           kwargs  : unit_test_opts)
+
+# The shift register driver masks interrupts with the CMSIS intrinsics, which
+# do not exist on the host: stub them out for the test build.
+gpio_shiftreg_test = executable('gpio_shiftreg_test',
+                                sources : ['platform/drivers/GPIO/gpio_shiftReg.c',
+                                           'tests/unit/gpio_shiftReg.cpp'],
+                                c_args  : linux_c_args + ['-D__disable_irq()=',
+                                                          '-D__enable_irq()='],
+                                cpp_args            : linux_cpp_args,
+                                include_directories : linux_inc,
+                                dependencies        : [threads_dep, catch2_dep],
+                                link_args           : linux_l_args)
+
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
 test('M17 Demodulator Test',  m17_demodulator_test)
@@ -1251,3 +1271,5 @@ test('UI Check Standby Test', ui_check_standby_test)
 test('M17 Packet Frame Test', m17_packet_test)
 test('DSP Oversampling Test', dsp_oversampling_test)
 test('GFX Text Test',        gfx_text_test)
+test('NVM EEEP Test',        nvm_eeep_test)
+test('GPIO Shift Register Test', gpio_shiftreg_test)
