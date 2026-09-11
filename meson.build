@@ -141,9 +141,15 @@ endif
 # XPowersLib, library for x-powers power management series
 xpowerslib_proj = subproject('XPowersLib')
 
-# tinyUSB, embedded USB device stack
-tinyusb_proj = subproject('tinyusb')
-tinyusb_dep  = tinyusb_proj.get_variable('tinyusb_dep')
+# tinyUSB, embedded USB device stack. Only the STM32H7 (Cortex-M7) targets
+# use it: building it for the host or for the Cortex-M4 radios would compile
+# a USB driver for the wrong hardware.
+if meson.is_cross_build() and host_machine.cpu() == 'cortex-m7'
+  tinyusb_proj = subproject('tinyusb')
+  tinyusb_dep  = tinyusb_proj.get_variable('tinyusb_dep')
+else
+  tinyusb_dep  = disabler()
+endif
 
 ##
 ## RTOS
