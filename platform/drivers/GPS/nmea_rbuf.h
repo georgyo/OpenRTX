@@ -66,15 +66,17 @@ int nmeaRbuf_putSentence(struct nmeaRbuf *rbuf, const char *sentence);
 
 /**
  * Extract a full NMEA sentence.
- * If the sentence is longer than the maximum size of the destination buffer,
- * the characters not written in the destination are removed from the ring
- * buffer anyways.
+ * The sentence written in the destination buffer is always NUL-terminated,
+ * thus at most maxLen - 1 characters are stored. If the sentence is longer
+ * than that, the characters not written in the destination are removed from
+ * the ring buffer anyways.
  *
  * @param rbuf: pointer to ring buffer.
  * @param buf: pointer to NMEA sentence destination buffer.
- * @param maxLen: maximum acceptable size for the destination buffer.
- * @return the length of the extracted sentence or -1 if the sentence is longer
- * than the maximum allowed size. If the ring buffer is empty, zero is returned.
+ * @param maxLen: size of the destination buffer, including the terminator.
+ * @return the length of the extracted sentence or -1 if the sentence has been
+ * truncated because longer than maxLen - 1 characters. If the ring buffer is
+ * empty, zero is returned.
  */
 int nmeaRbuf_getSentence(struct nmeaRbuf *rbuf, char *buf, const size_t maxLen);
 

@@ -64,8 +64,9 @@ static int getNmeaSentence(void *priv, char *buf, const size_t bufSize)
     if((currTime - startTime) < 1000)
         return 0;
 
+    // Leave room for the string terminator
     size_t len = strnlen(test_nmea_sentences[currSentence], MAX_NMEA_LEN);
-    if(len > bufSize)
+    if(len >= bufSize)
         return -1;
 
     strncpy(buf, test_nmea_sentences[currSentence], bufSize);
