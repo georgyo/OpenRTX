@@ -32,6 +32,13 @@ int nvm_getPart(const uint32_t idx, const uint32_t part,
             return -EINVAL;
 
         *pInfo = desc->partitions[part - 1];
+
+        // Reject partitions lying outside the memory area: the accessors
+        // below only bound-check against the partition size. Written to be
+        // safe against integer overflow.
+        if ((pInfo->offset > desc->size)
+            || (pInfo->size > (desc->size - pInfo->offset)))
+            return -EINVAL;
     }
 
     return 0;

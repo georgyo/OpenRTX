@@ -26,31 +26,52 @@ static const struct W25QxCfg cfg =
 W25Qx_DEVICE_DEFINE(eflash, cfg)
 EEEP_DEVICE_DEFINE(eeep)
 
+/*
+ * External flash layout.
+ *
+ * nvm_read(), nvm_write() and nvm_erase() only bound-check an access against
+ * the size of the partition it targets, so a partition extending beyond the
+ * end of the flash would not be caught at runtime: the W25Q256 ignores the
+ * address bits above A24 and the access would silently wrap around into the
+ * OEM calibration area at the beginning of the chip. The static assertions
+ * below guarantee that the partitions are in order, non-overlapping and
+ * entirely contained in the flash.
+ */
+#ifdef PLATFORM_CS7000P
+#define EFLASH_SIZE     0x2000000   // 32 MB, 256 Mbit
+#define EEEP_PART_ADDR  0x1000000   // Second partition, EEEP storage
+#define FREE_PART_ADDR  0x100C000   // Third partition, available memory
+#else
+#define EFLASH_SIZE     0x1000000   // 16 MB, 128 Mbit
+#define EEEP_PART_ADDR  0x8000      // Second partition, EEEP storage
+#define FREE_PART_ADDR  0xC000      // Third partition, available memory
+#endif
+#define CAL_PART_ADDR   0x0000      // First partition, calibration and OEM data
+#define CAL_PART_SIZE   0x8000      // 32 kB
+#define EEEP_PART_SIZE  0x4000      // 16 kB
+#define FREE_PART_SIZE  0xFF4000    // Up to the end of the flash
+
+_Static_assert((CAL_PART_ADDR + CAL_PART_SIZE) <= EEEP_PART_ADDR,
+               "Calibration partition overlaps the EEEP partition");
+_Static_assert((EEEP_PART_ADDR + EEEP_PART_SIZE) <= FREE_PART_ADDR,
+               "EEEP partition overlaps the third partition");
+_Static_assert((FREE_PART_ADDR + FREE_PART_SIZE) <= EFLASH_SIZE,
+               "Third partition extends beyond the end of the external flash");
+
 const struct nvmPartition memPartitions[] =
 {
     {
-        .offset = 0x0000,   // First partition, calibration and other OEM data
-        .size   = 32768     // 32kB
-    },
-#ifdef PLATFORM_CS7000P
-    {
-        .offset = 0x1000000,// Second partition EEEP storage
-        .size   = 16384     // 16kB
+        .offset = CAL_PART_ADDR,    // First partition, calibration and OEM data
+        .size   = CAL_PART_SIZE
     },
     {
-        .offset = 0x1000C000,// Third partition, available memory
-        .size   = 0xFF4000
+        .offset = EEEP_PART_ADDR,   // Second partition EEEP storage
+        .size   = EEEP_PART_SIZE
+    },
+    {
+        .offset = FREE_PART_ADDR,   // Third partition, available memory
+        .size   = FREE_PART_SIZE
     }
-#else
-    {
-        .offset = 0x8000,   // Second partition EEEP storage
-        .size   = 16384     // 16kB
-    },
-    {
-        .offset = 0xC000,   // Third partition, available memory
-        .size   = 0xFF4000
-    }
-#endif
 };
 
 static const struct nvmDescriptor extMem[] =
@@ -59,11 +80,7 @@ static const struct nvmDescriptor extMem[] =
         .name       = "External flash",
         .dev        = &eflash,
         .baseAddr   = 0x00000000,
-#ifdef PLATFORM_CS7000P
-        .size       = 0x2000000,        // 32 MB, 256 Mbit
-#else
-        .size       = 0x1000000,        // 16 MB, 128 Mbit
-#endif
+        .size       = EFLASH_SIZE,
         .nbPart     = sizeof(memPartitions)/sizeof(struct nvmPartition),
         .partitions = memPartitions
     },
@@ -96,6 +113,14 @@ void nvm_init()
     spiBitbang_init(&flash_spi);
 #endif
     W25Qx_init(&eflash);
+
+    // NOTE: eeep_init() takes a zero-based index into the partition table,
+    // unlike nvm_read() and friends where partition 0 is the whole device and
+    // partition N is memPartitions[N - 1]: index 1 here is the EEEP partition,
+    // while the calibration data below is read from partition 1 of the nvm
+    // API, that is memPartitions[0].
+    // On failure the EEEP device refuses all accesses, so settings and VFO
+    // fall back to their defaults instead of touching random flash areas.
     eeep_init(&eeep, 0, 1);
 }
 
