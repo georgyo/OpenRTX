@@ -89,7 +89,27 @@ public:
      */
     inline uint16_t value() const
     {
-        return reinterpret_cast< LPTIM_TypeDef * >(tim)->CNT = 0;
+        /*
+         * RM0433: when the LPTIM runs from an asynchronous clock a single
+         * read of CNT may return an unreliable value, so read it twice and
+         * keep the value of two matching reads. The kernel clock can be
+         * faster than the bus reads (pll2_p at 168MHz on the CS7000P), in
+         * which case two reads never match: bound the attempts and return
+         * the last value read rather than spinning forever.
+         */
+        LPTIM_TypeDef *t = reinterpret_cast< LPTIM_TypeDef * >(tim);
+        uint16_t a = 0;
+        uint16_t b = 0;
+
+        for(int i = 0; i < 3; i++)
+        {
+            a = t->CNT;
+            b = t->CNT;
+            if(a == b)
+                break;
+        }
+
+        return b;
     }
 
 private:
