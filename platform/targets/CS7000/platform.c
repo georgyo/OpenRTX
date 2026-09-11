@@ -33,7 +33,7 @@ static const hwInfo_t hwInfo =
 void platform_init()
 {
     gpio_setMode(PTT_SW,       INPUT);
-    gpio_setMode(PTT_EXT,      INPUT);
+    gpio_setMode(PTT_EXT,      INPUT_PULL_UP);
 
     gpio_setMode(MAIN_PWR_DET, ANALOG);
     gpio_setMode(AIN_MIC,      ANALOG);
