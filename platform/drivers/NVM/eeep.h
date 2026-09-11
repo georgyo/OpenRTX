@@ -50,9 +50,17 @@ struct nvmDevice name =                 \
 /**
  * Initialize an EEEP driver instance.
  *
+ * NOTE: the partition index is zero-based, that is partition 0 is the first
+ * entry of the partition table of the underlying NVM device. This differs from
+ * the nvm_read()/nvm_write()/nvm_erase() convention, where partition 0 is the
+ * whole device and partition N is the (N - 1)-th entry of the table.
+ *
+ * When initialisation fails the device rejects all the read and write requests
+ * with -ENODEV.
+ *
  * @param dev: pointer to device descriptor.
  * @param nvm: index of the underlying NVM device used for data storage.
- * @param part: NVM partition used for data storage.
+ * @param part: zero-based index of the NVM partition used for data storage.
  * @return zero on success, a negative error code otherwise.
  */
 int eeep_init(const struct nvmDevice *dev, const uint32_t nvm,
