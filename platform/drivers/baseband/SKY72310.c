@@ -7,6 +7,18 @@
 #include "interfaces/delays.h"
 #include <math.h>
 #include "drivers/baseband/SKY72310.h"
+#include <stddef.h>
+
+// Polling interval of the lock detect output, in microseconds
+#define LD_POLL_INTERVAL_US 100
+
+/*
+ * Number of consecutive polls in which the lock detect output has to read
+ * high before the loop is taken as locked, 1ms in total. The output is an
+ * open collector that pulses low while the loop is out of lock: one high
+ * sample alone can fall between two pulses.
+ */
+#define LD_STABLE_POLLS 10
 
 static inline void writeReg(const struct sky73210 *dev, const uint16_t value)
 {
@@ -32,6 +44,10 @@ void SKY73210_init(const struct sky73210 *dev, const uint8_t gain)
 {
     gpioPin_setMode(&dev->cs, OUTPUT);
     gpioPin_set(&dev->cs);
+
+    // Open collector output, released when the loop is locked
+    if (dev->ld.port != NULL)
+        gpioPin_setMode(&dev->ld, INPUT_PULL_UP);
 
     writeReg(dev, 0x6000 | (gain & 0x1F)); // Phase detector gain
     writeReg(dev, 0x73D0); // Power down/multiplexer control register
@@ -72,4 +88,43 @@ void SKY73210_setFrequency(const struct sky73210 *dev, const uint32_t freq,
     writeReg(dev, 0x2000 | dndLsb);                 // Dividend LSB register
     writeReg(dev, 0x1000 | dndMsb);                 // Dividend MSB register
     writeReg(dev, 0x5000 | ((uint16_t)clkDiv - 1)); // Reference clock divider
+}
+
+bool SKY73210_isLocked(const struct sky73210 *dev)
+{
+    // Lock detect output not wired, nothing to check
+    if (dev->ld.port == NULL)
+        return true;
+
+    // LD pin is an active low out-of-lock indicator: high when locked
+    return gpioPin_read(&dev->ld);
+}
+
+bool SKY73210_waitLock(const struct sky73210 *dev, uint32_t timeoutUs)
+{
+    // Lock detect output not wired, nothing to wait for
+    if (dev->ld.port == NULL)
+        return true;
+
+    uint8_t highs = 0;
+
+    while (true) {
+        if (SKY73210_isLocked(dev))
+            highs += 1;
+        else
+            highs = 0;
+
+        if (highs >= LD_STABLE_POLLS)
+            return true;
+
+        if (timeoutUs == 0)
+            return false;
+
+        uint32_t step = timeoutUs;
+        if (step > LD_POLL_INTERVAL_US)
+            step = LD_POLL_INTERVAL_US;
+
+        delayUs(step);
+        timeoutUs -= step;
+    }
 }
