@@ -229,6 +229,9 @@ static int eeep_read(const struct nvmDevice *dev, uint32_t offset, void *data,
     struct eeepRecord rec;
     uint32_t memAddr;
 
+    if(priv->nvm == NULL)
+        return -ENODEV;
+
     if((offset >= 0xFFFF) || (len >= 255))
         return -EINVAL;
 
@@ -257,6 +260,9 @@ static int eeep_write(const struct nvmDevice *dev, uint32_t offset,
     struct eeepData *priv = (struct eeepData *) dev->priv;
     int ret;
 
+    if(priv->nvm == NULL)
+        return -ENODEV;
+
     if((offset >= 0xFFFF) || (len >= 255))
         return -EINVAL;
 
@@ -281,65 +287,89 @@ int eeep_init(const struct nvmDevice *dev, const uint32_t nvm,
     if(desc == NULL)
         return -EINVAL;
 
+    // NOTE: zero-based index into the partition table, see eeep.h
     if(part >= desc->nbPart)
         return -EINVAL;
 
-    uint32_t partAddr = desc->partitions[part].offset;
-    uint32_t partSize = desc->partitions[part].size;
-    uint32_t pageSize = desc->dev->info->erase_size;
+    const struct nvmDevice *nvmDev = desc->dev;
+    uint32_t partAddr  = desc->partitions[part].offset;
+    uint32_t partSize  = desc->partitions[part].size;
+    uint32_t pageSize  = nvmDev->info->erase_size;
+    uint32_t readAddr  = 0xFFFFFFFF;
+    uint32_t writeAddr = 0xFFFFFFFF;
+    int ret;
 
+    // Mark the device as not usable until initialisation succeeds: a failed
+    // scan of the underlying memory must not leave the driver pointing at a
+    // random location.
     struct eeepData *priv = (struct eeepData *) dev->priv;
-    priv->nvm = desc->dev;
-    priv->part = &desc->partitions[part];
-    priv->readAddr = 0xFFFFFFFF;
+    priv->nvm = NULL;
 
     // Search for an active page, set the read address to the first record
     // immediately after the page header
     for(uint32_t i = 0; i < partSize; i += pageSize)
     {
         uint32_t pageAddr = partAddr + i;
-        uint32_t tmp;
+        uint32_t tmp = 0;
 
-        nvm_devRead(priv->nvm, pageAddr, &tmp, sizeof(uint32_t));
+        ret = nvm_devRead(nvmDev, pageAddr, &tmp, sizeof(uint32_t));
+        if(ret < 0)
+            return ret;
+
         if(tmp == EEEP_PAGE_ACTIVE)
         {
-            priv->readAddr = pageAddr + EEEP_PAGE_HDR_SIZE;
+            readAddr = pageAddr + EEEP_PAGE_HDR_SIZE;
             break;
         }
     }
 
     // If no active page found, erase all the memory and set the first page as
     // active page.
-    if(priv->readAddr == 0xFFFFFFFF)
+    if(readAddr == 0xFFFFFFFF)
     {
         uint32_t tmp = EEEP_PAGE_ACTIVE;
 
-        nvm_devErase(priv->nvm, partAddr, partSize);
-        nvm_devWrite(priv->nvm, partAddr, &tmp, sizeof(uint32_t));
-        priv->readAddr = partAddr + EEEP_PAGE_HDR_SIZE;
-        priv->writeAddr = priv->readAddr;
+        ret = nvm_devErase(nvmDev, partAddr, partSize);
+        if(ret < 0)
+            return ret;
+
+        ret = nvm_devWrite(nvmDev, partAddr, &tmp, sizeof(uint32_t));
+        if(ret < 0)
+            return ret;
+
+        readAddr  = partAddr + EEEP_PAGE_HDR_SIZE;
+        writeAddr = readAddr;
     }
     else
     {
-        uint32_t addr = priv->readAddr;
-        uint32_t end = priv->readAddr + pageSize - EEEP_PAGE_HDR_SIZE;
-        priv->writeAddr = end;
+        uint32_t addr = readAddr;
+        uint32_t end  = readAddr + pageSize - EEEP_PAGE_HDR_SIZE;
+        writeAddr = end;
 
         while(addr < end)
         {
             struct eeepRecord rec;
-            uint32_t *tmp = (uint32_t *) &rec;
 
-            nvm_devRead(desc->dev, addr, &rec, sizeof(struct eeepRecord));
-            if(*tmp == 0xFFFFFFFF)
+            ret = nvm_devRead(nvmDev, addr, &rec, sizeof(struct eeepRecord));
+            if(ret < 0)
+                return ret;
+
+            // An erased record header is the first free location of the page
+            if((rec.status == EEEP_RECORD_EMPTY) && (rec.size == 0xFF) &&
+               (rec.virtAddr == 0xFFFF))
             {
-                priv->writeAddr = addr;
+                writeAddr = addr;
                 break;
             }
 
             addr = nextRecordAddress(addr, &rec);
         }
     }
+
+    priv->nvm       = nvmDev;
+    priv->part      = &desc->partitions[part];
+    priv->readAddr  = readAddr;
+    priv->writeAddr = writeAddr;
 
     return 0;
 }
