@@ -1316,6 +1316,11 @@ stm32h7_clock_tree_test = executable('stm32h7_clock_tree_test',
                                          ['tests/unit/stubs/stm32h7xx',
                                           'platform/mcu/STM32H7xx/drivers']})
 
+sky72310_lock_test = executable('sky72310_lock_test',
+                                sources : unit_test_src + ['platform/drivers/baseband/SKY72310.c',
+                                                           'tests/unit/sky72310_lock.cpp'],
+                                kwargs  : unit_test_opts)
+
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
 test('M17 Demodulator Test',  m17_demodulator_test)
@@ -1371,3 +1376,4 @@ if meson.get_compiler('cpp').get_id() == 'gcc'
   endforeach
 endif
 test('STM32H7 Clock Tree Test', stm32h7_clock_tree_test)
+test('SKY72310 Lock Detect Test', sky72310_lock_test)
