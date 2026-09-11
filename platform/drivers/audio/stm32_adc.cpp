@@ -8,6 +8,7 @@
 #include "core/cache_cortexMx.h"
 #include "interfaces/delays.h"
 #include "peripherals/gpio.h"
+#include "core/utils.h"
 #include "DmaStream.hpp"
 #include "hwconfig.h"
 #include <miosix.h>
@@ -256,7 +257,7 @@ void stm32adc_init(const uint8_t instance)
 void stm32adc_terminate()
 {
     // Terminate streams before shutting of the peripherals
-    for(int i = 0; i < 2; i++)
+    for(size_t i = 0; i < ARRAY_SIZE(AdcContext); i++)
     {
         if(AdcContext[i] != NULL)
         {
@@ -267,7 +268,7 @@ void stm32adc_terminate()
 
     // TODO: turn off peripherals
     #ifdef STM32H743xx
-    RCC->APB1LENR &= ~RCC_APB1LENR_TIM2EN;
+    RCC->APB4ENR &= ~RCC_APB4ENR_LPTIM3EN;
     #else
     RCC->APB1ENR &= ~RCC_APB1ENR_TIM2EN;
     #endif
