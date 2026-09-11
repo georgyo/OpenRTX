@@ -176,9 +176,26 @@ void usb_serial_init(void)
      * Select HSI48 as USB clock source.
      * D2CCIP2R USBSEL[1:0]: 00=off, 01=PLL1Q, 10=PLL3Q, 11=HSI48.
      * Both USBSEL_0 (bit 20) and USBSEL_1 (bit 21) must be set for HSI48.
+     * PLL1Q is 100 MHz on this target and PLL3 is not configured, so the
+     * internal 48 MHz RC oscillator is the only available USB kernel clock.
      */
     RCC->D2CCIP2R = (RCC->D2CCIP2R & ~RCC_D2CCIP2R_USBSEL)
                   | RCC_D2CCIP2R_USBSEL_0 | RCC_D2CCIP2R_USBSEL_1;
+
+    /*
+     * HSI48 is a free-running RC oscillator whose untrimmed accuracy over
+     * temperature is close to the +/-2500 ppm USB full-speed budget.  Enable
+     * the clock recovery system so it is automatically trimmed against the
+     * 1 kHz start-of-frame from the host: SYNCSRC=11 selects the USB2 OTG_FS
+     * SOF (the same encoding as ST's RCC_CRS_SYNC_SOURCE_USB2), and the reset
+     * values of RELOAD (47999) and FELIM (34) already match a 48 MHz target
+     * with a 1 kHz sync.
+     */
+    RCC->APB1HENR |= RCC_APB1HENR_CRSEN;
+    __DSB();
+    CRS->CFGR = (CRS->CFGR & ~CRS_CFGR_SYNCSRC)
+              | CRS_CFGR_SYNCSRC_0 | CRS_CFGR_SYNCSRC_1;
+    CRS->CR |= CRS_CR_AUTOTRIMEN | CRS_CR_CEN;
 
     /*
      * USB_OTG_FS is USB2 on STM32H743; use RCC_AHB1ENR_USB2OTGFSEN.
@@ -191,6 +208,15 @@ void usb_serial_init(void)
      */
     RCC->AHB1ENR |= RCC_AHB1ENR_USB2OTGFSEN;
     __DSB();
+
+    /*
+     * Stop the (unused, internal FS PHY only) OTG_FS ULPI clock in Sleep mode.
+     * Miosix idles the core in WFI, and ST's own initialisation code for the
+     * FS instance clears this bit right after enabling the peripheral clock
+     * (__HAL_RCC_USB2_OTG_FS_ULPI_CLK_SLEEP_DISABLE) to keep the core from
+     * stalling in Sleep.
+     */
+    RCC->AHB1LPENR &= ~RCC_AHB1LPENR_USB2OTGFSULPILPEN;
 
     /* Reset the USB peripheral after enabling its clock to clear any stale
      * state left over from a previous soft reset.
@@ -235,6 +261,8 @@ void usb_serial_terminate(void)
 {
     NVIC_DisableIRQ(OTG_FS_IRQn);
     RCC->AHB1ENR &= ~RCC_AHB1ENR_USB2OTGFSEN;
+    CRS->CR &= ~(CRS_CR_AUTOTRIMEN | CRS_CR_CEN);
+    RCC->APB1HENR &= ~RCC_APB1HENR_CRSEN;
     __DSB();
     atomic_store(&usb_mounted, false);
     atomic_store(&usb_ready, false);
