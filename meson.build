@@ -1329,3 +1329,34 @@ if build_machine.system() != 'darwin'
   test('Audio Threading Test', audio_threading_test)
 endif
 test('Cx000 DAC Test',       cx000_dac_test)
+
+##
+## Host tests of the register-level STM32 drivers, compiled against the fake
+## CMSIS and Miosix headers in tests/unit/fake_stm32 instead of the emulator.
+##
+stm32_fake_inc = include_directories('tests/unit/fake_stm32')
+
+stm32_lptim_test = executable('stm32_lptim_test',
+                              sources : ['tests/unit/stm32_lptim.cpp'],
+                              cpp_args : linux_cpp_args,
+                              link_args : linux_l_args,
+                              include_directories : stm32_fake_inc,
+                              dependencies : [catch2_dep])
+
+test('STM32 LPTIM Test', stm32_lptim_test)
+
+# DmaStream.hpp stores peripheral addresses as uint32_t: on a 64-bit host the
+# pointer casts are an error that only GCC can downgrade with -fpermissive.
+if meson.get_compiler('cpp').get_id() == 'gcc'
+  foreach mcu : ['STM32H7xx', 'STM32F4xx']
+    stm32_dma_stream_test = executable('stm32_dma_stream_test_' + mcu.to_lower(),
+                                       sources : ['tests/unit/stm32_dma_stream.cpp'],
+                                       cpp_args : linux_cpp_args + ['-fpermissive',
+                                                  '-DDMA_STREAM_HEADER="../../platform/mcu/' + mcu + '/drivers/DmaStream.hpp"'],
+                                       link_args : linux_l_args,
+                                       include_directories : stm32_fake_inc,
+                                       dependencies : [catch2_dep])
+
+    test('STM32 DMA Stream Test (' + mcu + ')', stm32_dma_stream_test)
+  endforeach
+endif
