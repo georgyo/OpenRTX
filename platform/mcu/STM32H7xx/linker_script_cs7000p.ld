@@ -160,6 +160,16 @@ SECTIONS
         *(.gnu.linkonce.b.*)
         . = ALIGN(8);
     } > ram
+
+    /* Secondary bss section: on the STM32F4 targets this is the CCM RAM, here
+       it just follows .bss. It is kept between _bss_start and _bss_end so that
+       it is zeroed at boot like the rest of .bss, and NOLOAD because GCC emits
+       it as PROGBITS (only .bss and .bss.* are treated as NOBITS). */
+    .bss2 (NOLOAD) :
+    {
+        *(.bss2)
+        . = ALIGN(8);
+    } > ram
     _bss_end = .;
 
     _end = .;
