@@ -1320,6 +1320,10 @@ sky72310_lock_test = executable('sky72310_lock_test',
                                 sources : unit_test_src + ['platform/drivers/baseband/SKY72310.c',
                                                            'tests/unit/sky72310_lock.cpp'],
                                 kwargs  : unit_test_opts)
+ak2365a_test = executable('ak2365a_test',
+                          sources : ['tests/unit/ak2365a.cpp',
+                                     'platform/drivers/baseband/AK2365A.c'],
+                          kwargs  : unit_test_opts)
 
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
@@ -1377,3 +1381,4 @@ if meson.get_compiler('cpp').get_id() == 'gcc'
 endif
 test('STM32H7 Clock Tree Test', stm32h7_clock_tree_test)
 test('SKY72310 Lock Detect Test', sky72310_lock_test)
+test('AK2365A Driver Test',   ak2365a_test)
