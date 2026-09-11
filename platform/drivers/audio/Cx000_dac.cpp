@@ -12,6 +12,13 @@
 #define TONE_BASE_FREQ    125 // [Hz]
 #define DAC_FIFO_SIZE     32
 
+/*
+ * Number of consecutive task() calls, one every 4ms, with the DAC FIFO still
+ * not empty after which the HR_Cx000 is considered to have stopped consuming
+ * samples. The FIFO holds 32 samples, that is 4ms of audio at 8kHz.
+ */
+#define DAC_STALL_TICKS   25
+
 enum FuncMode
 {
     DAC_OFF    = 0,
@@ -36,8 +43,16 @@ static const uint16_t sineTable[] =
     0xc0d2, 0x67d7, 0x73dc, 0xd6e1, 0x83e7, 0x6ded, 0x84f3, 0xbbf9
 };
 
+/*
+ * Driver state. In beep mode readPos is the phase accumulator of the tone
+ * generator, in stream mode it is the read index inside the stream buffer:
+ * funcMode, readPos and stream are always accessed with the mutex locked, so
+ * that a mode switch done by a stream/beep start or stop can never interleave
+ * with the audio thread executing Cx000dac_task().
+ */
 static HR_C6000 *c6000;
 static uint8_t funcMode = DAC_OFF;
+static uint8_t stallCnt = 0;
 static bool syncPoint = false;
 static bool stopReq   = false;
 static size_t readPos;
@@ -46,6 +61,9 @@ static struct streamCtx *stream;
 static pthread_mutex_t  mutex;
 static pthread_cond_t   wakeup_cond;
 
+/*
+ * Stop the current stream, to be called with the mutex locked.
+ */
 static inline void stopStream()
 {
     funcMode = DAC_OFF;
@@ -72,13 +90,33 @@ void Cx000dac_terminate()
 
 void Cx000dac_task()
 {
-    if(funcMode == DAC_OFF)
-        return;
+    pthread_mutex_lock(&mutex);
 
-    // Check if FIFO is empty
+    if(funcMode == DAC_OFF)
+    {
+        pthread_mutex_unlock(&mutex);
+        return;
+    }
+
+    // Check if FIFO is empty. The FIFO drains in 4ms: if the "not empty" flag
+    // stays set for much longer, the HR_Cx000 stopped consuming samples (for
+    // example because it has been reconfigured for transmission). In this case
+    // keep the stream going anyway so that the sync points keep coming and a
+    // thread blocked in Cx000dac_sync() is not stuck forever.
     uint8_t reg = c6000->readCfgRegister(0x88);
     if((reg & 0x01) == 1)
-        return;
+    {
+        if(stallCnt < DAC_STALL_TICKS)
+        {
+            stallCnt += 1;
+            pthread_mutex_unlock(&mutex);
+            return;
+        }
+    }
+    else
+    {
+        stallCnt = 0;
+    }
 
     // Need to refill the FIFO
     bool isSyncPoint = false;
@@ -96,6 +134,7 @@ void Cx000dac_task()
         }
 
         c6000->sendAudio((uint8_t *) data);
+        pthread_mutex_unlock(&mutex);
         return;
     }
 
@@ -129,15 +168,15 @@ void Cx000dac_task()
     // Wake up thread(s) waiting to be synced with the stream.
     if(isSyncPoint == true)
     {
-        pthread_mutex_lock(&mutex);
         syncPoint = true;
 
         if(stopReq == true)
             stopStream();
 
         pthread_cond_signal(&wakeup_cond);
-        pthread_mutex_unlock(&mutex);
     }
+
+    pthread_mutex_unlock(&mutex);
 }
 
 int Cx000dac_startBeep(const uint16_t freq)
@@ -145,12 +184,20 @@ int Cx000dac_startBeep(const uint16_t freq)
     if(freq < TONE_BASE_FREQ)
         return -EINVAL;
 
+    pthread_mutex_lock(&mutex);
+
     if(funcMode != DAC_OFF)
+    {
+        pthread_mutex_unlock(&mutex);
         return -EBUSY;
+    }
 
     beepIncr = (freq << 16) / TONE_BASE_FREQ;
     readPos  = 0;
+    stallCnt = 0;
     funcMode = DAC_BEEP;
+
+    pthread_mutex_unlock(&mutex);
 
     // Set the "OpenMusic" bit
     c6000->writeCfgRegister(0x06, 0x22);
@@ -160,13 +207,18 @@ int Cx000dac_startBeep(const uint16_t freq)
 
 void Cx000dac_stopBeep()
 {
+    pthread_mutex_lock(&mutex);
+
     // Stop only beeps, streams have an higher priority
-    if(funcMode != DAC_BEEP)
-        return;
+    bool stop = (funcMode == DAC_BEEP);
+    if(stop)
+        funcMode = DAC_OFF;
+
+    pthread_mutex_unlock(&mutex);
 
     // Clear the "OpenMusic" bit
-    c6000->writeCfgRegister(0x06, 0x20);
-    funcMode = DAC_OFF;
+    if(stop)
+        c6000->writeCfgRegister(0x06, 0x20);
 }
 
 static int Cx000dac_start(const uint8_t instance, const void *config,
@@ -185,33 +237,42 @@ static int Cx000dac_start(const uint8_t instance, const void *config,
     if(funcMode == DAC_STREAM)
         return -EBUSY;
 
-    // Stream not running and thread idle, set up a new stream
-    pthread_mutex_lock(&mutex);
-    ctx->running = 1;
-    pthread_mutex_unlock(&mutex);
-
-    stopReq   = false;
-    syncPoint = false;
-    readPos   = 0;
-    stream    = ctx;
-
-    // HR_Cx000 DAC requires data to be in big endian format
+    // HR_Cx000 DAC requires data to be in big endian format. The buffer is
+    // not yet visible to the audio thread, no need to lock.
     for(size_t i = 0; i < ctx->bufSize; i++)
     {
         stream_sample_t tmp = ctx->buffer[i];
         ctx->buffer[i] = __builtin_bswap16(tmp);
     }
 
-    // Set the "OpenMusic" bit
-    c6000->writeCfgRegister(0x06, 0x22);
+    pthread_mutex_lock(&mutex);
+
+    if(funcMode == DAC_STREAM)
+    {
+        pthread_mutex_unlock(&mutex);
+        return -EBUSY;
+    }
 
     // Audio stream mode takes over beep: switching to stream mode will start
-    // the new stream as soon as the HR_Cx000 sample buffer is empty.
-    //
-    // TODO: the audio management module ensures that the DAC is accessed by
-    // only one thread at a time, so we *should* be safe setting the funcMode
-    // without a critical section.
+    // the new stream as soon as the HR_Cx000 sample buffer is empty. Mode
+    // switch and reset of the read position are done in the same critical
+    // section, otherwise the beep generator running in the audio thread could
+    // advance readPos in between and the stream would then be read from an
+    // index far beyond the end of its buffer.
+    ctx->running = 1;
+    stopReq   = false;
+    syncPoint = false;
+    readPos   = 0;
+    stallCnt  = 0;
+    stream    = ctx;
+
+    // Set the "OpenMusic" bit
     funcMode = DAC_STREAM;
+
+    pthread_mutex_unlock(&mutex);
+
+    // Set the "OpenMusic" bit
+    c6000->writeCfgRegister(0x06, 0x22);
 
     return 0;
 }
@@ -262,31 +323,48 @@ static int Cx000dac_sync(struct streamCtx *ctx, uint8_t dirty)
         return -1;
     }
 
-    // Wait for sync point
-    while(syncPoint == false)
+    // Wait for sync point. Give up also if the stream is halted while waiting:
+    // Cx000dac_halt() sets the sync point flag but a new stream may be started
+    // in the meantime, clearing it.
+    while((syncPoint == false) && (ctx->running != 0))
     {
         pthread_cond_wait(&wakeup_cond, &mutex);
     }
 
-    syncPoint = false;
+    // Consume the sync point only if it belongs to this stream, a halted one
+    // must not clear a sync point of the stream started in its place.
+    if(ctx->running != 0)
+        syncPoint = false;
+
     pthread_mutex_unlock(&mutex);
     return 0;
 }
 
 static void Cx000dac_stop(struct streamCtx *ctx)
 {
-    if(ctx->running == 0)
-        return;
+    pthread_mutex_lock(&mutex);
 
-    stopReq = true;
+    if(ctx->running != 0)
+        stopReq = true;
+
+    pthread_mutex_unlock(&mutex);
 }
 
 static void Cx000dac_halt(struct streamCtx *ctx)
 {
-    if(ctx->running == 0)
-        return;
+    pthread_mutex_lock(&mutex);
 
-    stopStream();
+    if(ctx->running != 0)
+    {
+        stopStream();
+
+        // Release the thread(s) blocked in Cx000dac_sync(): once the stream is
+        // off, Cx000dac_task() would never signal them again.
+        syncPoint = true;
+        pthread_cond_broadcast(&wakeup_cond);
+    }
+
+    pthread_mutex_unlock(&mutex);
 }
 
 #pragma GCC diagnostic ignored "-Wpedantic"
