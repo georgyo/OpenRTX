@@ -331,7 +331,23 @@ void radio_enableRx()
 
     // Configure FM detector
     AK2365A_init(&detector);
-    AK2365A_setFilterBandwidth(&detector, AK2365A_BPF_6);
+
+    /*
+     * IF filter and demodulated signal level: for 25kHz FM channels use the
+     * +-7.5kHz filter (F0) and the wide output level (100mVrms at +-3kHz
+     * deviation), otherwise use the +-6kHz filter (F1) and the narrow one
+     * (100mVrms at +-1.5kHz deviation).
+     */
+    if((config->opMode == OPMODE_FM) && (config->bandwidth == BW_25))
+    {
+        AK2365A_setFilterBandwidth(&detector, AK2365A_BPF_7p5,
+                                   AK2365A_BAND_WIDE);
+    }
+    else
+    {
+        AK2365A_setFilterBandwidth(&detector, AK2365A_BPF_6,
+                                   AK2365A_BAND_NARROW);
+    }
 
     // Start sampling of CTCSS signal, if enabled
     if((config->opMode == OPMODE_FM) && (config->rxToneEn == true))
