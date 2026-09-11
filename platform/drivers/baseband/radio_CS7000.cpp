@@ -51,6 +51,12 @@ static_assert(((1 << ADC_VOX_CH)   & ADC12_INPUTS) != 0, "VOX input");
 
 static constexpr uint32_t CTCSS_SAMPLE_RATE = 2000;
 static constexpr freq_t IF_FREQ = 49950000;    // Intermediate frequency: 49.95MHz
+/*
+ * Upper bound for the PLL lock wait. Handheld fractional-N loops settle in
+ * well under a millisecond; the bound is a safety net against a loop that
+ * never locks, not a measured lock time.
+ */
+static constexpr uint32_t PLL_LOCK_TIMEOUT_US = 20000;
 
 static const rtxStatus_t  *config;             // Pointer to data structure with radio configuration
 static struct CS7000Calib calData;             // Calibration data
@@ -340,12 +346,40 @@ void radio_enableTx()
     if(config->txDisable == 1)
         return;
 
+    /*
+     * This function is called again by radio_updateConfiguration() while
+     * transmitting: unkey the PA before retuning the PLL and restarting the
+     * HR_C6000, it is keyed again once the synthesizer has locked.
+     */
+    gpioDev_clear(TX_PWR_EN);   // Disable TX PA
     gpioDev_clear(RX_PWR_EN);   // Disable RX LNA
     gpioDev_set(RF_APC_SW);     // APC/TV in power control mode
     gpioDev_clear(VCOVCC_SW);   // Enable TX VCO
 
     // Set PLL frequency.
     SKY73210_setFrequency(&pll, config->txFrequency, 3);
+
+    /*
+     * Refuse to key the PA if the synthesizer does not lock: the VCO would
+     * be stuck at its tuning rail and an unmodulated, off-frequency carrier
+     * would be radiated (see issue #436).
+     */
+    if(SKY73210_waitLock(&pll, PLL_LOCK_TIMEOUT_US) == false)
+    {
+        if(radioStatus == TX)
+            C6000.stopAnalogTx();
+
+        /*
+         * Park the loop on the RX local oscillator frequency, which the
+         * same VCO/PLL demonstrably reaches, so that an unlocked VCO is not
+         * left pinned at its tuning rail while PTT stays pressed.
+         */
+        gpioDev_set(VCOVCC_SW);
+        SKY73210_setFrequency(&pll, config->rxFrequency - IF_FREQ, 3);
+
+        radioStatus = OFF;
+        return;
+    }
 
     // Set TX output power, constrain between 1W and 5W.
     float power = static_cast < float >(config->txPower) / 1000.0f;
