@@ -154,9 +154,10 @@ void OpMode_M17::offState(rtxStatus_t *const status)
         return;
     }
 
-    // Sleep for 30ms if there is nothing else to do in order to prevent the
-    // rtx thread looping endlessly and locking up all the other tasks
-    sleepFor(0, 30);
+    // PTT released without a transmission having taken place, or TX inhibited
+    // while in OFF state: go back to RX instead of idling here forever.
+    startRx = true;
+    status->opStatus = RX;
 }
 
 void OpMode_M17::rxState(rtxStatus_t *const status)
@@ -275,7 +276,7 @@ void OpMode_M17::rxState(rtxStatus_t *const status)
 
     locked = lock;
 
-    if(platform_getPttStatus())
+    if(platform_getPttStatus() && (status->txDisable == 0))
     {
         demodulator.stopBasebandSampling();
         locked = false;

@@ -61,6 +61,23 @@ static inline void dsp_removeDcOffset(struct dcBlock *dcb, int16_t *buffer,
 }
 
 /**
+ * Saturate a 32-bit value to the range of a 16-bit signed integer.
+ *
+ * @param value: input value.
+ * @return value clamped to [INT16_MIN, INT16_MAX].
+ */
+static inline int16_t dsp_saturate16(const int32_t value)
+{
+    if (value > INT16_MAX)
+        return INT16_MAX;
+
+    if (value < INT16_MIN)
+        return INT16_MIN;
+
+    return (int16_t)value;
+}
+
+/**
  * Data structure holding the internal state of a decimation block.
  */
 struct decimatorState {

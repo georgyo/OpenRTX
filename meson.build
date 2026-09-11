@@ -1267,6 +1267,17 @@ nmea_rbuf_test = executable('nmea_rbuf_test',
                             sources : unit_test_src + ['platform/drivers/GPS/nmea_rbuf.c',
                                                        'tests/unit/nmea_rbuf.cpp'],
                             kwargs  : nmea_rbuf_test_opts)
+dsp_mic_gain_test = executable('dsp_mic_gain_test',
+                                sources : unit_test_src + ['tests/unit/dsp_mic_gain.cpp'],
+                                kwargs  : unit_test_opts)
+
+knob_direction_test = executable('knob_direction_test',
+                                  sources : unit_test_src + ['tests/unit/knob_direction.cpp'],
+                                  kwargs  : unit_test_opts)
+
+m17_opmode_ptt_test = executable('m17_opmode_ptt_test',
+                                  sources : unit_test_src + ['tests/unit/M17_opmode_ptt.cpp'],
+                                  kwargs  : unit_test_opts)
 
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
@@ -1284,3 +1295,6 @@ test('GFX Text Test',        gfx_text_test)
 test('NVM EEEP Test',        nvm_eeep_test)
 test('GPIO Shift Register Test', gpio_shiftreg_test)
 test('NMEA Ring Buffer Test', nmea_rbuf_test)
+test('DSP Mic Gain Test',    dsp_mic_gain_test)
+test('Knob Direction Test',  knob_direction_test)
+test('M17 OpMode PTT Test',  m17_opmode_ptt_test)
