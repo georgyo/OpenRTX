@@ -15,7 +15,8 @@
 #include "interfaces/usb_serial.h"
 
 // NOTE: ENABLE_STDIO needs to be enabled for this test to actually do
-// its job (add 'ENABLE_STDIO': '' to openrtx_def in meson.build).
+// its job (add 'ENABLE_STDIO': '' to cs7000p_def in meson.build); without
+// it printf() output is discarded and only the display shows activity.
 
 int main(void)
 {

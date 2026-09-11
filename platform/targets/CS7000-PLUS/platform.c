@@ -8,7 +8,6 @@
 #include "peripherals/gpio.h"
 #include "interfaces/nvmem.h"
 #include "interfaces/audio.h"
-#include "interfaces/usb_serial.h"
 #include "drivers/GPIO/gpio_shiftReg.h"
 #include "drivers/SPI/spi_bitbang.h"
 #include "drivers/ADC/adc_stm32.h"
@@ -17,6 +16,10 @@
 #include "hwconfig.h"
 #include <string.h>
 #include "core/gps.h"
+
+#ifdef CONFIG_USB_SERIAL
+#include "interfaces/usb_serial.h"
+#endif
 
 static const hwInfo_t hwInfo =
 {
@@ -57,7 +60,9 @@ void platform_init()
 
 void platform_terminate()
 {
+    #ifdef CONFIG_USB_SERIAL
     usb_serial_terminate();
+    #endif
 
     adcStm32_terminate(&adc1);
     gpsStm32_terminate();
