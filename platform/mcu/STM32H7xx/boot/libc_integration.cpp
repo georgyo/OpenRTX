@@ -25,6 +25,19 @@
 #include "interfaces/usb_serial.h"
 
 static pthread_mutex_t stdio_usb_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/*
+ * Input bytes translated per usb_serial_write() call and the on-stack buffer
+ * that holds the result (every '\n' may become "\r\n"). One chunk is exactly
+ * one CDC TX FIFO (64 bytes at full speed), so a larger buffer would not save
+ * any round trips; keeping it small matters because _write_r() runs on the
+ * caller's stack, below newlib's vfprintf frame and above tud_task(), which
+ * usb_serial_write() may pump from this thread. The UI thread has a 2 KiB
+ * stack; stdio must not be used from the 512-byte rtx/audio threads at all.
+ */
+#define USB_STDIO_CHUNK 64
+#define USB_STDIO_OUTBUF (2 * USB_STDIO_CHUNK)
+
 /*
  * If the previous _write_r ended by sending a lone '\r' (e.g. printf split
  * "foo\r" and "\n" across two writes), the next write must send only '\n' to
@@ -98,10 +111,10 @@ int _write_r(struct _reent *ptr, int fd, const void *buf, size_t cnt)
             }
 
             size_t chunk = left - i;
-            if(chunk > 512)
-                chunk = 512;
+            if(chunk > USB_STDIO_CHUNK)
+                chunk = USB_STDIO_CHUNK;
 
-            char   out[1024];
+            char   out[USB_STDIO_OUTBUF];
             size_t o = 0;
             for(size_t j = 0; j < chunk; j++)
             {
