@@ -31,12 +31,20 @@ void AK2365A_init(const struct ak2365a *dev)
     delayUs(100);
     gpioPin_set(&dev->res);
 
+    /*
+     * Calibration procedure, see datasheet section 15: once in operating mode 6
+     * the circuits needed for calibration are ready after 500us, calibration
+     * takes 1.3ms and the discriminator needs a further 1.5ms to settle after
+     * calibration is completed.
+     */
     writeReg(dev, 0x04, 0xAA);   // Software reset
     writeReg(dev, 0x01, 0xC1);   // Operating mode 6, LO freq 50.4MHz
+    delayUs(500);
     writeReg(dev, 0x02, 0x33);   // Enable calibration
     writeReg(dev, 0x03, 0x00);   // IF buffer gain 5dB
     writeReg(dev, 0x0B, 0x01);   // AGC auto, AGC1 gain 21dB
     writeReg(dev, 0x0C, 0x80);   // AGC2 gain 12dB
+    delayMs(3);
 }
 
 void AK2365A_terminate(const struct ak2365a *dev)

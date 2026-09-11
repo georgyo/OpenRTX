@@ -51,7 +51,11 @@ struct ak2365a
 
 
 /**
- * Initialise the FM detector IC.
+ * Initialise the FM detector IC and run the discriminator calibration.
+ * The PDN pin must be high and the local oscillator running before calling
+ * this function. Calibration data is retained until the next hardware reset
+ * or power down, so this function has to be called only once.
+ * This function blocks for about 4ms.
  *
  * @param dev: pointer to device data.
  */
