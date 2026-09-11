@@ -36,9 +36,15 @@
 static pathId audioPath;
 
 static uint8_t initCnt = 0;
-static bool running;
 
-static bool reqStop;
+/*
+ * Codec thread state flags, polled by the codec thread and set by the threads
+ * starting or stopping it. All the start/stop transitions are serialised by
+ * init_mutex.
+ */
+static volatile bool running;
+static volatile bool reqStop;
+
 static pthread_t codecThread;
 static pthread_attr_t codecAttr;
 static pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -79,8 +85,9 @@ void codec_terminate()
     if (initCnt > 0)
         return;
 
-    if (running)
-        stopThread();
+    pthread_mutex_lock(&init_mutex);
+    stopThread();
+    pthread_mutex_unlock(&init_mutex);
 }
 
 bool codec_startEncode(const pathId path)
@@ -95,13 +102,15 @@ bool codec_startDecode(const pathId path)
 
 void codec_stop(const pathId path)
 {
-    if (running == false)
-        return;
-
-    if (audioPath != path)
-        return;
-
-    stopThread();
+    // Serialise with startThread() and with other callers of codec_stop(): on
+    // Miosix a join on a thread which is already being joined fails at once,
+    // so two concurrent stops (e.g. UI thread stopping a voice prompt and rtx
+    // thread starting the encoder on PTT) would let one caller return while
+    // the old thread is still alive and get its stop request overwritten.
+    pthread_mutex_lock(&init_mutex);
+    if (running && (audioPath == path))
+        stopThread();
+    pthread_mutex_unlock(&init_mutex);
 }
 
 bool codec_running()
@@ -349,7 +358,10 @@ static bool startThread(const pathId path, void *(*func)(void *))
         return false;
 
     // Handle access contention when starting the codec thread to ensure that
-    // only one call at a time can effectively start the thread.
+    // only one call at a time can effectively start the thread. The mutex is
+    // held until the new thread is created, so that a concurrent codec_stop()
+    // cannot slip in between the stop of the old thread and the start of the
+    // new one.
     pthread_mutex_lock(&init_mutex);
     if (running) {
         // Same path as before, path open, codec already running: all good.
@@ -372,7 +384,6 @@ static bool startThread(const pathId path, void *(*func)(void *))
 
     running = true;
     audioPath = path;
-    pthread_mutex_unlock(&init_mutex);
 
     readPos = 0;
     writePos = 0;
@@ -401,11 +412,22 @@ static bool startThread(const pathId path, void *(*func)(void *))
     if (ret < 0)
         running = false;
 
-    return running;
+    bool started = running;
+    pthread_mutex_unlock(&init_mutex);
+
+    return started;
 }
 
+/*
+ * Stop the codec thread and wait for its termination.
+ * Must be called with init_mutex locked: this makes the join exclusive and the
+ * function idempotent, a second caller finds running == false and returns.
+ */
 static void stopThread()
 {
+    if (running == false)
+        return;
+
     reqStop = true;
     pthread_join(codecThread, NULL);
     running = false;
