@@ -343,9 +343,14 @@ ssize_t usb_serial_write(const void *buf, size_t len)
      * If the link is in USB suspend (host idle / selective suspend), IN
      * traffic may not run until the bus resumes.  Advertise remote wakeup in
      * the configuration descriptor and pulse here when we have data to send.
+     * VBUS is not sensed on this board (PA9 is used by the Bluetooth UART),
+     * so an unplugged cable is only visible as a bus that stays suspended:
+     * when the host did not enable remote wakeup there is no way to resume
+     * it either, treat both cases as "not connected" instead of stalling.
      */
-    if (len > 0 && tud_suspended()) {
-        (void)tud_remote_wakeup();
+    if (len > 0 && tud_suspended() && !tud_remote_wakeup()) {
+        pthread_mutex_unlock(&cdc_mutex);
+        return -1;
     }
 
     while (rem > 0) {
@@ -359,6 +364,12 @@ ssize_t usb_serial_write(const void *buf, size_t len)
         uint32_t accepted = tud_cdc_write(p, rem);
         p += accepted;
         rem -= accepted;
+
+        /* The timeout bounds the time without forward progress, not the
+         * whole transfer: restart it whenever the FIFO accepted data. */
+        if (accepted > 0) {
+            timeout = USB_SERIAL_WRITE_TIMEOUT_MS;
+        }
 
         if (rem == 0) {
             break;
@@ -387,8 +398,10 @@ ssize_t usb_serial_write(const void *buf, size_t len)
         sleepFor(0, 1); /* allow the ISR to queue the xfer-complete event */
         pthread_mutex_lock(&cdc_mutex);
 
-        if (tud_suspended()) {
-            (void)tud_remote_wakeup();
+        if (tud_suspended() && !tud_remote_wakeup()) {
+            tud_cdc_write_clear();
+            pthread_mutex_unlock(&cdc_mutex);
+            return -1;
         }
 
         tud_task(); /* process events under the mutex — cannot race with
