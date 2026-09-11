@@ -128,7 +128,7 @@ void gpsStm32_disable(void *priv)
     (void) priv;
 
     PORT->CR1 &= ~USART_CR1_UE;
-    NVIC_DisableIRQ(USART6_IRQn);
+    NVIC_DisableIRQ(IRQn);
 }
 
 int gpsStm32_getNmeaSentence(void *priv, char *buf, const size_t maxLength)
