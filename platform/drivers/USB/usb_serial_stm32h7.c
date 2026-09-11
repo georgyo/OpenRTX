@@ -118,13 +118,6 @@ void tud_cdc_line_coding_cb(uint8_t itf, cdc_line_coding_t const *p_line_coding)
 
 void usb_serial_init(void)
 {
-    /* Enable D2 SRAM1 clock so that the .usb_ram section at 0x30000000 is
-     * accessible. RCC_AHB2ENR resets to 0; without this, any access to
-     * tinyUSB buffers placed in D2 SRAM causes a bus fault.
-     */
-    RCC->AHB2ENR |= RCC_AHB2ENR_D2SRAM1EN;
-    __DSB();
-
     /*
      * Enable the USB voltage detector (PWR_CR3_USB33DEN) and wait for
      * VDDUSB to stabilise.  The FS PHY requires a valid 3.3 V supply on

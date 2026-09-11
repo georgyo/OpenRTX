@@ -58,29 +58,29 @@
  * - CFG_TUSB_MEM_ALIGN   : __attribute__ ((aligned(4)))
  */
 
- // On STM32H7 (OTG FS), USB DMA cannot reach AXI SRAM; buffers must live in D2
- // SRAM (e.g. .usb_ram in the linker script), not the main 0x2400... region.
-#ifdef STM32H743xx
-  /* MEM_SECTION applies to file-scope driver buffers; MEM_ALIGN must be
-   * alignment-only because TinyUSB 0.20+ places EP buffers inside unions
-   * (section on members is invalid).
-   */
-  #define CFG_TUSB_MEM_SECTION  __attribute__((section(".usb_ram")))
-  #define CFG_TUSB_MEM_ALIGN    __attribute__((aligned(4)))
-  /*
-   * Miosix enables D-cache; D2 SRAM (0x3000...) is cacheable.  DWC2 DMA bypasses the
-   * CPU cache — enable tinyUSB clean/invalidate on transfers or bulk IN/OUT can fail.
-   */
-  #define CFG_TUD_MEM_DCACHE_ENABLE       1
-  #define CFG_TUSB_MEM_DCACHE_LINE_SIZE   32
-#else
-  #ifndef CFG_TUSB_MEM_SECTION
-    #define CFG_TUSB_MEM_SECTION
-  #endif
+/*
+ * On STM32H7 the DWC2 core is used in slave (FIFO) mode: CFG_TUD_DWC2_DMA_ENABLE
+ * keeps its default of 0, so the CPU copies every packet to/from the packet
+ * FIFO and no bus master ever touches the endpoint buffers. They can therefore
+ * live in the ordinary AXI SRAM together with the rest of .bss, and no D-cache
+ * maintenance is needed (the only DMA-inaccessible RAM on the H7 is DTCM, which
+ * the CS7000P linker script does not use for data anyway).
+ *
+ * If DMA mode is ever enabled, set CFG_TUD_MEM_DCACHE_ENABLE to 1 and align the
+ * buffers to CFG_TUSB_MEM_DCACHE_LINE_SIZE (32 bytes on Cortex-M7); with
+ * write-through cacheable RAM (Miosix MPU setup) the clean/invalidate calls in
+ * dcd_dwc2.c then keep the buffers coherent.
+ */
+#ifndef CFG_TUSB_MEM_SECTION
+  #define CFG_TUSB_MEM_SECTION
+#endif
 
-  #ifndef CFG_TUSB_MEM_ALIGN
-    #define CFG_TUSB_MEM_ALIGN  __attribute__((aligned(4)))
-  #endif
+#ifndef CFG_TUSB_MEM_ALIGN
+  #define CFG_TUSB_MEM_ALIGN  __attribute__((aligned(4)))
+#endif
+
+#ifdef STM32H743xx
+  #define CFG_TUD_MEM_DCACHE_ENABLE       0
 #endif
 
 //--------------------------------------------------------------------
