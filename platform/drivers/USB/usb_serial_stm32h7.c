@@ -201,8 +201,8 @@ void usb_serial_init(void)
      */
     RCC->APB1HENR |= RCC_APB1HENR_CRSEN;
     __DSB();
-    CRS->CFGR = (CRS->CFGR & ~CRS_CFGR_SYNCSRC)
-              | CRS_CFGR_SYNCSRC_0 | CRS_CFGR_SYNCSRC_1;
+    CRS->CFGR = (CRS->CFGR & ~CRS_CFGR_SYNCSRC) | CRS_CFGR_SYNCSRC_0
+              | CRS_CFGR_SYNCSRC_1;
     CRS->CR |= CRS_CR_AUTOTRIMEN | CRS_CR_CEN;
 
     /*
