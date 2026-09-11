@@ -9,9 +9,21 @@
 #include <reent.h>
 #include "filesystem/file_access.h"
 #include "hwconfig.h"
+
+/*
+ * stdout/stderr go to the USB CDC console only when the build asks for it
+ * with ENABLE_STDIO, exactly like the STM32F4/MK22/AT32 ports route them to
+ * their virtual COM port. Without it printf() is a no-op on the radio and the
+ * USB stack (still initialised under CONFIG_USB_SERIAL) is free for binary
+ * users of usb_serial_write()/usb_serial_read().
+ */
+#if defined(CONFIG_USB_SERIAL) && defined(ENABLE_STDIO)
+#define USB_STDIO
+#endif
+
+#ifdef USB_STDIO
 #include "interfaces/usb_serial.h"
 
-#ifdef CONFIG_USB_SERIAL
 static pthread_mutex_t stdio_usb_mutex = PTHREAD_MUTEX_INITIALIZER;
 /*
  * If the previous _write_r ended by sending a lone '\r' (e.g. printf split
@@ -33,7 +45,7 @@ extern "C" {
  */
 int _write_r(struct _reent *ptr, int fd, const void *buf, size_t cnt)
 {
-#ifdef CONFIG_USB_SERIAL
+#ifdef USB_STDIO
     if(fd == STDOUT_FILENO || fd == STDERR_FILENO)
     {
         pthread_mutex_lock(&stdio_usb_mutex);
