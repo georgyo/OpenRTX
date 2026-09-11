@@ -21,6 +21,15 @@ typedef Lptim          timebase_type;
 #define TimebaseCh1    Lptim(LPTIM3_BASE, 168000000)
 #define TimebaseCh2    Lptim(LPTIM3_BASE, 168000000)
 #define TimebaseCh3    Lptim(LPTIM3_BASE, 168000000)
+
+/*
+ * Upper bounds, in loop iterations, for the busy-wait loops of the ADC start-up
+ * sequence. They only serve to avoid hanging the boot process if the ADC never
+ * reaches the expected state: the ADC becomes ready in a few ADC clock cycles
+ * and the calibration takes at most 165010 ADC clock cycles (~3.3ms at 50MHz).
+ */
+#define ADC_STARTUP_TIMEOUT   1000000
+#define ADC_CAL_TIMEOUT       10000000
 #else
 #include "Timer.hpp"
 
@@ -187,11 +196,38 @@ void stm32adc_init(const uint8_t instance)
             | ADC_CR_BOOST_1
             | ADC_CR_BOOST_0;
 
-    while((adc->ISR & ADC_ISR_LDORDY) == 0) ;
+    uint32_t timeout = ADC_STARTUP_TIMEOUT;
+    while(((adc->ISR & ADC_ISR_LDORDY) == 0) && (timeout > 0))
+        timeout -= 1;
 
-    adc->ISR   = ADC_ISR_ADRDY;     // Clear the ADRDY flag
-    adc->CR   |= ADC_CR_ADEN;
-    while((adc->ISR & ADC_ISR_ADRDY) != 0) ;
+    // Calibrate the ADC, both offset and linearity. Calibration requires the
+    // ADC to be disabled (ADEN = 0).
+    adc->CR |= ADC_CR_ADCAL
+            |  ADC_CR_ADCALLIN;
+
+    timeout = ADC_CAL_TIMEOUT;
+    while(((adc->CR & ADC_CR_ADCAL) != 0) && (timeout > 0))
+        timeout -= 1;
+
+    /*
+     * Turn on the ADC and wait until it is ready (ADRDY = 1). ADEN is kept
+     * being set until ADRDY is seen because, if ADEN is set less than four ADC
+     * clock cycles after ADCAL has been cleared, it gets reset by the
+     * calibration logic (workaround from ST HAL, ADC_Enable()).
+     */
+    adc->ISR = ADC_ISR_ADRDY;       // Clear the ADRDY flag
+
+    timeout = ADC_STARTUP_TIMEOUT;
+    do
+    {
+        adc->CR |= ADC_CR_ADEN;
+
+        if(timeout == 0)
+            break;
+
+        timeout -= 1;
+    }
+    while((adc->ISR & ADC_ISR_ADRDY) == 0);
 
     adc->SMPR2 = 0x36DB6DB6;
     adc->SMPR1 = 0x36DB6DB6;
