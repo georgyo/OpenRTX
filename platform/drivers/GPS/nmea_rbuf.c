@@ -91,7 +91,12 @@ int nmeaRbuf_putSentence(struct nmeaRbuf *rbuf, const char *sentence)
 int nmeaRbuf_getSentence(struct nmeaRbuf *rbuf, char *buf, const size_t maxLen)
 {
     size_t bufPos = 0;
+    bool truncated = false;
     char c;
+
+    // No room even for the string terminator
+    if(maxLen == 0)
+        return -1;
 
     if(rbuf->rdPos == rbuf->rdLimit)
         return 0;
@@ -102,14 +107,19 @@ int nmeaRbuf_getSentence(struct nmeaRbuf *rbuf, char *buf, const size_t maxLen)
         rbuf->rdPos += 1;
         rbuf->rdPos %= CONFIG_NMEA_RBUF_SIZE;
 
-        // Store it
-        buf[bufPos] = c;
-        if(bufPos < maxLen)
-            bufPos += 1;
+        // Store it, always leaving room for the string terminator. The
+        // characters not fitting in the destination are dropped but still
+        // removed from the ring buffer.
+        if(bufPos < (maxLen - 1))
+            buf[bufPos++] = c;
+        else
+            truncated = true;
 
     } while(c != '\n');
 
-    if(bufPos == maxLen)
+    buf[bufPos] = '\0';
+
+    if(truncated)
         return -1;
 
     return (int) bufPos;
