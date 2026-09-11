@@ -363,6 +363,18 @@ void radio_enableRx()
                                    AK2365A_BAND_NARROW);
     }
 
+    /*
+     * HR_C6000 FM receive path: register 0x34 bit 2 selects the RX audio
+     * low-pass filter (0: 12.5kHz, 1: 25kHz channel spacing). Always
+     * rewrite the register: the base value is the one set by fmMode() and
+     * stopAnalogTx() leaves a different one behind after a transmission.
+     */
+    uint8_t fmCfg = 0xBC;
+    if((config->opMode == OPMODE_FM) && (config->bandwidth != BW_25))
+        fmCfg = 0xB8;
+
+    C6000.writeCfgRegister(0x34, fmCfg);
+
     // Start sampling of CTCSS signal, if enabled
     if((config->opMode == OPMODE_FM) && (config->rxToneEn == true))
         stm32_adc_audio_driver.start(CTCSS_ADC, (void *) ADC_CTCSS_CH,
