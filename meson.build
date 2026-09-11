@@ -296,7 +296,6 @@ stm32h743_src = ['platform/mcu/STM32H7xx/boot/startup.cpp',
                  'platform/drivers/SPI/spi_stm32h7.c',
                  'platform/drivers/GPS/gps_stm32.cpp',
                  'platform/drivers/GPS/nmea_rbuf.c',
-                 'platform/drivers/NVM/flash_stm32h7.c',
                  'platform/drivers/audio/stm32_dac.cpp',
                  'platform/drivers/audio/stm32_adc.cpp',
                  'platform/mcu/CMSIS/Device/ST/STM32H7xx/Source/system_stm32h7xx.c']
@@ -307,6 +306,11 @@ stm32h743_inc = ['platform/mcu/CMSIS/Include',
                  'platform/mcu/STM32H7xx/drivers']
 
 stm32h743_def = {'STM32H743xx': '', 'HSE_VALUE':'25000000'}
+
+# The internal flash driver is only used by the on-radio flash test
+if get_option('test') == 'stm32h743_flash'
+  stm32h743_src += ['platform/drivers/NVM/flash_stm32h7.c']
+endif
 
 stm32h743_src += miosix_cm7_src
 stm32h743_inc += miosix_cm7_inc
