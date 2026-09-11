@@ -215,7 +215,17 @@ void radio_init(const rtxStatus_t *rtxState)
      * Enable and configure PLL, wait 1ms to ensure that VCXO is stable
      */
     gpioDev_set(VCO_PWR_EN);
+    delayMs(1);
     SKY73210_init(&pll, 16);
+
+    /*
+     * Program the synthesizer right away: after power-up the SKY72310 is set
+     * for N=38 with an undivided reference (638MHz), a frequency the VCO
+     * cannot reach. If left this way until the first radio_enableRx(), which
+     * happens about one second later, the VCO sits at its tuning rail and its
+     * leakage is radiated for the whole splash screen (see issue #430).
+     */
+    SKY73210_setFrequency(&pll, config->rxFrequency - IF_FREQ, 3);
 
     /*
      * Set VCTXO bias
