@@ -51,11 +51,8 @@ MEMORY
 {
     flash(rx)   : ORIGIN = 0x08100000, LENGTH = 1M
 
-    /* Main general-purpose RAM */
+    /* Main general-purpose RAM: the AXI SRAM (D1 domain) */
     ram(wx)     : ORIGIN = 0x24000200, LENGTH =  512K-0x200
-
-    /* Dedicated USB DMA buffer region in D2 SRAM1 */
-    usb_ram(wx) : ORIGIN = 0x30000000, LENGTH = 32K
 }
 
 /* now define the output sections  */
@@ -177,11 +174,4 @@ SECTIONS
 
     _end = .;
     PROVIDE(end = .);
-
-    /* USB DMA buffers: must reside in D2 SRAM for STM32H7 OTG FS */
-    .usb_ram (NOLOAD) :
-    {
-        *(.usb_ram)
-        *(.usb_ram.*)
-    } > usb_ram
 }
