@@ -21,7 +21,10 @@
 #include "core/backup.h"
 #include "core/gps.h"
 #include "core/voicePrompts.h"
+
+#if defined(CONFIG_USB_SERIAL)
 #include "interfaces/usb_serial.h"
+#endif
 
 #if defined(PLATFORM_TTWRPLUS)
 #include "pmu.h"
