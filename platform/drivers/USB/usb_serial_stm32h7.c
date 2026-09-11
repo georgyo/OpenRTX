@@ -267,14 +267,23 @@ void usb_serial_init(void)
 
 void usb_serial_terminate(void)
 {
+    /*
+     * Mark the device as gone under the CDC mutex before gating the clock:
+     * platform_terminate() runs while the UI thread is still alive, and a
+     * write that already passed the mounted check must not touch the
+     * peripheral registers once the clock is off.
+     */
+    pthread_mutex_lock(&cdc_mutex);
+    atomic_store(&usb_mounted, false);
+    atomic_store(&usb_ready, false);
+    atomic_store(&cdc_uart_notify_pending, false);
+
     NVIC_DisableIRQ(OTG_FS_IRQn);
     RCC->AHB1ENR &= ~RCC_AHB1ENR_USB2OTGFSEN;
     CRS->CR &= ~(CRS_CR_AUTOTRIMEN | CRS_CR_CEN);
     RCC->APB1HENR &= ~RCC_APB1HENR_CRSEN;
     __DSB();
-    atomic_store(&usb_mounted, false);
-    atomic_store(&usb_ready, false);
-    atomic_store(&cdc_uart_notify_pending, false);
+    pthread_mutex_unlock(&cdc_mutex);
 }
 
 void usb_serial_task(void)
@@ -320,7 +329,11 @@ uint32_t usb_serial_available(void)
         return 0;
     }
 
-    return tud_cdc_available();
+    pthread_mutex_lock(&cdc_mutex);
+    uint32_t avail = tud_cdc_available();
+    pthread_mutex_unlock(&cdc_mutex);
+
+    return avail;
 }
 
 ssize_t usb_serial_write(const void *buf, size_t len)
@@ -424,7 +437,15 @@ ssize_t usb_serial_read(void *buf, size_t len)
         return -1;
     }
 
-    return (ssize_t)tud_cdc_read(buf, len);
+    /*
+     * tud_cdc_read() re-arms the OUT endpoint when the FIFO drains, which
+     * must not race with the tud_task() run by usb_serial_task().
+     */
+    pthread_mutex_lock(&cdc_mutex);
+    ssize_t ret = (ssize_t)tud_cdc_read(buf, len);
+    pthread_mutex_unlock(&cdc_mutex);
+
+    return ret;
 }
 
 /* Funky function name required because of C/C++ mangling from Miosix
