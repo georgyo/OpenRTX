@@ -18,8 +18,13 @@
  *
  * Clocks derived from PLL_P output:
  * - CPU clock 400MHz
- * - AHB1/2/3 clock 200MHz
- * - APB1/2/4 clock 200MHz
+ * - AHB1/2/3/4 clock 200MHz
+ * - APB1/2/3/4 clock 100MHz
+ * - APB1/2 timer kernel clocks 200MHz (TIMPRE = 0, APB prescaler = 2)
+ *
+ * DS12110 "General operating conditions" limits f_HCLK to 200MHz and f_PCLKx
+ * to 100MHz at VOS1, so the APB prescalers must stay at /2: every APB bus
+ * frequency reported by getBusClock() below has to match them.
  */
 
 void startPll()
@@ -53,11 +58,11 @@ void startPll()
 
     //Before increasing the fequency set dividers
     RCC->D1CFGR = RCC_D1CFGR_D1CPRE_DIV1  //CPU clock /1
-                | RCC_D1CFGR_D1PPRE_DIV1  //D1 APB3   /1
+                | RCC_D1CFGR_D1PPRE_DIV2  //D1 APB3   /2
                 | RCC_D1CFGR_HPRE_DIV2;   //D1 AHB    /2
-    RCC->D2CFGR = RCC_D2CFGR_D2PPRE2_DIV1 //D2 APB2   /1
-                | RCC_D2CFGR_D2PPRE1_DIV1;//D2 APB1   /1
-    RCC->D3CFGR = RCC_D3CFGR_D3PPRE_DIV1; //D3 APB4   /1
+    RCC->D2CFGR = RCC_D2CFGR_D2PPRE2_DIV2 //D2 APB2   /2
+                | RCC_D2CFGR_D2PPRE1_DIV2;//D2 APB1   /2
+    RCC->D3CFGR = RCC_D3CFGR_D3PPRE_DIV2; //D3 APB4   /2
 
     //And increase FLASH wait states
     FLASH->ACR = FLASH_ACR_WRHIGHFREQ_1   //Settings for FLASH freq=200MHz
@@ -88,19 +93,19 @@ uint32_t getBusClock(const uint8_t bus)
             break;
 
         case PERIPH_BUS_APB1:
-            return 200000000;  // APB1: AHB(200MHz) / D2PPRE1_DIV1 = 200MHz
+            return 100000000;  // APB1: AHB(200MHz) / D2PPRE1_DIV2 = 100MHz
             break;
 
         case PERIPH_BUS_APB2:
-            return 200000000;  // APB2: AHB(200MHz) / D2PPRE2_DIV1 = 200MHz
+            return 100000000;  // APB2: AHB(200MHz) / D2PPRE2_DIV2 = 100MHz
             break;
 
         case PERIPH_BUS_APB3:
-            return 200000000;  // APB3: AHB(200MHz) / D1PPRE_DIV1 = 200MHz
+            return 100000000;  // APB3: AHB(200MHz) / D1PPRE_DIV2 = 100MHz
             break;
 
         case PERIPH_BUS_APB4:
-            return 200000000;  // APB4: AHB(200MHz) / D3PPRE_DIV1 = 200MHz
+            return 100000000;  // APB4: AHB(200MHz) / D3PPRE_DIV2 = 100MHz
             break;
     }
 
