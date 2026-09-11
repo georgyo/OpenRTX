@@ -7,6 +7,8 @@
 #ifndef LPTIM_H
 #define LPTIM_H
 
+#include <cstdint>
+
 /**
  * Handler class for STM32H7 LPTIM peripheral.
  */
@@ -20,7 +22,7 @@ public:
      * @param tim: base address of timer peripheral to manage.
      * @param baseFreq: timer base input frequency, in Hz.
      */
-    constexpr Lptim(const uint32_t tim, const uint32_t baseFreq) : tim(tim),
+    constexpr Lptim(const uintptr_t tim, const uint32_t baseFreq) : tim(tim),
             baseFreq(baseFreq) {}
 
     ~Lptim() = default;
@@ -54,10 +56,25 @@ public:
                 break;
         }
 
-        // Timer needs to be enabled before configuring the other registers.
-        reinterpret_cast< LPTIM_TypeDef * >(tim)->CR   = LPTIM_CR_ENABLE;
-        reinterpret_cast< LPTIM_TypeDef * >(tim)->CFGR = div << 9;
-        reinterpret_cast< LPTIM_TypeDef * >(tim)->ARR  = arr - 1;
+        /*
+         * The configuration register can be written only when the timer is
+         * disabled, while the autoreload register can be written only when the
+         * timer is enabled (RM0433, LPTIM_CFGR and LPTIM_ARR descriptions).
+         * The write to ARR completes asynchronously in the timer clock domain
+         * and is signalled by the ARROK flag: wait for it, with a bounded
+         * timeout, before returning so that the timer can be started safely.
+         */
+        LPTIM_TypeDef *lptim = reinterpret_cast< LPTIM_TypeDef * >(tim);
+
+        lptim->CR   = 0;
+        lptim->CFGR = div << LPTIM_CFGR_PRESC_Pos;
+        lptim->CR   = LPTIM_CR_ENABLE;
+        lptim->ICR  = LPTIM_ICR_ARROKCF;
+        lptim->ARR  = arr - 1;
+
+        uint32_t timeout = ARR_UPDATE_TIMEOUT;
+        while(((lptim->ISR & LPTIM_ISR_ARROK) == 0) && (timeout > 0))
+            timeout -= 1;
 
         return (baseFreq / psc) / arr;
     }
@@ -114,8 +131,15 @@ public:
 
 private:
 
-    const uint32_t tim;
-    const uint32_t baseFreq;
+    /*
+     * Upper bound, in loop iterations, for the wait on the ARROK flag. The
+     * register update takes a few timer clock cycles, the bound only prevents
+     * a hang if the timer clock is not running.
+     */
+    static constexpr uint32_t ARR_UPDATE_TIMEOUT = 10000;
+
+    const uintptr_t tim;
+    const uint32_t  baseFreq;
 };
 
 #endif /* LPTIM_H */
