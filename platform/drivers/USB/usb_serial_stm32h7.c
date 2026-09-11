@@ -72,6 +72,14 @@ static pthread_mutex_t cdc_mutex = PTHREAD_MUTEX_INITIALIZER;
  */
 #define USB_READY_POLL_STEPS 1000
 
+/*
+ * How long usb_serial_write() waits for the CDC TX FIFO to make progress
+ * before giving up, in 1 ms sleeps.  Overridable from hwconfig.h.
+ */
+#ifndef USB_SERIAL_WRITE_TIMEOUT_MS
+#define USB_SERIAL_WRITE_TIMEOUT_MS 50
+#endif
+
 static bool usb_wait_flag(volatile const uint32_t *reg, uint32_t mask)
 {
     for (uint32_t i = 0; i < USB_READY_POLL_STEPS; i++) {
@@ -327,7 +335,7 @@ ssize_t usb_serial_write(const void *buf, size_t len)
 
     const uint8_t *p = (const uint8_t *)buf;
     size_t rem = len;
-    uint32_t timeout = 50; /* ~50 ms: 50 retries * 1 ms sleep */
+    uint32_t timeout = USB_SERIAL_WRITE_TIMEOUT_MS;
 
     pthread_mutex_lock(&cdc_mutex);
 
@@ -360,6 +368,8 @@ ssize_t usb_serial_write(const void *buf, size_t len)
          * The CDC TX FIFO is full (64 bytes at FS speed).  Flush what has
          * been accepted, release the mutex so usb_serial_task() can run
          * during the sleep, then re-acquire and pump the stack ourselves.
+         * sleepFor() suspends the calling thread (delayMs() is a busy loop
+         * on this MCU and would starve the main thread of CPU time).
          * tud_task() is called *inside* the mutex so it cannot execute
          * concurrently with usb_serial_task()'s tud_task() call; concurrent
          * calls corrupt tinyUSB state and cause hangs on USB disconnect.
@@ -374,7 +384,7 @@ ssize_t usb_serial_write(const void *buf, size_t len)
         timeout--;
 
         pthread_mutex_unlock(&cdc_mutex);
-        delayMs(1); /* yield; allow the ISR to queue the xfer-complete event */
+        sleepFor(0, 1); /* allow the ISR to queue the xfer-complete event */
         pthread_mutex_lock(&cdc_mutex);
 
         if (tud_suspended()) {
@@ -457,5 +467,5 @@ void tud_umount_cb(void)
  * Physical disconnect is reported as DCD_EVENT_UNPLUGGED -> tud_umount_cb().
  * While the device remains configured but the host is not polling IN (e.g.
  * real bus suspend), usb_serial_write() may wait for FIFO space; the bounded
- * retry loop (~50 ms) prevents indefinite blocking.
+ * retry loop (USB_SERIAL_WRITE_TIMEOUT_MS) prevents indefinite blocking.
  */
