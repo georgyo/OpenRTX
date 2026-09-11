@@ -58,9 +58,16 @@ let
     # PATH, so find_program('radio_tool') never falls back to this wrap
     # (whose packagefiles meson.build runs cmake/make at configure time), and
     # the source is intentionally not fetched.
-    # subprojects/tinyusb.wrap is not referenced by any meson.build or
-    # CMakeLists.txt in the tree, so it is intentionally not fetched.
-    # (hathach/tinyusb @ 4bfab30c02279a0530e1a56f4a7c539f2d35a293)
+    # subprojects/tinyusb.wrap (tag 0.20.0): subproject('tinyusb') is
+    # unconditional; only the CS7000P (STM32H7) firmware links it. The tag is
+    # pinned to its commit here so the cache entry cannot drift; 0.20.0 has no
+    # .gitmodules, so nothing is missing without clone-recursive.
+    tinyusb = fetchFromGitHub {
+      owner = "hathach";
+      repo = "tinyusb";
+      rev = "3af1bec1a9161ee8dec29487831f7ac7ade9e189"; # 0.20.0
+      hash = "sha256-ullUCVAd2XmEP35cFITyE7NHaV2J8jaXkqY0hUlEOSU=";
+    };
   };
 
   # Directory-form package cache: <cache>/<wrap directory name>/...
