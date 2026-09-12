@@ -26,7 +26,7 @@ enum AdcChannels {
     ADC_RTX_CH = 15,  /* PA3  */
     ADC_RSSI_CH = 9,  /* PB0  */
     ADC_MIC_CH = 7,   /* PA7  */
-    ADC_CTCSS_CH = 2, /* PA2  */
+    ADC_CTCSS_CH = 14, /* PA2, ADC12_INP14: not an ADC3 input */
     ADC_VOX_CH = 4,   /* PC4  */
 };
 

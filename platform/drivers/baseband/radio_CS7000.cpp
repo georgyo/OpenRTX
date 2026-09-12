@@ -22,6 +22,31 @@
 
 #ifdef PLATFORM_CS7000P
 #define DAC     DAC1
+
+/*
+ * On the STM32H743 the CTCSS input (PA2) is ADC12_INP14 and the only ADC3
+ * inputs bonded on the LQFP100 package are PC0-PC3, so the CTCSS stream runs
+ * on ADC2. ADC2 is initialised by audio_init() and used by the audio driver
+ * only for the microphone (TX) and the M17 baseband (RX), never together with
+ * the FM tone squelch.
+ */
+#define CTCSS_ADC   STM32_ADC_ADC2
+
+// ADC1/ADC2 inputs bonded on the STM32H743 LQFP100 package (DS12110 pin table)
+static constexpr uint32_t ADC12_INPUTS = (1 << 3)  | (1 << 4)  | (1 << 5)
+                                       | (1 << 7)  | (1 << 8)  | (1 << 9)
+                                       | (1 << 10) | (1 << 11) | (1 << 14)
+                                       | (1 << 15) | (1 << 18) | (1 << 19);
+
+static_assert(((1 << ADC_CTCSS_CH) & ADC12_INPUTS) != 0, "CTCSS input");
+static_assert(((1 << ADC_RTX_CH)   & ADC12_INPUTS) != 0, "RTX input");
+static_assert(((1 << ADC_MIC_CH)   & ADC12_INPUTS) != 0, "MIC input");
+static_assert(((1 << ADC_VOL_CH)   & ADC12_INPUTS) != 0, "VOL input");
+static_assert(((1 << ADC_VBAT_CH)  & ADC12_INPUTS) != 0, "VBAT input");
+static_assert(((1 << ADC_RSSI_CH)  & ADC12_INPUTS) != 0, "RSSI input");
+static_assert(((1 << ADC_VOX_CH)   & ADC12_INPUTS) != 0, "VOX input");
+#else
+#define CTCSS_ADC   STM32_ADC_ADC3
 #endif
 
 static constexpr uint32_t CTCSS_SAMPLE_RATE = 2000;
@@ -154,14 +179,17 @@ void radio_init(const rtxStatus_t *rtxState)
     gpio_setMode(AIN_CTCSS,ANALOG);
 
     /*
-     * Configure ADC3 stream, used for CTCSS detection
+     * Configure ADC stream, used for CTCSS detection. On the CS7000-PLUS the
+     * stream runs on ADC2, already initialised by the audio driver.
      */
     ctcssCtx.buffer = ctcssSamples;
     ctcssCtx.bufSize = ARRAY_SIZE(ctcssSamples);
     ctcssCtx.bufMode = BUF_CIRC_DOUBLE;
     ctcssCtx.sampleRate = CTCSS_SAMPLE_RATE;
     ctcssCtx.running = 0;
-    stm32adc_init(STM32_ADC_ADC3);
+#ifndef PLATFORM_CS7000P
+    stm32adc_init(CTCSS_ADC);
+#endif
 
     /*
      * Configure and enable DAC
@@ -292,7 +320,8 @@ void radio_enableRx()
 
     // Start sampling of CTCSS signal, if enabled
     if((config->opMode == OPMODE_FM) && (config->rxToneEn == true))
-        stm32_adc_audio_driver.start(STM32_ADC_ADC3, (void *) ADC_CTCSS_CH, &ctcssCtx);
+        stm32_adc_audio_driver.start(CTCSS_ADC, (void *) ADC_CTCSS_CH,
+                                     &ctcssCtx);
 
     radioStatus = RX;
 }
