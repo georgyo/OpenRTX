@@ -1305,6 +1305,16 @@ cx000_dac_test = executable('cx000_dac_test',
                             include_directories : ['tests/unit/fake'] + linux_inc,
                             dependencies        : [threads_dep, catch2_dep],
                             link_args           : linux_l_args)
+# Compiles the STM32H7 clock tree setup against fake registers, see
+# tests/unit/stubs/stm32h7xx/stm32h7xx.h
+stm32h7_clock_tree_test = executable('stm32h7_clock_tree_test',
+                                     sources : unit_test_src +
+                                               ['tests/unit/stm32h7_clock_tree.cpp',
+                                                'platform/mcu/STM32H7xx/drivers/rcc.cpp'],
+                                     kwargs  : unit_test_opts + {
+                                       'include_directories': linux_inc +
+                                         ['tests/unit/stubs/stm32h7xx',
+                                          'platform/mcu/STM32H7xx/drivers']})
 
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
@@ -1360,3 +1370,4 @@ if meson.get_compiler('cpp').get_id() == 'gcc'
     test('STM32 DMA Stream Test (' + mcu + ')', stm32_dma_stream_test)
   endforeach
 endif
+test('STM32H7 Clock Tree Test', stm32h7_clock_tree_test)
