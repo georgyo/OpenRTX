@@ -66,6 +66,7 @@ static uint8_t txpwr_hi  = 0;                  // APC voltage for TX output powe
 static struct rssiParams rssi;                 // RSSI curve parameters
 
 static enum opstatus radioStatus;               // Current operating status
+static bool detectorReady = false;             // AK2365A initialised and calibrated
 
 static int16_t __attribute__((section(".bss2"))) ctcssSamples[128];
 static streamCtx ctcssCtx;
@@ -249,6 +250,7 @@ void radio_terminate()
 
     SKY73210_terminate(&pll);
     AK2365A_terminate(&detector);
+    detectorReady = false;
 
     DAC->DHR12R1 = 0;
 #ifdef PLATFORM_CS7000P
@@ -329,9 +331,49 @@ void radio_enableRx()
     // Enable RX LNA and first IF stage
     gpioDev_set(RX_PWR_EN);
 
-    // Configure FM detector
-    AK2365A_init(&detector);
-    AK2365A_setFilterBandwidth(&detector, AK2365A_BPF_6);
+    /*
+     * Configure FM detector. Calibration data survives until the next reset or
+     * power down (DET_PDN low), so the detector is initialised and calibrated
+     * only once after power-up: re-running the calibration on every
+     * reconfiguration would leave the demodulator dead for some milliseconds.
+     * The PDN pin has just been raised: wait for the internal LDO to be
+     * stable (700us from datasheet) before pulsing the reset line.
+     */
+    if(detectorReady == false)
+    {
+        delayMs(1);
+        AK2365A_init(&detector);
+        detectorReady = true;
+    }
+
+    /*
+     * IF filter and demodulated signal level: for 25kHz FM channels use the
+     * +-7.5kHz filter (F0) and the wide output level (100mVrms at +-3kHz
+     * deviation), otherwise use the +-6kHz filter (F1) and the narrow one
+     * (100mVrms at +-1.5kHz deviation).
+     */
+    if((config->opMode == OPMODE_FM) && (config->bandwidth == BW_25))
+    {
+        AK2365A_setFilterBandwidth(&detector, AK2365A_BPF_7p5,
+                                   AK2365A_BAND_WIDE);
+    }
+    else
+    {
+        AK2365A_setFilterBandwidth(&detector, AK2365A_BPF_6,
+                                   AK2365A_BAND_NARROW);
+    }
+
+    /*
+     * HR_C6000 FM receive path: register 0x34 bit 2 selects the RX audio
+     * low-pass filter (0: 12.5kHz, 1: 25kHz channel spacing). Always
+     * rewrite the register: the base value is the one set by fmMode() and
+     * stopAnalogTx() leaves a different one behind after a transmission.
+     */
+    uint8_t fmCfg = 0xBC;
+    if((config->opMode == OPMODE_FM) && (config->bandwidth != BW_25))
+        fmCfg = 0xB8;
+
+    C6000.writeCfgRegister(0x34, fmCfg);
 
     // Start sampling of CTCSS signal, if enabled
     if((config->opMode == OPMODE_FM) && (config->rxToneEn == true))
