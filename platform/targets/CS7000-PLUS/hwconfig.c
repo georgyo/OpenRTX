@@ -100,6 +100,7 @@ const struct sky73210 pll =
 {
     .spi    = (const struct spiDevice *) &pll_spi,
     .cs     = { PLL_CS },
+    .ld     = { PLL_LD },
     .refClk = 16800000
 };
 
