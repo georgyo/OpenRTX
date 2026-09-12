@@ -9,10 +9,13 @@
 
 #include "stm32h7xx.h"
 
-/* Power control */
-#define BAT_DETECT    GPIOB,2
-#define MAIN_PWR_DET  GPIOA,6
-#define MAIN_PWR_SW   &extGpio,20
+/*
+ * Power control. MAIN_PWR_DET (schematic net POW_DET) senses the battery
+ * through D605 and the R626/R627 100k/47k divider.
+ */
+#define BAT_DETECT    GPIOB,2     // BAT_DET
+#define MAIN_PWR_DET  GPIOA,6     // POW_DET
+#define MAIN_PWR_SW   &extGpio,20 // POW_C
 
 /* Display */
 #define LCD_D0        GPIOD,0
@@ -53,28 +56,29 @@
 #define SIDE_KEY3     GPIOE,13
 #define ALARM_KEY     GPIOE,10
 
-/* Channel selection rotary encoder */
-#define CH_SELECTOR_0 GPIOE,14
-#define CH_SELECTOR_1 GPIOE,15
-#define CH_SELECTOR_2 GPIOB,10
-#define CH_SELECTOR_3 GPIOB,11
+/* Channel selection rotary encoder: 4-bit absolute code, 16 positions */
+#define CH_SELECTOR_0 GPIOE,14    // ECN0
+#define CH_SELECTOR_1 GPIOE,15    // ECN1
+#define CH_SELECTOR_2 GPIOB,10    // ECN2
+#define CH_SELECTOR_3 GPIOB,11    // ECN3
 
 /* LEDs */
 #define GREEN_LED     &extGpio,12
 #define RED_LED       &extGpio,13
 
-/* Analog inputs */
-#define AIN_VOLUME    GPIOC,5
+/*
+ * Analog inputs. The RX baseband (RX-AUDIO) comes from the AK2365A
+ * discriminator through the active filter, the TX baseband (TX-AUDIO) from
+ * the microphone preamplifier.
+ */
+#define AIN_VOLUME    GPIOC,5   // VOL_DET, volume potentiometer
 #define AIN_VOX       GPIOC,4   // Hardware VOX circuit
-#define AIN_MIC       GPIOA,7
+#define AIN_MIC       GPIOA,7   // TX-A
 #define AIN_RSSI      GPIOB,0
-#define AIN_NOISE     GPIOB,1
-#define AIN_RTX       GPIOA,3
+#define AIN_RTX       GPIOA,3   // RX-A
 #define AIN_CTCSS     GPIOA,2   // QT_DQT_IN
-#define AIN_TEMP      GPIOA,7   // Batt. temp.
 
 /* Tone generator */
-#define CTCSS_OUT     GPIOC,8   // CTCSS tone
 #define BEEP_OUT      GPIOA,5   // System "beep"
 
 /* External flash */
@@ -110,12 +114,13 @@
 #define DMR_SYS_INT   GPIOC,1
 #define DMR_TX_INT    GPIOC,2
 
-/* AK2365 */
+/* AK2365A */
 #define DET_PDN       &extGpio,6
 #define DET_CS        &extGpio,0
 #define DET_CLK       GPIOE,3
 #define DET_DAT       GPIOC,13
 #define DET_RST       &GpioC,14
+#define DET_BUSY      GPIOB,1
 
 /* RTX control */
 #define RF_APC_SW     &extGpio,3
@@ -136,8 +141,8 @@
 #define AF_MUTE       &extGpio,23
 #define PHONE_DETECT  GPIOA,13
 
-/* GPS */
-#define GPS_TXD       GPIOC,6
+/* GPS, USART6 RX only: the module's TX line is not wired to a USART TX pin */
+#define GPS_TXD       GPIOC,8
 #define GPS_RXD       GPIOC,7
 
 /* Accessory connector */
@@ -155,9 +160,9 @@
 #define BLTH_RXD      GPIOA,9
 #define BLTH_TXD      GPIOA,10
 
-/* ALPU-MP */
-#define ALPU_SDA      GPIOB,9
-#define ALPU_SCL      GPIOB,8
+/* I2C bus, KXTJ3-1057 accelerometer */
+#define I2C_SDA       GPIOB,9
+#define I2C_SCL       GPIOB,8
 
 /* Vibration motor */
 #define VIBR_MOTOR    &extGpio,2
