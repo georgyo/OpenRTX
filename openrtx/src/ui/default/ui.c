@@ -297,7 +297,8 @@ const uint8_t settings_m17_num = sizeof(settings_m17_items)/sizeof(settings_m17_
 const uint8_t settings_fm_num = sizeof(settings_fm_items) / sizeof(settings_fm_items[0]);
 const uint8_t settings_frs_num = sizeof(settings_frs_items) / sizeof(settings_frs_items[0]);
 #ifdef CONFIG_DMR
-const uint8_t settings_dmr_num = sizeof(settings_dmr_items) / sizeof(settings_dmr_items[0]);
+const uint8_t settings_dmr_num = sizeof(settings_dmr_items) /
+                                 sizeof(settings_dmr_items[0]);
 #endif
 const uint8_t settings_accessibility_num = sizeof(settings_accessibility_items)/sizeof(settings_accessibility_items[0]);
 const uint8_t backup_restore_num = sizeof(backup_restore_items)/sizeof(backup_restore_items[0]);
@@ -1126,12 +1127,16 @@ static void _ui_dmr_toggleTimeslot()
 
 static void _ui_dmr_changeCallType(int variation)
 {
-    state.settings.dmr_callType = (state.settings.dmr_callType + 3 + variation) % 3;
+    uint8_t callType = (state.settings.dmr_callType + 3 + variation) % 3;
+
+    state.settings.dmr_callType = callType;
 }
 
 static void _ui_dmr_changeMonitor(int variation)
 {
-    state.settings.dmr_monitor = (state.settings.dmr_monitor + 3 + variation) % 3;
+    uint8_t monitor = (state.settings.dmr_monitor + 3 + variation) % 3;
+
+    state.settings.dmr_monitor = monitor;
 }
 
 static void _ui_dmr_changeHangTime(int variation)
@@ -1252,7 +1257,8 @@ static void _ui_dmr_destinationInput(kbd_msg_t msg, bool *sync_rtx,
     bool accepted = false;
     if(_ui_dmr_numberInput(msg, &accepted))
     {
-        if(accepted && (ui_state.new_dmr_number != state.settings.dmr_talkgroup))
+        if(accepted &&
+           (ui_state.new_dmr_number != state.settings.dmr_talkgroup))
         {
             state.settings.dmr_talkgroup = ui_state.new_dmr_number;
             *sync_rtx = true;
@@ -3330,7 +3336,8 @@ void ui_updateFSM(bool *sync_rtx)
                         else
                         {
                             if(accepted)
-                                state.settings.dmr_talkgroup = ui_state.new_dmr_number;
+                                state.settings.dmr_talkgroup =
+                                    ui_state.new_dmr_number;
                             _ui_dmr_announceDestination(queueFlags);
                         }
                     }
@@ -3340,8 +3347,8 @@ void ui_updateFSM(bool *sync_rtx)
                         (msg.keys & KEY_DOWN || msg.keys & KNOB_LEFT ||
                          msg.keys & KEY_UP || msg.keys & KNOB_RIGHT)))
                 {
-                    int variation = (msg.keys & (KEY_LEFT | KEY_DOWN | KNOB_LEFT))
-                                  ? -1 : +1;
+                    uint32_t down = KEY_LEFT | KEY_DOWN | KNOB_LEFT;
+                    int variation = (msg.keys & down) ? -1 : +1;
                     switch(ui_state.menu_selected)
                     {
                         case DMR_CALLTYPE:
@@ -3350,9 +3357,9 @@ void ui_updateFSM(bool *sync_rtx)
                             break;
                         case DMR_COLORCODE:
                             _ui_dmr_changeColorCode(variation);
-                            vp_announceSettingsInt(&currentLanguage->colorCode,
-                                                   queueFlags,
-                                                   state.settings.dmr_colorCode);
+                            vp_announceSettingsInt(
+                                &currentLanguage->colorCode, queueFlags,
+                                state.settings.dmr_colorCode);
                             break;
                         case DMR_TIMESLOT:
                             _ui_dmr_toggleTimeslot();
@@ -3367,7 +3374,8 @@ void ui_updateFSM(bool *sync_rtx)
                                                    state.settings.dmr_monitor);
                             break;
                         case DMR_ACCESS:
-                            state.settings.dmr_polite = !state.settings.dmr_polite;
+                            state.settings.dmr_polite =
+                                !state.settings.dmr_polite;
                             vp_announceText(state.settings.dmr_polite
                                             ? currentLanguage->polite
                                             : currentLanguage->impolite,
