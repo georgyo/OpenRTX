@@ -196,18 +196,23 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
         _ui_dmrDestString(dst, sizeof(dst), last_state.settings.dmr_callType,
                           last_state.settings.dmr_talkgroup);
 
-    #if CONFIG_SCREEN_HEIGHT > 127
-    sniprintf(slot, sizeof(slot), "CC%d TS%d%s", ch->dmr.rxColorCode,
-              ch->dmr.dmr_timeslot,
-              (last_state.settings.dmr_monitor != 0) ? " MON" : "");
-    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_LEFT,
-              color_white, "%s%s", tx ? "TX -> " : "", dst);
-    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_RIGHT,
-              color_white, "%s", slot);
-    #else
+    // Compact channel string "C1T2 M", the destination shares the line
     sniprintf(slot, sizeof(slot), "C%dT%d%s", ch->dmr.rxColorCode,
               ch->dmr.dmr_timeslot,
               (last_state.settings.dmr_monitor != 0) ? " M" : "");
+
+    #if CONFIG_SCREEN_HEIGHT > 127
+    // Destination on the left, channel on the right in the small font: at
+    // 8 pt "PC 16777215" and "C15T2 M" do not fit side by side in the 152
+    // pixels of a 160 wide screen. While transmitting or typing the
+    // destination takes the whole line, see the width guard in
+    // tests/unit/ui_dmr.cpp.
+    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_LEFT,
+              color_white, "%s%s", tx ? "TX -> " : "", dst);
+    if((tx == false) && (ui_state->edit_mode == false))
+        gfx_print(layout.line2_pos, layout.message_font, TEXT_ALIGN_RIGHT,
+                  color_white, "%s", slot);
+    #else
     gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
               color_white, "%s%s %s", tx ? "TX->" : "", dst, slot);
     #endif
