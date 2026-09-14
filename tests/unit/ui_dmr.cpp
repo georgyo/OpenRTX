@@ -787,3 +787,47 @@ TEST_CASE("Reset to defaults restores the DMR settings", "[ui][dmr]")
     REQUIRE(state.settings.dmr_talkgroup == 9);
     REQUIRE(state.settings.dmr_monitor == 0);
 }
+
+TEST_CASE("The DMR top-bar marker follows the RTX marker flags", "[ui][dmr]")
+{
+    rtxStatus_t status;
+    memset(&status, 0, sizeof(status));
+    status.opMode = OPMODE_DMR;
+
+    /* No flag, no marker */
+    REQUIRE(_ui_dmrMarkerText(&status) == NULL);
+
+    /* One flag at a time */
+    status.dmr_markers = DMR_MARK_NO_ID;
+    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrNoId) == 0);
+    status.dmr_markers = DMR_MARK_BUSY;
+    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrBusy) == 0);
+    status.dmr_markers = DMR_MARK_WAKEUP_FAILED;
+    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrWakeupFailed)
+            == 0);
+    status.dmr_markers = DMR_MARK_NOT_SUPPORTED;
+    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrNotSupported)
+            == 0);
+
+    /* Precedence: not supported, then no ID, busy, wake-up failed */
+    status.dmr_markers = DMR_MARK_BUSY | DMR_MARK_WAKEUP_FAILED;
+    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrBusy) == 0);
+    status.dmr_markers |= DMR_MARK_NO_ID;
+    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrNoId) == 0);
+    status.dmr_markers |= DMR_MARK_NOT_SUPPORTED;
+    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrNotSupported)
+            == 0);
+
+    /* Only while the RTX stage is in DMR */
+    status.opMode = OPMODE_FM;
+    REQUIRE(_ui_dmrMarkerText(&status) == NULL);
+
+    /* Every language carries the four strings */
+    for (const stringsTable_t *lang = languages;
+         lang < languages + NUM_LANGUAGES; lang++) {
+        REQUIRE(lang->dmrNoId != NULL);
+        REQUIRE(lang->dmrBusy != NULL);
+        REQUIRE(lang->dmrWakeupFailed != NULL);
+        REQUIRE(lang->dmrNotSupported != NULL);
+    }
+}
