@@ -175,11 +175,11 @@ fresh radio. The unit tests `FRS Test` and `UI FRS Test`
 
 Every step starts from the FRS main screen unless stated otherwise; on the
 Linux build `Settings` is the fifth entry of the main menu and the settings
-menu is `Display, Time & Date, GPS, Radio, M17, FM, FRS, Accessibility,
+menu is `Display, Time & Date, GPS, Radio, M17, DMR, FM, FRS, Accessibility,
 Default Settings`, which is what the `DOWN` counts below encode.
 
 1. Enable the mode: `key ENTER DOWN DOWN DOWN DOWN ENTER`, then
-   `key DOWN DOWN DOWN DOWN DOWN DOWN ENTER` opens `Settings > FRS` with
+   `key DOWN DOWN DOWN DOWN DOWN DOWN DOWN ENTER` opens `Settings > FRS` with
    `FRS Mode OFF`; `key ENTER UP ENTER` turns it on; `key ESC ESC ESC` lands
    on `FRS 1`, `Code OFF`, `NFM 462.56250 Hi`.
 2. Channel entry: `key 1` shows `FRS 1_` with the `Channel 1-22` hint, `key 2`
@@ -195,7 +195,7 @@ Default Settings`, which is what the `DOWN` counts below encode.
    in the top bar for one second (at the left on the main screens, at the
    right on the menu screens).
 5. FM settings: `key ENTER DOWN DOWN DOWN DOWN ENTER` then
-   `key DOWN DOWN DOWN DOWN DOWN ENTER` opens `Settings > FM`, whose CTCSS
+   `key DOWN DOWN DOWN DOWN DOWN DOWN ENTER` opens `Settings > FM`, whose CTCSS
    rows read `FRS`; `key ENTER` is refused with the `FRS!` marker.
    `key ESC ESC ESC` returns to the FRS screen.
 6. Radio settings: `key ENTER DOWN DOWN DOWN DOWN ENTER` then
@@ -206,7 +206,7 @@ Default Settings`, which is what the `DOWN` counts below encode.
    codeplug, so the refusal is only seen as the marker; the `UI FRS Test`
    case "FRS mode locks the channel" checks the channel is not replaced.
 8. Reset Codes: `key ENTER DOWN DOWN DOWN DOWN ENTER`, `key DOWN DOWN DOWN
-   DOWN DOWN DOWN ENTER`, `key DOWN ENTER` shows the `Enter` hint next to
+   DOWN DOWN DOWN DOWN ENTER`, `key DOWN ENTER` shows the `Enter` hint next to
    `Reset Codes`; `key ENTER` clears the codes and returns to the FRS screen
    with `Code OFF`.
 9. Persistence: `quit`, restart the emulator with the same state directory:
