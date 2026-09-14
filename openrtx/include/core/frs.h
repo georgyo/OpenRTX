@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "core/cps.h"
+#include "core/settings.h"
 #include "interfaces/platform.h"
 
 #ifdef __cplusplus
@@ -33,8 +34,11 @@ extern "C" {
  * support yet and are therefore not implemented.
  */
 
-/** Number of FRS channels, numbered 1..22 on the radio, stored 0-based. */
-#define FRS_CHANNEL_NUM 22
+/*
+ * FRS_CHANNEL_NUM, the number of FRS channels (numbered 1..22 on the radio,
+ * stored 0-based), is defined in core/settings.h: settings_t keeps one
+ * privacy code per channel.
+ */
 
 /** Number of CTCSS privacy codes, numbered 1..38 (0 = no code). */
 #define FRS_CODE_NUM 38

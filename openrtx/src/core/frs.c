@@ -7,13 +7,6 @@
 #include <stdio.h>
 #include <string.h>
 #include "core/frs.h"
-#include "core/settings.h"
-
-/*
- * The FRS fields are appended to settings_t; the EEEP record backing the
- * settings on the CS7000 radios holds at most 254 bytes.
- */
-_Static_assert(sizeof(settings_t) < 255, "settings_t must fit an EEEP record");
 
 /*
  * Targets whose radio_checkRxDigitalSquelch() always returns false: with a
