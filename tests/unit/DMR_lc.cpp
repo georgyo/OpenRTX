@@ -247,6 +247,7 @@ TEST_CASE("DMR Full LC matches() truth table", "[dmr][lc]")
     const uint32_t tg = 9;
 
     FullLC grpToTg, grpToOther, grpToOwnId, pvtToOwn, pvtToOther, allCall;
+    FullLC allCallPart, grpBelowAll;
 
     grpToTg.clear();
     grpToTg.flco = FLCO_GRP_V_CH_USR;
@@ -270,6 +271,13 @@ TEST_CASE("DMR Full LC matches() truth table", "[dmr][lc]")
     allCall = grpToTg;
     allCall.dst = ADDRESS_ALL;
 
+    /* Partitioned system all call (Annex A Table A.1: 0xFFFFF0..0xFFFFFF)
+     * and the last "Unaddressed Id" right below the range */
+    allCallPart = grpToTg;
+    allCallPart.dst = ADDRESS_ALL_MIN;
+    grpBelowAll = grpToTg;
+    grpBelowAll.dst = ADDRESS_ALL_MIN - 1;
+
     SECTION("monitor 0, GROUP")
     {
         REQUIRE(grpToTg.matches(ownId, tg, GROUP, 0));
@@ -278,6 +286,8 @@ TEST_CASE("DMR Full LC matches() truth table", "[dmr][lc]")
         REQUIRE(pvtToOwn.matches(ownId, tg, GROUP, 0));
         REQUIRE_FALSE(pvtToOther.matches(ownId, tg, GROUP, 0));
         REQUIRE(allCall.matches(ownId, tg, GROUP, 0));
+        REQUIRE(allCallPart.matches(ownId, tg, GROUP, 0));
+        REQUIRE_FALSE(grpBelowAll.matches(ownId, tg, GROUP, 0));
     }
 
     SECTION("monitor 0, PRIVATE: talkgroup holds the target ID")
@@ -287,6 +297,10 @@ TEST_CASE("DMR Full LC matches() truth table", "[dmr][lc]")
         REQUIRE(pvtToOwn.matches(ownId, 7654321, PRIVATE, 0));
         REQUIRE_FALSE(pvtToOther.matches(ownId, 7654321, PRIVATE, 0));
         REQUIRE(allCall.matches(ownId, 7654321, PRIVATE, 0));
+        REQUIRE(allCallPart.matches(ownId, 7654321, PRIVATE, 0));
+        REQUIRE_FALSE(grpBelowAll.matches(ownId, 7654321, PRIVATE, 0));
+        /* A group call to the selected talkgroup is not a private call */
+        REQUIRE_FALSE(grpToTg.matches(ownId, tg, PRIVATE, 0));
     }
 
     SECTION("monitor 0, ALL")
@@ -296,6 +310,22 @@ TEST_CASE("DMR Full LC matches() truth table", "[dmr][lc]")
         REQUIRE(pvtToOwn.matches(ownId, tg, ALL, 0));
         REQUIRE_FALSE(pvtToOther.matches(ownId, tg, ALL, 0));
         REQUIRE(allCall.matches(ownId, tg, ALL, 0));
+        REQUIRE(allCallPart.matches(ownId, tg, ALL, 0));
+        REQUIRE_FALSE(grpBelowAll.matches(ownId, tg, ALL, 0));
+    }
+
+    SECTION("isAllCall() covers the whole Annex A range, group calls only")
+    {
+        FullLC lc = grpToTg;
+        for (uint32_t dst = ADDRESS_ALL_MIN; dst <= ADDRESS_ALL; dst++) {
+            lc.dst = dst;
+            INFO("dst " << dst);
+            REQUIRE(lc.isAllCall());
+            lc.flco = FLCO_UU_V_CH_USR;
+            REQUIRE_FALSE(lc.isAllCall());
+            lc.flco = FLCO_GRP_V_CH_USR;
+        }
+        REQUIRE_FALSE(grpBelowAll.isAllCall());
     }
 
     SECTION("monitor 1 and 2 accept every voice call")

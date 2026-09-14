@@ -99,7 +99,7 @@ bool FullLC::isPrivate() const
 
 bool FullLC::isAllCall() const
 {
-    return isGroup() && ((dst & ADDRESS_MASK) == ADDRESS_ALL);
+    return isGroup() && ((dst & ADDRESS_MASK) >= ADDRESS_ALL_MIN);
 }
 
 bool FullLC::matches(uint32_t ownId, uint32_t talkgroup, uint8_t callType,

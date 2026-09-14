@@ -88,7 +88,8 @@ struct FullLC {
     bool isPrivate() const;
 
     /**
-     * @return true for a group voice call to an "All unit Id" address.
+     * @return true for a group voice call to one of the "All unit Idn"
+     * addresses 0xFFFFF0 to 0xFFFFFF of TS 102 361-1 Annex A Table A.1.
      */
     bool isAllCall() const;
 
@@ -133,7 +134,13 @@ struct FullLC {
  *   octet 0: LB = 1, PF = 0, CSBKO = 0x38 -> 0xB8
  *   octet 1: FID = 0
  *   octets 2-3: reserved, 0
- *   octets 4-6: BS address, 0 (any BS)
+ *   octets 4-6: BS address, left at 0 as a placeholder: the radio has no
+ *               repeater ID setting yet (a later stage fills it from the
+ *               codeplug or the settings). Table 7.5a defines no wildcard
+ *               and Annex A of TS 102 361-1 lists 0 as the Null address;
+ *               it works because BS address checking is optional for the
+ *               BS (TS 102 361-2 §5.1.1.1.1 validates colour code and
+ *               slot type only).
  *   octets 7-9: source address
  *
  * @param src: source address, 24 bits.

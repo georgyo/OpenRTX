@@ -136,11 +136,15 @@ enum ServiceOptions : uint8_t {
 };
 
 /*
- * Addressing, TS 102 361-1 Annex A: addresses are 24 bits wide, 0xFFFFFF is
- * the default "All unit Id" / "All talkgroup Id" addressing everybody.
+ * Addressing, TS 102 361-1 Annex A Table A.1: addresses are 24 bits wide,
+ * the sixteen addresses 0xFFFFF0 to 0xFFFFFF are the "All unit Idn" / "All
+ * talkgroup Idn" addressing everybody. 0xFFFFFF is the default used by
+ * non-partitioned systems and the one this radio transmits; a partitioned
+ * system may use any of the other fifteen, so all of them are heard.
  */
 static constexpr uint32_t ADDRESS_MASK = 0xFFFFFF;
 static constexpr uint32_t ADDRESS_ALL = 0xFFFFFF;
+static constexpr uint32_t ADDRESS_ALL_MIN = 0xFFFFF0;
 
 /*
  * Data Type CRC masks, TS 102 361-1 Annex B.3.12 Table B.21. The mask is
