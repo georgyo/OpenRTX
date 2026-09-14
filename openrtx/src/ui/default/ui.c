@@ -1126,7 +1126,8 @@ static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
     enum vpQueueFlags queueFlags = vp_getVoiceLevelQueueFlags();
 
     // FRS mode: keys 2 and 3 step the privacy code of the current channel
-    // in place of the raw CTCSS tone.
+    // in place of the raw CTCSS tone; tone mode (1), bandwidth (4), opmode
+    // (5) and power (6) are fixed by the FRS channel plan.
     if(state.settings.frs_mode != 0)
     {
         uint8_t code = state.settings.frs_codes[state.settings.frs_channel];
@@ -1139,6 +1140,13 @@ static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
                 break;
             case 3:
                 _ui_frs_setCode((code >= FRS_CODE_NUM) ? 0 : code + 1, sync_rtx);
+                ui_state.input_number = 0;
+                break;
+            case 1:
+            case 4:
+            case 5:
+            case 6:
+                _ui_frs_refuse();
                 ui_state.input_number = 0;
                 break;
         }
@@ -2217,7 +2225,13 @@ void ui_updateFSM(bool *sync_rtx)
                 }
                 else if(msg.keys & KEY_ENTER)
                 {
-                    if(state.ui_screen == MENU_BANK)
+                    // Codeplug channels cannot be loaded while FRS mode is on
+                    if(state.settings.frs_mode != 0)
+                    {
+                        if(state.ui_screen != MENU_CONTACTS)
+                            _ui_frs_refuse();
+                    }
+                    else if(state.ui_screen == MENU_BANK)
                     {
                         bankHdr_t newbank;
                         int result = 0;
@@ -2241,7 +2255,7 @@ void ui_updateFSM(bool *sync_rtx)
                             state.ui_screen = MAIN_MEM;
                         }
                     }
-                    if(state.ui_screen == MENU_CHANNEL)
+                    else if(state.ui_screen == MENU_CHANNEL)
                     {
                         // If we were in VFO mode, save VFO channel
                         if(ui_state.last_main_state == MAIN_VFO)
@@ -2629,6 +2643,11 @@ void ui_updateFSM(bool *sync_rtx)
                     _ui_menuUp(settings_radio_num);
                 else if(msg.keys & KEY_DOWN || msg.keys & KNOB_RIGHT)
                     _ui_menuDown(settings_radio_num);
+                else if((msg.keys & KEY_ENTER) && (state.settings.frs_mode != 0))
+                {
+                    // Offset, direction and step are fixed by the FRS plan
+                    _ui_frs_refuse();
+                }
                 else if(msg.keys & KEY_ENTER) {
                     ui_state.edit_mode = true;
                     // If we are entering R_OFFSET clear temp offset
@@ -2835,7 +2854,13 @@ void ui_updateFSM(bool *sync_rtx)
                 else if (msg.keys & KEY_DOWN || msg.keys & KNOB_RIGHT)
                     _ui_menuDown(settings_fm_num);
                 else if (msg.keys & KEY_ENTER)
-                    ui_state.edit_mode = !ui_state.edit_mode;
+                {
+                    // The tone is set by the FRS privacy code
+                    if (state.settings.frs_mode != 0)
+                        _ui_frs_refuse();
+                    else
+                        ui_state.edit_mode = !ui_state.edit_mode;
+                }
                 else if (msg.keys & KEY_ESC)
                     _ui_menuBack(MENU_SETTINGS);
                 else if (msg.keys & KEY_ENTER)
