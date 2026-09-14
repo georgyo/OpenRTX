@@ -1356,6 +1356,10 @@ ak2365a_test = executable('ak2365a_test',
                                      'platform/drivers/baseband/AK2365A.c'],
                           kwargs  : unit_test_opts)
 
+dmr_fec_test = executable('dmr_fec_test',
+                          sources : unit_test_src + ['tests/unit/DMR_fec.cpp'],
+                          kwargs  : unit_test_opts)
+
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
 test('M17 Demodulator Test',  m17_demodulator_test)
@@ -1415,3 +1419,4 @@ endif
 test('STM32H7 Clock Tree Test', stm32h7_clock_tree_test)
 test('SKY72310 Lock Detect Test', sky72310_lock_test)
 test('AK2365A Driver Test',   ak2365a_test)
+test('DMR FEC Unit Test',     dmr_fec_test)
