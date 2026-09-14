@@ -490,6 +490,44 @@ TEST_CASE("FRS mode locks the channel", "[ui][frs]")
     }
 }
 
+TEST_CASE("A refused key raises the FRS marker", "[ui][frs]")
+{
+    boot_frs();
+    REQUIRE(frs_refuse_tick == 0);
+
+    /* Settings > FM: the CTCSS tone row is locked by FRS mode */
+    press(KEY_ENTER);
+    pressN(KEY_DOWN, M_SETTINGS);
+    press(KEY_ENTER);
+    pressN(KEY_DOWN, S_FM);
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == SETTINGS_FM);
+    REQUIRE(_ui_frsRefuseMarkerVisible(getTick()) == false);
+
+    long long before = getTick();
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == SETTINGS_FM);
+    REQUIRE(frs_refuse_tick >= before);
+    REQUIRE(_ui_frsRefuseMarkerVisible(getTick()) == true);
+
+    /* Browsing the list is allowed and does not touch the marker */
+    long long refused = frs_refuse_tick;
+    press(KEY_DOWN);
+    REQUIRE(frs_refuse_tick == refused);
+
+    /* The marker expires on its own */
+    sleepFor(0, FRS_REFUSE_MARKER_TIME + 100);
+    REQUIRE(_ui_frsRefuseMarkerVisible(getTick()) == false);
+
+    /* Macro keys refused on the FRS screen raise it too */
+    pressN(KEY_ESC, 3);
+    REQUIRE(state.ui_screen == MAIN_FRS);
+    before = getTick();
+    press(KEY_MONI | KEY_5);
+    REQUIRE(frs_refuse_tick >= before);
+    REQUIRE(_ui_frsRefuseMarkerVisible(getTick()) == true);
+}
+
 TEST_CASE("FRS mode is disabled from the settings menu", "[ui][frs]")
 {
     boot_frs();

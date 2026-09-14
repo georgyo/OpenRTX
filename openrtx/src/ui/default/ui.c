@@ -291,6 +291,7 @@ const color_t yellow_fab413 = {250, 180, 19, 255};
 layout_t layout;
 state_t last_state;
 bool macro_latched;
+long long frs_refuse_tick = 0;
 static ui_state_t ui_state;
 static bool macro_menu = false;
 static bool layout_ready = false;
@@ -857,10 +858,14 @@ static void _ui_frs_apply(bool *sync_rtx)
 
 /*
  * Feedback for a key that is disabled while FRS mode is active: "FRS, error"
- * with voice prompts on, a short low beep otherwise.
+ * with voice prompts on, a short low beep otherwise. The beep is silent at
+ * the default voice prompt level (vpNone), so the refusal is also shown as a
+ * "FRS!" marker in the top bar for FRS_REFUSE_MARKER_TIME, see ui_updateGUI().
  */
 static void _ui_frs_refuse()
 {
+    frs_refuse_tick = getTick();
+
     if (state.settings.vpLevel > vpBeep)
     {
         vp_announceText(currentLanguage->frs, vpqInit);
@@ -1509,6 +1514,7 @@ void ui_init()
     // This syntax is called compound literal
     // https://stackoverflow.com/questions/6891720/initialize-reset-struct-to-zero-null
     ui_state = (const struct ui_state_t){ 0 };
+    frs_refuse_tick = 0;
 
     // Resume FRS mode: the channel loaded from NVM is the user's VFO, park it
     // and materialise the FRS channel. The UI thread starts with an RTX
@@ -3182,6 +3188,33 @@ bool ui_updateGUI()
     {
         _ui_drawDarkOverlay();
         _ui_drawMacroMenu(&ui_state);
+    }
+
+    // A key refused by FRS mode is flagged in the top bar of whatever screen
+    // is shown, so the refusal is visible even with voice prompts and beeps
+    // off. Drawn last to stay on top of the macro menu overlay; it goes away
+    // with the periodic status event redraws. The main screens keep the clock
+    // in the centre and the battery at the right, so there the marker goes at
+    // the left; the menu screens centre a title that can reach the left edge
+    // of the 160-pixel displays, so there it goes at the right. A backing box
+    // keeps it legible over whatever is beneath.
+    if(_ui_frsRefuseMarkerVisible(getTick()))
+    {
+        bool mainScreen = (last_state.ui_screen == MAIN_VFO)
+                       || (last_state.ui_screen == MAIN_VFO_INPUT)
+                       || (last_state.ui_screen == MAIN_MEM)
+                       || (last_state.ui_screen == MAIN_FRS)
+                       || (last_state.ui_screen == MAIN_FRS_INPUT);
+        char marker[8];
+        sniprintf(marker, sizeof(marker), "%s!", currentLanguage->frs);
+
+        uint16_t width = gfx_getTextWidth(layout.top_font, marker)
+                       + layout.top_pos.x + 1;
+        point_t  box   = {mainScreen ? 0 : CONFIG_SCREEN_WIDTH - width, 0};
+        gfx_drawRect(box, width, layout.top_h, color_black, true);
+        gfx_print(layout.top_pos, layout.top_font,
+                  mainScreen ? TEXT_ALIGN_LEFT : TEXT_ALIGN_RIGHT,
+                  yellow_fab413, "%s", marker);
     }
 
     redraw_needed = false;
