@@ -95,5 +95,12 @@ const stringsTable_t spanishStrings =
     .CAN               = "CAN",
     .canRxCheck        = "CAN RX Check",
     .metaText          = "Meta Txt",
+    .frs               = "FRS",
+    .frsSettings       = "Ajustes de FRS",
+    .frsMode           = "Modo FRS",
+    .code              = "Código",
+    .resetCodes        = "Borrar códigos",
+    .enter             = "Enter",
+    .channelRange      = "Canal 1-22",
 };
 #endif  // SPANISHSTRINGS_H

@@ -32,6 +32,15 @@ For information on the radios that currently support M17, see the [Development S
 
 To make the digital mode work, some modding is required: Refer to the [dedicated page](https://openrtx.org/#/M17/m17?id=hardware-modifications) on our website for the details on that.
 
+## FRS mode
+
+`Settings > FRS` switches the radio to the 22-channel Family Radio Service
+channel plan with Motorola-style privacy codes (CTCSS, codes 1-38). See
+[docs/frs_mode.md](docs/frs_mode.md) for the channel and code tables, the key
+bindings, the hardware limitations and, above all, the regulatory caveat: no
+supported radio is FRS-certified, and the operator is responsible for being
+authorised to transmit there.
+
 ## Disclaimer
 
 This project was created for research and amateur radio use only, we are not

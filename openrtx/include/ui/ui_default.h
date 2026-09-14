@@ -52,6 +52,10 @@ enum uiScreen
     SETTINGS_FM,
     SETTINGS_ACCESSIBILITY,
     SETTINGS_RESET2DEFAULTS,
+    MAIN_FRS,
+    MAIN_FRS_INPUT,
+    FRS_CODE,
+    SETTINGS_FRS,
     LOW_BAT
 };
 
@@ -90,6 +94,7 @@ enum settingsItems
     S_M17,
 #endif
     S_FM,
+    S_FRS,
     S_ACCESSIBILITY,
     S_RESET2DEFAULTS,
 };
@@ -150,6 +155,18 @@ enum settingsFMItems
     CTCSS_Tone,
     CTCSS_Enabled
 };
+
+enum settingsFRSItems
+{
+    FRS_MODE = 0,
+    FRS_RESET_CODES
+};
+
+// FRS channel number entry: auto-accept timeout after the first digit, in ms
+#define FRS_INPUT_TIMEOUT 2000
+
+// How long the "FRS!" marker stays in the top bar after a refused key, in ms
+#define FRS_REFUSE_MARKER_TIME 1000
 
 /**
  * Struct containing a set of positions and sizes that get
@@ -240,6 +257,20 @@ ui_state_t;
 extern layout_t layout;
 extern state_t last_state;
 extern bool    macro_latched;
+// Tick of the last key refused by FRS mode, zero when none
+extern long long frs_refuse_tick;
+
+/**
+ * Check whether the marker for a key refused by FRS mode is to be shown.
+ *
+ * @param now: current tick.
+ * @return true while the last refusal is younger than FRS_REFUSE_MARKER_TIME.
+ */
+static inline bool _ui_frsRefuseMarkerVisible(long long now)
+{
+    return (frs_refuse_tick != 0) &&
+           ((now - frs_refuse_tick) < FRS_REFUSE_MARKER_TIME);
+}
 extern const char *menu_items[];
 extern const char *settings_items[];
 extern const char *display_items[];
@@ -247,6 +278,7 @@ extern const char *settings_gps_items[];
 extern const char *settings_radio_items[];
 extern const char *settings_m17_items[];
 extern const char *settings_fm_items[];
+extern const char *settings_frs_items[];
 extern const char * settings_accessibility_items[];
 extern const char *backup_restore_items[];
 extern const char *info_items[];
@@ -258,6 +290,7 @@ extern const uint8_t settings_gps_num;
 extern const uint8_t settings_radio_num;
 extern const uint8_t settings_m17_num;
 extern const uint8_t settings_fm_num;
+extern const uint8_t settings_frs_num;
 extern const uint8_t settings_accessibility_num;
 extern const uint8_t backup_restore_num;
 extern const uint8_t info_num;

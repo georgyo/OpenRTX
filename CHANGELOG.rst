@@ -7,6 +7,13 @@
 CHANGELOG
 =========
 
+Unreleased
+==========
+Added
+-----
+- ui: FRS mode (Settings > FRS): 22-channel Family Radio Service channel plan
+  with per-channel Motorola-style CTCSS privacy codes 1-38, see docs/frs_mode.md
+
 v0.4.4 - 2026-05-01
 ===================
 Added
