@@ -1258,6 +1258,14 @@ ui_frs_test = executable('ui_frs_test',
                          sources : unit_test_src + ['tests/unit/ui_frs.cpp'],
                          kwargs  : unit_test_opts)
 
+dmr_lc_test = executable('dmr_lc_test',
+                         sources : unit_test_src + ['tests/unit/DMR_lc.cpp'],
+                         kwargs  : unit_test_opts)
+
+dmr_cps_test = executable('dmr_cps_test',
+                          sources : unit_test_src + ['tests/unit/DMR_cps.cpp'],
+                          kwargs  : unit_test_opts)
+
 m17_packet_test = executable('m17_packet_test',
                               sources : unit_test_src + ['tests/unit/M17_packet.cpp'],
                               kwargs  : unit_test_opts)
@@ -1373,6 +1381,8 @@ test('minmea conversion Test', minmea_conversion_test)
 test('UI Check Standby Test', ui_check_standby_test)
 test('FRS Test',              frs_test)
 test('UI FRS Test',           ui_frs_test)
+test('DMR Link Control Test', dmr_lc_test)
+test('DMR Codeplug Test',     dmr_cps_test)
 test('M17 Packet Frame Test', m17_packet_test)
 test('DSP Oversampling Test', dsp_oversampling_test)
 test('GFX Text Test',        gfx_text_test)
