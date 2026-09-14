@@ -13,6 +13,10 @@ Added
 -----
 - ui: FRS mode (Settings > FRS): 22-channel Family Radio Service channel plan
   with per-channel Motorola-style CTCSS privacy codes 1-38, see docs/frs_mode.md
+- ui: DMR mode selection (macro key 5), main screen talkgroup/colour code/slot
+  lines and Settings > DMR (ID, talkgroup, call type, colour code, timeslot,
+  monitor, access, hang time) on CS7000, CS7000 Plus and the emulator; first
+  stage of the DMR series, no RF yet, see docs/dmr_mode.md
 
 v0.4.4 - 2026-05-01
 ===================

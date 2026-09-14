@@ -61,8 +61,21 @@ typedef struct
     uint8_t frs_mode;             // FRS mode: 0 = off, 1 = FRS
     uint8_t frs_channel;          // Current FRS channel, 0-based (0..21)
     uint8_t frs_codes[FRS_CHANNEL_NUM]; // Privacy code per FRS channel, 0 = off
+    uint32_t dmr_id;              // Own DMR ID, 24 bit, 0 = unset
+    uint32_t dmr_talkgroup;       // DMR destination: talkgroup or private ID
+    uint8_t  dmr_callType;        // DMR call type: 0 group, 1 private, 2 all
+    uint8_t  dmr_colorCode  : 4,  // DMR colour code for a fresh VFO, 0-15
+             dmr_timeslot   : 2,  // DMR timeslot for a fresh VFO, 1 or 2
+             dmr_monitor    : 2;  // DMR monitor: 0 off, 1 own CC, 2 any CC/TS
+    uint8_t  dmr_polite     : 1,  // DMR channel access: 1 polite, 0 impolite
+             dmr_hangTime   : 3,  // DMR call hang time, in seconds (0-7)
+             dmr_testTone   : 1,  // Null vocoder RX test tone, debug only
+             _dmr_reserved  : 3;
 }
 __attribute__((packed)) settings_t;
+
+// Highest DMR ID and talkgroup number: 24 bit, ETSI TS 102 361-1 section 7.2
+#define DMR_ID_MAX 16777215u
 
 
 static const settings_t default_settings =
@@ -92,6 +105,16 @@ static const settings_t default_settings =
     0,                            // FRS mode off
     0,                            // FRS channel 1
     { 0 },                        // FRS privacy codes all off
+    0,                            // DMR ID unset
+    9,                            // DMR talkgroup 9, "local"
+    0,                            // DMR group call
+    1,                            // DMR colour code 1
+    1,                            // DMR timeslot 1
+    0,                            // DMR monitor off
+    1,                            // DMR polite channel access
+    3,                            // DMR hang time 3 s, T_CallHt
+    0,                            // DMR test tone off
+    0,                            // not used
 };
 
 #endif /* SETTINGS_H */

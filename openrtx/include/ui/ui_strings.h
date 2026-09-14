@@ -107,6 +107,19 @@ typedef struct
     const char* resetCodes;
     const char* enter;
     const char* channelRange;
+    const char* dmrSettings;
+    const char* dmrId;
+    const char* talkgroup;
+    const char* callType;
+    const char* colorCode;
+    const char* timeslot;
+    const char* monitor;
+    const char* access;
+    const char* hangTime;
+    const char* group;
+    const char* privateCall;
+    const char* polite;
+    const char* impolite;
 }
 stringsTable_t;
 

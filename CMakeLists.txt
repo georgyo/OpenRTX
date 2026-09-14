@@ -115,6 +115,16 @@ target_sources(app
     openrtx/src/protocols/M17/FrameEncoder.cpp
     openrtx/src/protocols/M17/FrameDecoder.cpp
     openrtx/src/protocols/M17/LinkSetupFrame.cpp
+    openrtx/src/protocols/DMR/FEC/Golay20_8.cpp
+    openrtx/src/protocols/DMR/FEC/QR16_7_6.cpp
+    openrtx/src/protocols/DMR/FEC/Hamming.cpp
+    openrtx/src/protocols/DMR/FEC/Bptc196_96.cpp
+    openrtx/src/protocols/DMR/FEC/Rs12_9.cpp
+    openrtx/src/protocols/DMR/FEC/Crc.cpp
+    openrtx/src/protocols/DMR/FEC/EmbeddedLc.cpp
+    openrtx/src/protocols/DMR/FEC/SlotType.cpp
+    openrtx/src/protocols/DMR/FEC/Emb.cpp
+    openrtx/src/protocols/DMR/LinkControl.cpp
 
     openrtx/src/ui/default/ui.c
     openrtx/src/ui/default/ui_main.c

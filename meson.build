@@ -68,7 +68,17 @@ openrtx_src = ['openrtx/src/core/state.c',
                'openrtx/src/protocols/M17/Demodulator.cpp',
                'openrtx/src/protocols/M17/FrameEncoder.cpp',
                'openrtx/src/protocols/M17/FrameDecoder.cpp',
-               'openrtx/src/protocols/M17/LinkSetupFrame.cpp']
+               'openrtx/src/protocols/M17/LinkSetupFrame.cpp',
+               'openrtx/src/protocols/DMR/FEC/Golay20_8.cpp',
+               'openrtx/src/protocols/DMR/FEC/QR16_7_6.cpp',
+               'openrtx/src/protocols/DMR/FEC/Hamming.cpp',
+               'openrtx/src/protocols/DMR/FEC/Bptc196_96.cpp',
+               'openrtx/src/protocols/DMR/FEC/Rs12_9.cpp',
+               'openrtx/src/protocols/DMR/FEC/Crc.cpp',
+               'openrtx/src/protocols/DMR/FEC/EmbeddedLc.cpp',
+               'openrtx/src/protocols/DMR/FEC/SlotType.cpp',
+               'openrtx/src/protocols/DMR/FEC/Emb.cpp',
+               'openrtx/src/protocols/DMR/LinkControl.cpp']
 
 openrtx_inc = ['openrtx/include', 'platform']
 
@@ -1248,6 +1258,18 @@ ui_frs_test = executable('ui_frs_test',
                          sources : unit_test_src + ['tests/unit/ui_frs.cpp'],
                          kwargs  : unit_test_opts)
 
+dmr_lc_test = executable('dmr_lc_test',
+                         sources : unit_test_src + ['tests/unit/DMR_lc.cpp'],
+                         kwargs  : unit_test_opts)
+
+dmr_cps_test = executable('dmr_cps_test',
+                          sources : unit_test_src + ['tests/unit/DMR_cps.cpp'],
+                          kwargs  : unit_test_opts)
+
+ui_dmr_test = executable('ui_dmr_test',
+                         sources : unit_test_src + ['tests/unit/ui_dmr.cpp'],
+                         kwargs  : unit_test_opts)
+
 m17_packet_test = executable('m17_packet_test',
                               sources : unit_test_src + ['tests/unit/M17_packet.cpp'],
                               kwargs  : unit_test_opts)
@@ -1347,6 +1369,10 @@ ak2365a_test = executable('ak2365a_test',
                                      'platform/drivers/baseband/AK2365A.c'],
                           kwargs  : unit_test_opts)
 
+dmr_fec_test = executable('dmr_fec_test',
+                          sources : unit_test_src + ['tests/unit/DMR_fec.cpp'],
+                          kwargs  : unit_test_opts)
+
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
 test('M17 Demodulator Test',  m17_demodulator_test)
@@ -1359,6 +1385,9 @@ test('minmea conversion Test', minmea_conversion_test)
 test('UI Check Standby Test', ui_check_standby_test)
 test('FRS Test',              frs_test)
 test('UI FRS Test',           ui_frs_test)
+test('DMR Link Control Test', dmr_lc_test)
+test('DMR Codeplug Test',     dmr_cps_test)
+test('UI DMR Test',           ui_dmr_test)
 test('M17 Packet Frame Test', m17_packet_test)
 test('DSP Oversampling Test', dsp_oversampling_test)
 test('GFX Text Test',        gfx_text_test)
@@ -1406,3 +1435,4 @@ endif
 test('STM32H7 Clock Tree Test', stm32h7_clock_tree_test)
 test('SKY72310 Lock Detect Test', sky72310_lock_test)
 test('AK2365A Driver Test',   ak2365a_test)
+test('DMR FEC Unit Test',     dmr_fec_test)

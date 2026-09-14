@@ -102,5 +102,18 @@ const stringsTable_t englishStrings =
     .resetCodes        = "Reset Codes",
     .enter             = "Enter",
     .channelRange      = "Channel 1-22",
+    .dmrSettings       = "DMR Settings",
+    .dmrId             = "DMR ID",
+    .talkgroup         = "Talkgroup",
+    .callType          = "Call type",
+    .colorCode         = "Color code",
+    .timeslot          = "Timeslot",
+    .monitor           = "Monitor",
+    .access            = "Access",
+    .hangTime          = "Hang time",
+    .group             = "Group",
+    .privateCall       = "Private",
+    .polite            = "Polite",
+    .impolite          = "Impolite",
 };
 #endif  // ENGLISHSTRINGS_H

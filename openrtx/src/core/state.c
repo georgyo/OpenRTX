@@ -83,6 +83,28 @@ void state_init()
             state.settings.frs_codes[i] = 0;
         }
     }
+
+    // Force DMR fields to be in range, settings may come from older firmware
+    if (state.settings.dmr_id > DMR_ID_MAX) {
+        state.settings.dmr_id = default_settings.dmr_id;
+    }
+
+    if (state.settings.dmr_talkgroup > DMR_ID_MAX) {
+        state.settings.dmr_talkgroup = default_settings.dmr_talkgroup;
+    }
+
+    if (state.settings.dmr_callType > 2) {
+        state.settings.dmr_callType = default_settings.dmr_callType;
+    }
+
+    if ((state.settings.dmr_timeslot < 1)
+        || (state.settings.dmr_timeslot > 2)) {
+        state.settings.dmr_timeslot = default_settings.dmr_timeslot;
+    }
+
+    if (state.settings.dmr_monitor > 2) {
+        state.settings.dmr_monitor = default_settings.dmr_monitor;
+    }
 }
 
 void state_terminate()

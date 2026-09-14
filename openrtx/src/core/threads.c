@@ -94,6 +94,20 @@ void *ui_threadFunc(void *arg)
             strncpy(rtx_cfg.source_address,      state.settings.callsign, 10);
             strncpy(rtx_cfg.destination_address, state.settings.m17_dest, 10);
 
+            #ifdef CONFIG_DMR
+            // Copy DMR identity, destination and channel access parameters.
+            // channel.dmr shares its storage with the FM and M17 channel
+            // data: its content is meaningful only while the mode is DMR.
+            rtx_cfg.dmr_srcId       = state.settings.dmr_id;
+            rtx_cfg.dmr_dstId       = state.settings.dmr_talkgroup;
+            rtx_cfg.dmr_callType    = state.settings.dmr_callType;
+            rtx_cfg.dmr_rxColorCode = state.channel.dmr.rxColorCode;
+            rtx_cfg.dmr_txColorCode = state.channel.dmr.txColorCode;
+            rtx_cfg.dmr_timeslot    = state.channel.dmr.dmr_timeslot;
+            rtx_cfg.dmr_monitor     = state.settings.dmr_monitor;
+            rtx_cfg.dmr_polite      = state.settings.dmr_polite;
+            #endif
+
             pthread_mutex_unlock(&rtx_mutex);
 
             rtx_configure(&rtx_cfg);
