@@ -156,15 +156,56 @@ to exercise headless:
 
 ```
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./openrtx_linux
-> key ENTER DOWN DOWN DOWN DOWN ENTER
-> key DOWN DOWN DOWN DOWN DOWN DOWN ENTER
-> key ENTER UP ENTER ESC ESC ESC
-> key 1 2
-> key STAR 1 2 ENTER
-> screenshot frs.bmp
 ```
 
-Two shell details matter: a `key` command takes at most 12 keys, and macro
-menu combinations must be sent with `keycombo MONI 3` (`key MONI 3` presses
-the keys one after the other). The unit tests `FRS Test` and `UI FRS Test`
+Shell details that matter: a `key` command takes at most 12 keys (the
+sequences below stay within that), consecutive commands should be separated
+by a short `sleep` so that key presses are not merged, and macro menu
+combinations must be sent with `keycombo MONI 3` (`key MONI 3` presses the
+keys one after the other). The emulator keeps its settings in
+`$XDG_STATE_HOME/OpenRTX/state.bin`; start from an empty directory for a
+fresh radio. The unit tests `FRS Test` and `UI FRS Test`
 (`meson test -C build_linux`) cover the tables and the screen state machine.
+
+### Acceptance checklist
+
+Every step starts from the FRS main screen unless stated otherwise; on the
+Linux build `Settings` is the fifth entry of the main menu and the settings
+menu is `Display, Time & Date, GPS, Radio, M17, FM, FRS, Accessibility,
+Default Settings`, which is what the `DOWN` counts below encode.
+
+1. Enable the mode: `key ENTER DOWN DOWN DOWN DOWN ENTER`, then
+   `key DOWN DOWN DOWN DOWN DOWN DOWN ENTER` opens `Settings > FRS` with
+   `FRS Mode OFF`; `key ENTER UP ENTER` turns it on; `key ESC ESC ESC` lands
+   on `FRS 1`, `Code OFF`, `NFM 462.56250 Hi`.
+2. Channel entry: `key 1` shows `FRS 1_` with the `Channel 1-22` hint, `key 2`
+   completes it (`FRS 12`, `467.66250 Lo`). `key 2 5` selects channel 5 at
+   once, since 25 is not a channel.
+3. Privacy code: `key STAR` opens the picker on `OFF`, `key 1 2` moves the
+   highlight to 12, `key ENTER` applies it: line 1 reads `Code 12  100.0 Hz T`
+   (`T` because the emulator cannot decode a tone).
+4. Macro menu: a MONI long press (700 ms) latches the menu; `keycombo MONI 3`
+   steps the code to 13 and `keycombo MONI 2` back to 12. While latched the
+   overlay reads `Code 12`, `2 C-`, `3 C+` and `FRS` in place of the 1, 4, 5
+   and 6 entries. `keycombo MONI 5` (or 1, 4, 6) is refused: `FRS!` appears
+   in the top bar for one second (at the left on the main screens, at the
+   right on the menu screens).
+5. FM settings: `key ENTER DOWN DOWN DOWN DOWN ENTER` then
+   `key DOWN DOWN DOWN DOWN DOWN ENTER` opens `Settings > FM`, whose CTCSS
+   rows read `FRS`; `key ENTER` is refused with the `FRS!` marker.
+   `key ESC ESC ESC` returns to the FRS screen.
+6. Radio settings: `key ENTER DOWN DOWN DOWN DOWN ENTER` then
+   `key DOWN DOWN DOWN ENTER` opens `Settings > Radio`, whose offset,
+   direction and step read `FRS`; `key ENTER` is refused.
+7. Codeplug lock: `key ENTER DOWN ENTER` opens the channel list and `key
+   ENTER` is refused. The list is empty on a fresh emulator, which has no
+   codeplug, so the refusal is only seen as the marker; the `UI FRS Test`
+   case "FRS mode locks the channel" checks the channel is not replaced.
+8. Reset Codes: `key ENTER DOWN DOWN DOWN DOWN ENTER`, `key DOWN DOWN DOWN
+   DOWN DOWN DOWN ENTER`, `key DOWN ENTER` shows the `Enter` hint next to
+   `Reset Codes`; `key ENTER` clears the codes and returns to the FRS screen
+   with `Code OFF`.
+9. Persistence: `quit`, restart the emulator with the same state directory:
+   it boots on the last FRS channel. `Settings > FRS > FRS Mode`,
+   `key ENTER DOWN ENTER ESC ESC ESC` turns the mode off and restores the
+   VFO frequency the radio had before step 1.
