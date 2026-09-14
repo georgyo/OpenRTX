@@ -27,7 +27,9 @@ emulator_state_t emulator_state = {
     4,       // volume level
     1,       // chSelector
     false,   // PTT status
-    false    // power off
+    false,   // power off
+    0,       // --dmr-call source ID
+    0        // --dmr-call destination
 };
 
 typedef int (*_climenu_fn)(void *self, int argc, char **argv);
@@ -316,6 +318,34 @@ static int shell_nop(void *_self, int _argc, char **_argv)
     return SH_CONTINUE;
 }
 
+/*
+ * "dmrcall src dst": replay a synthetic DMR group call on the fake modem,
+ * "dmrcall" alone stops it. Colour code and timeslot are the configured ones.
+ */
+static int dmrCall(void *_self, int _argc, char **_argv)
+{
+    (void)_self;
+
+    if ((_argc < 2) || (_argv[0] == NULL) || (_argv[1] == NULL)) {
+        dmrEmu_requestCall(0, 0);
+        printf("DMR call replay stopped\n");
+        return SH_CONTINUE;
+    }
+
+    uint32_t src = (uint32_t)strtoul(_argv[0], NULL, 10);
+    uint32_t dst = (uint32_t)strtoul(_argv[1], NULL, 10);
+    if (src == 0) {
+        printf("Provide the source ID and the talkgroup, e.g. "
+               "'dmrcall 2345678 31665'\n");
+        return SH_ERR;
+    }
+
+    dmrEmu_requestCall(src, dst);
+    printf("DMR call replay: %lu -> TG %lu\n", (unsigned long)src,
+           (unsigned long)dst);
+    return SH_CONTINUE;
+}
+
 // Forward declaration needed to include function pointer in the table below
 static int shell_help(void *_self, int _argc, char **_argv);
 
@@ -336,6 +366,8 @@ static _climenu_option _options[] = {
     {"screenshot", "[screenshot.bmp] Save screenshot to first arg or screenshot.bmp if none given",
                                 NULL,   screenshot
     },
+    {"dmrcall", "[src dst] Replay a DMR group call from src to talkgroup dst, no args to stop",
+                                NULL,   dmrCall },
     {"sleep",   "Wait some number of ms",           NULL,   shell_sleep },
     {"help",    "Print this help",                  NULL,   shell_help },
     {"nop",     "Do nothing (useful for comments)", NULL,   shell_nop},
@@ -490,9 +522,52 @@ void *startCLIMenu(void *arg)
     return NULL;
 }
 
+/*
+ * "src,dst" value of the --dmr-call option or of OPENRTX_DMR_CALL.
+ */
+static void parseDmrCall(const char *value)
+{
+    char *end = NULL;
+    unsigned long src = strtoul(value, &end, 10);
+
+    if ((end == value) || (*end != ',') || (src == 0)) {
+        printf("emulator: bad --dmr-call value '%s', expected src,dst\n",
+               value);
+        return;
+    }
+
+    unsigned long dst = strtoul(end + 1, NULL, 10);
+    emulator_state.dmrCallSrc = (uint32_t)src;
+    emulator_state.dmrCallDst = (uint32_t)dst;
+}
+
+void emulator_parseArgs(int argc, char **argv)
+{
+    const char *env = getenv("OPENRTX_DMR_CALL");
+    if ((env != NULL) && (env[0] != '\0'))
+        parseDmrCall(env);
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--dmr-call") == 0) {
+            if (i + 1 < argc)
+                parseDmrCall(argv[++i]);
+            else
+                printf("emulator: --dmr-call needs a src,dst value\n");
+        } else if (strncmp(argv[i], "--dmr-call=", 11) == 0) {
+            parseDmrCall(argv[i] + 11);
+        } else {
+            printf("emulator: unknown option '%s'\n", argv[i]);
+        }
+    }
+}
+
 void emulator_start()
 {
     sdlEngine_init();
+
+    // The fake DMR modem ticks in real time only in the running emulator:
+    // the unit tests, which never get here, script it.
+    dmrEmu_setClock(true);
 
     pthread_t cli_thread;
     int err = pthread_create(&cli_thread, NULL, startCLIMenu, NULL);
