@@ -65,6 +65,7 @@
 #include "hwconfig.h"
 #include "core/voicePromptUtils.h"
 #include "core/beeps.h"
+#include "core/frs.h"
 
 /* UI main screen functions, their implementation is in "ui_main.c" */
 extern void _ui_drawMainBackground();
@@ -76,6 +77,7 @@ extern void _ui_drawMEMBottom();
 extern void _ui_drawMainVFO(ui_state_t* ui_state);
 extern void _ui_drawMainVFOInput(ui_state_t* ui_state);
 extern void _ui_drawMainMEM(ui_state_t* ui_state);
+extern void _ui_drawMainFRS(ui_state_t* ui_state);
 /* UI menu functions, their implementation is in "ui_menu.c" */
 extern void _ui_drawMenuTop(ui_state_t* ui_state);
 extern void _ui_drawMenuBank(ui_state_t* ui_state);
@@ -99,6 +101,7 @@ extern void _ui_drawSettingsTimeDateSet(ui_state_t* ui_state);
 extern void _ui_drawSettingsDisplay(ui_state_t* ui_state);
 extern void _ui_drawSettingsM17(ui_state_t* ui_state);
 extern void _ui_drawSettingsFM(ui_state_t* ui_state);
+extern void _ui_drawSettingsFRS(ui_state_t* ui_state);
 extern void _ui_drawSettingsVoicePrompts(ui_state_t* ui_state);
 extern void _ui_drawSettingsReset2Defaults(ui_state_t* ui_state);
 extern void _ui_drawSettingsRadio(ui_state_t* ui_state);
@@ -132,6 +135,7 @@ const char *settings_items[] =
     "M17",
 #endif
     "FM",
+    "FRS",
     "Accessibility",
     "Default Settings"
 };
@@ -178,6 +182,12 @@ const char* settings_fm_items[] =
 {
     "CTCSS Tone",
     "CTCSS En."
+};
+
+const char *settings_frs_items[] =
+{
+    "FRS Mode",
+    "Reset Codes"
 };
 
 const char * settings_accessibility_items[] =
@@ -265,6 +275,7 @@ const uint8_t settings_radio_num = sizeof(settings_radio_items)/sizeof(settings_
 const uint8_t settings_m17_num = sizeof(settings_m17_items)/sizeof(settings_m17_items[0]);
 #endif
 const uint8_t settings_fm_num = sizeof(settings_fm_items) / sizeof(settings_fm_items[0]);
+const uint8_t settings_frs_num = sizeof(settings_frs_items) / sizeof(settings_frs_items[0]);
 const uint8_t settings_accessibility_num = sizeof(settings_accessibility_items)/sizeof(settings_accessibility_items[0]);
 const uint8_t backup_restore_num = sizeof(backup_restore_items)/sizeof(backup_restore_items[0]);
 const uint8_t info_num = sizeof(info_items)/sizeof(info_items[0]);
@@ -824,6 +835,84 @@ static void _ui_changePhoneticSpell(bool newVal)
                                    state.settings.vpPhoneticSpell);
 }
 
+/*
+ * FRS mode helpers.
+ *
+ * While state.settings.frs_mode is set, state.channel holds the FRS channel
+ * built from the current FRS channel number and its privacy code, and the
+ * VFO the user had before is parked in state.vfo_channel. Every change of
+ * channel or code goes through _ui_frs_apply(), which rebuilds the channel
+ * and requests an RTX synchronisation.
+ */
+static void _ui_frs_apply(bool *sync_rtx)
+{
+    uint8_t channel = state.settings.frs_channel;
+
+    state.channel = frs_buildChannel(channel,
+                                     state.settings.frs_codes[channel]);
+    *sync_rtx = true;
+}
+
+/*
+ * Feedback for a key that is disabled while FRS mode is active: "FRS, error"
+ * with voice prompts on, a short low beep otherwise.
+ */
+static void _ui_frs_refuse()
+{
+    if (state.settings.vpLevel > vpBeep)
+    {
+        vp_announceText(currentLanguage->frs, vpqInit);
+        vp_announceError(vpqPlayImmediately);
+    }
+    else
+    {
+        vp_beep(BEEP_FUNCTION_LATCH_OFF, SHORT_BEEP);
+    }
+}
+
+static void _ui_frs_toggle(bool *sync_rtx)
+{
+    enum vpQueueFlags queueFlags = vp_getVoiceLevelQueueFlags();
+
+    if (state.settings.frs_mode == 0)
+    {
+        // The UHF band must cover 462-468 MHz
+        if (frs_isSupported(platform_getHwInfo()) == false)
+        {
+            _ui_frs_refuse();
+            return;
+        }
+
+        // Park the VFO: when the menu was entered from MEM mode the VFO
+        // has already been saved in state.vfo_channel.
+        if (ui_state.last_main_state == MAIN_VFO)
+            state.vfo_channel = state.channel;
+
+        state.settings.frs_mode = 1;
+        _ui_frs_apply(sync_rtx);
+        ui_state.last_main_state = MAIN_FRS;
+    }
+    else
+    {
+        state.settings.frs_mode = 0;
+        state.channel = state.vfo_channel;
+        *sync_rtx = true;
+        ui_state.last_main_state = MAIN_VFO;
+    }
+
+    vp_announceSettingsOnOffToggle(&currentLanguage->frsMode, queueFlags,
+                                   state.settings.frs_mode);
+}
+
+static void _ui_frs_resetCodes(bool *sync_rtx)
+{
+    memset(state.settings.frs_codes, 0, sizeof(state.settings.frs_codes));
+    if (state.settings.frs_mode != 0)
+        _ui_frs_apply(sync_rtx);
+
+    vp_announceText(currentLanguage->resetCodes, vp_getVoiceLevelQueueFlags());
+}
+
 bool _ui_checkStandby(long long time_since_last_event)
 {
     if (standby)
@@ -1289,6 +1378,18 @@ void ui_init()
     // This syntax is called compound literal
     // https://stackoverflow.com/questions/6891720/initialize-reset-struct-to-zero-null
     ui_state = (const struct ui_state_t){ 0 };
+
+    // Resume FRS mode: the channel loaded from NVM is the user's VFO, park it
+    // and materialise the FRS channel. The UI thread starts with an RTX
+    // synchronisation pending, which picks the new channel up.
+    if (state.settings.frs_mode != 0)
+    {
+        bool sync = false;
+        state.vfo_channel = state.channel;
+        _ui_frs_apply(&sync);
+        state.ui_screen = MAIN_FRS;
+        ui_state.last_main_state = MAIN_FRS;
+    }
 }
 
 void ui_drawSplashScreen()
@@ -1407,7 +1508,7 @@ void ui_updateFSM(bool *sync_rtx)
         state.ui_screen = LOW_BAT;
         if(event.type == EVENT_KBD && event.payload)
         {
-            state.ui_screen = MAIN_VFO;
+            state.ui_screen = state.settings.frs_mode ? MAIN_FRS : MAIN_VFO;
             state.emergency = true;
         }
         return;
@@ -1811,6 +1912,44 @@ void ui_updateFSM(bool *sync_rtx)
                     }
                 }
                 break;
+            // FRS main screen
+            case MAIN_FRS:
+                // Enable Tx in MAIN_FRS mode
+                if (state.txDisable)
+                {
+                    state.txDisable = false;
+                    *sync_rtx = true;
+                }
+                if (ui_state.input_locked)
+                    break;
+
+                if(msg.keys & KEY_ENTER)
+                {
+                    // Save current main state
+                    ui_state.last_main_state = state.ui_screen;
+                    // Open Menu
+                    state.ui_screen = MENU_TOP;
+                }
+                else if(msg.keys & KEY_F1)
+                {
+                    if (state.settings.vpLevel > vpBeep)
+                    {
+                        // quick press repeat vp, long press summary.
+                        if (msg.long_press)
+                        {
+                            vp_announceChannelSummary(&state.channel,
+                                                      state.settings.frs_channel + 1,
+                                                      0, vpAllInfo);
+                        }
+                        else
+                        {
+                            vp_replayLastPrompt();
+                        }
+
+                        f1Handled = true;
+                    }
+                }
+                break;
             // Top menu screen
             case MENU_TOP:
                 if(msg.keys & KEY_UP || msg.keys & KNOB_LEFT)
@@ -1972,6 +2111,9 @@ void ui_updateFSM(bool *sync_rtx)
 #endif
                         case S_FM:
                             state.ui_screen = SETTINGS_FM;
+                            break;
+                        case S_FRS:
+                            state.ui_screen = SETTINGS_FRS;
                             break;
                         case S_ACCESSIBILITY:
                             state.ui_screen = SETTINGS_ACCESSIBILITY;
@@ -2510,6 +2652,36 @@ void ui_updateFSM(bool *sync_rtx)
                     _ui_menuBack(MENU_SETTINGS);
                 break;
 
+            // FRS settings
+            case SETTINGS_FRS:
+                if(msg.keys & KEY_LEFT || msg.keys & KEY_RIGHT ||
+                   (ui_state.edit_mode &&
+                   (msg.keys & KEY_DOWN || msg.keys & KNOB_LEFT ||
+                    msg.keys & KEY_UP || msg.keys & KNOB_RIGHT)))
+                {
+                    // Reset Codes is confirmed with ENTER only
+                    if(ui_state.menu_selected == FRS_MODE)
+                        _ui_frs_toggle(sync_rtx);
+                }
+                else if(msg.keys & KEY_UP || msg.keys & KNOB_LEFT)
+                    _ui_menuUp(settings_frs_num);
+                else if(msg.keys & KEY_DOWN || msg.keys & KNOB_RIGHT)
+                    _ui_menuDown(settings_frs_num);
+                else if(msg.keys & KEY_ENTER)
+                {
+                    if(ui_state.edit_mode &&
+                       (ui_state.menu_selected == FRS_RESET_CODES))
+                    {
+                        _ui_frs_resetCodes(sync_rtx);
+                        ui_state.edit_mode = false;
+                    }
+                    else
+                        ui_state.edit_mode = !ui_state.edit_mode;
+                }
+                else if(msg.keys & KEY_ESC)
+                    _ui_menuBack(MENU_SETTINGS);
+                break;
+
             case SETTINGS_ACCESSIBILITY:
                 if(msg.keys & KEY_LEFT || (ui_state.edit_mode &&
                    (msg.keys & KEY_DOWN || msg.keys & KNOB_LEFT)))
@@ -2573,6 +2745,10 @@ void ui_updateFSM(bool *sync_rtx)
                     {
                         ui_state.edit_mode = false;
                         state_resetSettingsAndVfo();
+                        // Defaults clear FRS mode: leave the menu on the
+                        // VFO screen with the default channel applied.
+                        ui_state.last_main_state = MAIN_VFO;
+                        *sync_rtx = true;
                         _ui_menuBack(MENU_SETTINGS);
                     }
                     else if(msg.keys & KEY_ESC)
@@ -2584,8 +2760,9 @@ void ui_updateFSM(bool *sync_rtx)
                 break;
         }
 
-        // Enable Tx only if in MAIN_VFO or MAIN_MEM states
-        bool inMemOrVfo = (state.ui_screen == MAIN_VFO) || (state.ui_screen == MAIN_MEM);
+        // Enable Tx only if in MAIN_VFO, MAIN_MEM or MAIN_FRS states
+        bool inMemOrVfo = (state.ui_screen == MAIN_VFO) || (state.ui_screen == MAIN_MEM)
+                       || (state.ui_screen == MAIN_FRS);
         if ((macro_menu == true) || ((inMemOrVfo == false) && (state.txDisable == false)))
         {
             state.txDisable = true;
@@ -2663,6 +2840,10 @@ bool ui_updateGUI()
         case MAIN_MEM:
             _ui_drawMainMEM(&ui_state);
             break;
+        // FRS main screen
+        case MAIN_FRS:
+            _ui_drawMainFRS(&ui_state);
+            break;
         // Top menu screen
         case MENU_TOP:
             _ui_drawMenuTop(&ui_state);
@@ -2738,6 +2919,10 @@ bool ui_updateGUI()
         // FM settings screen
         case SETTINGS_FM:
             _ui_drawSettingsFM(&ui_state);
+            break;
+        // FRS settings screen
+        case SETTINGS_FRS:
+            _ui_drawSettingsFRS(&ui_state);
             break;
         case SETTINGS_ACCESSIBILITY:
             _ui_drawSettingsAccessibility(&ui_state);

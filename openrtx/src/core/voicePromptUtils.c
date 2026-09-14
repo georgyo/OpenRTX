@@ -794,6 +794,13 @@ void vp_announceScreen(uint8_t ui_screen)
                                       state.bank, infoFlags);
             break;
 
+        case MAIN_FRS:
+            // The channel name is "FRS n", the frequency is implied by it.
+            vp_announceChannelSummary(&state.channel,
+                                      state.settings.frs_channel + 1, 0,
+                                      vpChannelNameOrVFO | vpModeSpecificInfo);
+            break;
+
 #ifdef CONFIG_GPS
         case MENU_GPS:
             vp_announceGPSInfo(vpGPSAll);
