@@ -30,6 +30,7 @@ path = [
     "osx.txt",
     "tests/unit/assets/**/*",
     "README.md",
+    "docs/**/*",
     "CONTRIBUTING.md",
     "99-openrtx.rules",
     ".github/**/*",
