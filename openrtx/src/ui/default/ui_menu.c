@@ -482,6 +482,40 @@ int _ui_getFMValueName(char* buf, uint8_t max_len, uint8_t index)
     return 0;
 }
 
+/*
+ * Edit mode of the FRS settings screen, mirrored here by _ui_drawSettingsFRS()
+ * so that the value getter can show the "Enter" hint on Reset Codes.
+ */
+static bool frsSettingsEditMode = false;
+
+int _ui_getFRSEntryName(char *buf, uint8_t max_len, uint8_t index)
+{
+    if(index >= settings_frs_num) return -1;
+    sniprintf(buf, max_len, "%s", settings_frs_items[index]);
+    return 0;
+}
+
+int _ui_getFRSValueName(char *buf, uint8_t max_len, uint8_t index)
+{
+    if(index >= settings_frs_num) return -1;
+
+    buf[0] = '\0';
+    switch(index)
+    {
+        case FRS_MODE:
+            sniprintf(buf, max_len, "%s", (last_state.settings.frs_mode != 0)
+                                          ? currentLanguage->on
+                                          : currentLanguage->off);
+            break;
+        case FRS_RESET_CODES:
+            if(frsSettingsEditMode)
+                sniprintf(buf, max_len, "%s", currentLanguage->enter);
+            break;
+    }
+
+    return 0;
+}
+
 int _ui_getAccessibilityEntryName(char *buf, uint8_t max_len, uint8_t index)
 {
     if(index >= settings_accessibility_num) return -1;
@@ -1036,6 +1070,18 @@ void _ui_drawSettingsFM(ui_state_t* ui_state)
     // Print FM settings entries
     _ui_drawMenuListValue(ui_state, ui_state->menu_selected, _ui_getFMEntryName,
                           _ui_getFMValueName);
+}
+
+void _ui_drawSettingsFRS(ui_state_t* ui_state)
+{
+    gfx_clearScreen();
+    // Print "FRS Settings" on top bar
+    gfx_print(layout.top_pos, layout.top_font, TEXT_ALIGN_CENTER, color_white,
+              currentLanguage->frsSettings);
+    // Print FRS settings entries
+    frsSettingsEditMode = ui_state->edit_mode;
+    _ui_drawMenuListValue(ui_state, ui_state->menu_selected, _ui_getFRSEntryName,
+                          _ui_getFRSValueName);
 }
 
 void _ui_drawSettingsAccessibility(ui_state_t* ui_state)
