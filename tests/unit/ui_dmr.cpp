@@ -170,6 +170,13 @@ TEST_CASE("Macro key 5 cycles FM, DMR and M17", "[ui][dmr]")
     boot();
     REQUIRE(state.channel.mode == OPMODE_FM);
 
+    /* CTCSS on both sides of the FM VFO: the DMR block overlays it */
+    state.channel.fm.rxToneEn = 1;
+    state.channel.fm.rxTone = 12;
+    state.channel.fm.txToneEn = 1;
+    state.channel.fm.txTone = 25;
+    ui_saveState();
+
     bool sync = press(KEY_MONI | KEY_5);
     REQUIRE(sync == true);
     REQUIRE(state.channel.mode == OPMODE_DMR);
@@ -199,6 +206,72 @@ TEST_CASE("Macro key 5 cycles FM, DMR and M17", "[ui][dmr]")
     REQUIRE(state.channel.mode == OPMODE_FM);
     status = sync_rtx_stage();
     REQUIRE(status.opMode == OPMODE_FM);
+
+    /* The FM tone settings survived the round trip */
+    REQUIRE(state.channel.fm.rxToneEn == 1);
+    REQUIRE(state.channel.fm.rxTone == 12);
+    REQUIRE(state.channel.fm.txToneEn == 1);
+    REQUIRE(state.channel.fm.txTone == 25);
+}
+
+TEST_CASE("A visit to DMR does not touch the FM tone settings", "[ui][dmr]")
+{
+    SECTION("Colour code and timeslot edited in DMR, back through M17")
+    {
+        boot();
+        state.channel.fm.rxToneEn = 0;
+        state.channel.fm.rxTone = 3;
+        state.channel.fm.txToneEn = 1;
+        state.channel.fm.txTone = 7;
+        ui_saveState();
+
+        press(KEY_MONI | KEY_5);
+        REQUIRE(state.channel.mode == OPMODE_DMR);
+        pressN(KEY_MONI | KEY_1, 5);
+        press(KEY_MONI | KEY_2);
+        REQUIRE(state.channel.dmr.rxColorCode == 6);
+        REQUIRE(state.channel.dmr.dmr_timeslot == 2);
+
+        press(KEY_MONI | KEY_5);
+        REQUIRE(state.channel.mode == OPMODE_M17);
+        press(KEY_MONI | KEY_5);
+        REQUIRE(state.channel.mode == OPMODE_FM);
+        REQUIRE(state.channel.fm.rxToneEn == 0);
+        REQUIRE(state.channel.fm.rxTone == 3);
+        REQUIRE(state.channel.fm.txToneEn == 1);
+        REQUIRE(state.channel.fm.txTone == 7);
+
+        /* A second visit with the tones changed in between */
+        state.channel.fm.txTone = 9;
+        ui_saveState();
+        pressN(KEY_MONI | KEY_5, 3);
+        REQUIRE(state.channel.mode == OPMODE_FM);
+        REQUIRE(state.channel.fm.txTone == 9);
+        REQUIRE(state.channel.fm.rxTone == 3);
+    }
+
+    SECTION("A VFO booted in DMR comes back to FM without tones")
+    {
+        settings_t settings = default_settings;
+        settings.dmr_colorCode = 15;
+        settings.dmr_timeslot = 2;
+        boot(settings);
+        state.channel.mode = OPMODE_DMR;
+        state.channel.dmr.rxColorCode = 15;
+        state.channel.dmr.txColorCode = 15;
+        state.channel.dmr.dmr_timeslot = 2;
+        state.channel.dmr.contact_index = 0;
+        ui_saveState();
+
+        press(KEY_MONI | KEY_5);
+        REQUIRE(state.channel.mode == OPMODE_M17);
+        press(KEY_MONI | KEY_5);
+        REQUIRE(state.channel.mode == OPMODE_FM);
+        REQUIRE(state.channel.fm.rxToneEn == 0);
+        REQUIRE(state.channel.fm.rxTone == 0);
+        REQUIRE(state.channel.fm.txToneEn == 0);
+        REQUIRE(state.channel.fm.txTone == 0);
+    }
 }
 
 TEST_CASE("Settings seed a DMR VFO", "[ui][dmr]")

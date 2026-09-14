@@ -1070,6 +1070,43 @@ static void _ui_dmr_seedChannel()
     state.channel.dmr.contact_index = 0;
 }
 
+/*
+ * The DMR block of the channel overlays the FM tone settings: seeding it
+ * (and the macro keys editing it) would leave the FM VFO tone squelched
+ * once the mode key comes back to FM. The FM block is therefore saved when
+ * the mode key leaves FM for DMR and put back when the cycle lands on FM
+ * again, be it directly or through M17. A VFO that was already in DMR when
+ * the key was first pressed (restored from NVM or from the codeplug) has
+ * nothing to put back: its FM block is reset to "no tones" instead.
+ */
+static fmInfo_t dmr_savedFm;
+static bool dmr_savedFmValid = false;
+static bool dmr_fmDirty = false;
+
+static void _ui_dmr_enterFromFm()
+{
+    dmr_savedFm = state.channel.fm;
+    dmr_savedFmValid = true;
+    state.channel.mode = OPMODE_DMR;
+    _ui_dmr_seedChannel();
+}
+
+static void _ui_dmr_leave()
+{
+    dmr_fmDirty = true;
+}
+
+static void _ui_dmr_restoreFm()
+{
+    if(dmr_savedFmValid)
+        state.channel.fm = dmr_savedFm;
+    else if(dmr_fmDirty)
+        memset(&state.channel.fm, 0, sizeof(state.channel.fm));
+
+    dmr_savedFmValid = false;
+    dmr_fmDirty = false;
+}
+
 static void _ui_dmr_changeColorCode(int variation)
 {
     uint8_t colorCode = (state.settings.dmr_colorCode + 16 + variation) % 16;
@@ -1250,7 +1287,8 @@ static void _ui_dmr_toggleCallType(bool *sync_rtx, enum vpQueueFlags queueFlags)
 /*
  * Macro key 5: FM -> DMR -> M17 -> FM, skipping the modes the radio does not
  * support. A VFO switched to DMR gets its colour code and timeslot from the
- * settings, see the DMR helpers above.
+ * settings and the FM tone settings are kept aside until the cycle is back
+ * to FM, see the DMR helpers above.
  */
 static void _ui_cycleOpMode()
 {
@@ -1258,8 +1296,7 @@ static void _ui_cycleOpMode()
     {
         case OPMODE_FM:
             #if defined(CONFIG_DMR)
-            state.channel.mode = OPMODE_DMR;
-            _ui_dmr_seedChannel();
+            _ui_dmr_enterFromFm();
             #elif defined(CONFIG_M17)
             state.channel.mode = OPMODE_M17;
             #endif
@@ -1267,10 +1304,12 @@ static void _ui_cycleOpMode()
 
         #ifdef CONFIG_DMR
         case OPMODE_DMR:
+            _ui_dmr_leave();
             #ifdef CONFIG_M17
             state.channel.mode = OPMODE_M17;
             #else
             state.channel.mode = OPMODE_FM;
+            _ui_dmr_restoreFm();
             #endif
             break;
         #endif
@@ -1278,6 +1317,9 @@ static void _ui_cycleOpMode()
         default:
             // M17, or an invalid mode: never lock the user out
             state.channel.mode = OPMODE_FM;
+            #ifdef CONFIG_DMR
+            _ui_dmr_restoreFm();
+            #endif
             break;
     }
 }
