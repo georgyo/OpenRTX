@@ -3710,18 +3710,38 @@ bool ui_updateGUI()
     // the left; the menu screens centre a title that can reach the left edge
     // of the 160-pixel displays, so there it goes at the right. A backing box
     // keeps it legible over whatever is beneath.
+    const char *marker = NULL;
+    char frsMarker[8];
+
     if(_ui_frsRefuseMarkerVisible(getTick()))
+    {
+        sniprintf(frsMarker, sizeof(frsMarker), "%s!", currentLanguage->frs);
+        marker = frsMarker;
+    }
+
+    #ifdef CONFIG_DMR
+    // The DMR opMode handler raises its markers in the RTX status: no DMR
+    // ID, channel busy, repeater wake-up failed, no DMR modem on this radio.
+    // They share the FRS marker's place and look; FRS wins when both apply.
+    if(marker == NULL)
+    {
+        rtxStatus_t rtxSts = rtx_getCurrentStatus();
+        marker = _ui_dmrMarkerText(&rtxSts);
+    }
+    #endif
+
+    if(marker != NULL)
     {
         bool mainScreen = (last_state.ui_screen == MAIN_VFO)
                        || (last_state.ui_screen == MAIN_VFO_INPUT)
                        || (last_state.ui_screen == MAIN_MEM)
                        || (last_state.ui_screen == MAIN_FRS)
                        || (last_state.ui_screen == MAIN_FRS_INPUT);
-        char marker[8];
-        sniprintf(marker, sizeof(marker), "%s!", currentLanguage->frs);
 
         uint16_t width = gfx_getTextWidth(layout.top_font, marker)
                        + layout.top_pos.x + 1;
+        if(width > CONFIG_SCREEN_WIDTH)
+            width = CONFIG_SCREEN_WIDTH;
         point_t  box   = {mainScreen ? 0 : CONFIG_SCREEN_WIDTH - width, 0};
         gfx_drawRect(box, width, layout.top_h, color_black, true);
         gfx_print(layout.top_pos, layout.top_font,
