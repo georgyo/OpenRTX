@@ -44,6 +44,7 @@ openrtx_src = ['openrtx/src/core/state.c',
                'openrtx/src/core/gps.c',
                'openrtx/src/core/dsp.cpp',
                'openrtx/src/core/cps.c',
+               'openrtx/src/core/frs.c',
                'openrtx/src/core/crc.c',
                'openrtx/src/core/datetime.c',
                'openrtx/src/core/openrtx.c',
@@ -1239,6 +1240,10 @@ ui_check_standby_test = executable('ui_check_standby_test',
                                     sources : unit_test_src + ['tests/unit/ui_check_standby.cpp'],
                                     kwargs  : unit_test_opts)
 
+frs_test = executable('frs_test',
+                      sources : unit_test_src + ['tests/unit/frs.cpp'],
+                      kwargs  : unit_test_opts)
+
 m17_packet_test = executable('m17_packet_test',
                               sources : unit_test_src + ['tests/unit/M17_packet.cpp'],
                               kwargs  : unit_test_opts)
@@ -1348,6 +1353,7 @@ test('Codeplug Test',         cps_test)
 ## test('Linux InputStream Test', linux_inputStream_test)
 test('minmea conversion Test', minmea_conversion_test)
 test('UI Check Standby Test', ui_check_standby_test)
+test('FRS Test',              frs_test)
 test('M17 Packet Frame Test', m17_packet_test)
 test('DSP Oversampling Test', dsp_oversampling_test)
 test('GFX Text Test',        gfx_text_test)
