@@ -1520,6 +1520,17 @@ void ui_init()
     ui_state = (const struct ui_state_t){ 0 };
     frs_refuse_tick = 0;
 
+    // A settings record copied from another radio, or a corrupted one, may
+    // ask for FRS mode on a radio whose UHF band does not reach 462-468 MHz.
+    // platform_init() has already run, so the hardware information is valid:
+    // clear the flag rather than park the VFO on a channel the RTX cannot
+    // tune. The settings menu applies the same check before enabling it.
+    if ((state.settings.frs_mode != 0) &&
+        (frs_isSupported(platform_getHwInfo()) == false))
+    {
+        state.settings.frs_mode = 0;
+    }
+
     // Resume FRS mode: the channel loaded from NVM is the user's VFO, park it
     // and materialise the FRS channel. The UI thread starts with an RTX
     // synchronisation pending, which picks the new channel up.
