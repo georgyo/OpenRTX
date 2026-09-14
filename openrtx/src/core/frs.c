@@ -18,10 +18,11 @@ _Static_assert(sizeof(settings_t) < 255, "settings_t must fit an EEEP record");
 /*
  * Targets whose radio_checkRxDigitalSquelch() always returns false: with a
  * decode-enabled tone the FM squelch would never open (OpMode_FM.cpp), so on
- * these radios the privacy code is transmitted only.
+ * these radios the privacy code is transmitted only. The RT-4D is built with
+ * the radio_stub.c driver, which never reports a decoded tone.
  */
 #if defined(PLATFORM_MD3x0) || defined(PLATFORM_MD9600) \
-    || defined(PLATFORM_LINUX)
+    || defined(PLATFORM_LINUX) || defined(PLATFORM_RT4D)
 #define FRS_RX_TONE_DECODE 0
 #else
 #define FRS_RX_TONE_DECODE 1
