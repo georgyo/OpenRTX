@@ -639,13 +639,43 @@ TEST_CASE("Embedded LC rejects corrupted messages", "[dmr][fec][emblc]")
     frags[0] ^= 0x00800000; // row 0, column 1
     REQUIRE(EmbeddedLc::decode(frags, lc) == -1);
 
-    // A wrong checksum is detected
+    // Two errors in the same row of a freshly encoded message, same check
+    // from the encoder side
     uint8_t bad[9];
     memcpy(bad, bptc_vectors[0].lc, 9);
     EmbeddedLc::encode(bad, frags);
     frags[0] ^= 0x20000000; // row 2 column 0: LC(49)
     frags[0] ^= 0x00200000; // row 2 column 1: LC(48), same row
     REQUIRE(EmbeddedLc::decode(frags, lc) == -1);
+
+    /*
+     * A miscorrection: XOR-ing a weight 4 codeword of the (16,11,4) code
+     * into an LC row and into the parity row leaves every row a valid
+     * codeword and every column of even weight, so that neither the
+     * Hamming decoder nor the column parity notice anything and only the
+     * 5-bit checksum of clause B.3.11 can reject the message. Data bit 1 of
+     * row 6 is LC(0): the LC octet sum changes by one, so the checksum
+     * no longer matches. Data bit 0 of row 6 is CS(0): the LC is intact
+     * but the received checksum is wrong.
+     */
+    const uint16_t flips[] = { 0x002, 0x001 };
+    for (uint16_t flip : flips) {
+        uint32_t codeword = Hamming::encode(Hamming::H16_11, flip);
+        INFO("flipped data bits " << flip);
+        REQUIRE(__builtin_popcount(codeword) == 4);
+
+        memcpy(frags, bptc_vectors[0].embedded, sizeof(frags));
+        for (unsigned col = 0; col < 16; col++) {
+            if (((codeword >> (15 - col)) & 1) == 0)
+                continue;
+            for (unsigned row = 6; row < 8; row++) {
+                unsigned pos = col * 8 + row;
+                frags[pos / 32] ^= 1u << (31 - (pos % 32));
+            }
+        }
+
+        REQUIRE(EmbeddedLc::decode(frags, lc) == -1);
+    }
 }
 
 /*
