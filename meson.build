@@ -68,7 +68,16 @@ openrtx_src = ['openrtx/src/core/state.c',
                'openrtx/src/protocols/M17/Demodulator.cpp',
                'openrtx/src/protocols/M17/FrameEncoder.cpp',
                'openrtx/src/protocols/M17/FrameDecoder.cpp',
-               'openrtx/src/protocols/M17/LinkSetupFrame.cpp']
+               'openrtx/src/protocols/M17/LinkSetupFrame.cpp',
+               'openrtx/src/protocols/DMR/FEC/Golay20_8.cpp',
+               'openrtx/src/protocols/DMR/FEC/QR16_7_6.cpp',
+               'openrtx/src/protocols/DMR/FEC/Hamming.cpp',
+               'openrtx/src/protocols/DMR/FEC/Bptc196_96.cpp',
+               'openrtx/src/protocols/DMR/FEC/Rs12_9.cpp',
+               'openrtx/src/protocols/DMR/FEC/Crc.cpp',
+               'openrtx/src/protocols/DMR/FEC/EmbeddedLc.cpp',
+               'openrtx/src/protocols/DMR/FEC/SlotType.cpp',
+               'openrtx/src/protocols/DMR/FEC/Emb.cpp']
 
 openrtx_inc = ['openrtx/include', 'platform']
 
