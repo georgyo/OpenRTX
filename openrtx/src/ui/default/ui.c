@@ -2901,6 +2901,15 @@ void ui_updateFSM(bool *sync_rtx)
                     {
                         _ui_frs_resetCodes(sync_rtx);
                         ui_state.edit_mode = false;
+
+                        // The menu gives no confirmation of its own: while
+                        // the mode is on, return to the FRS screen so that
+                        // the cleared "Code OFF" line is seen.
+                        if(state.settings.frs_mode != 0)
+                        {
+                            ui_state.menu_selected = 0;
+                            state.ui_screen = MAIN_FRS;
+                        }
                     }
                     else
                         ui_state.edit_mode = !ui_state.edit_mode;

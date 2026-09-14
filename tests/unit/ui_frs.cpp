@@ -573,12 +573,33 @@ TEST_CASE("Reset Codes clears every privacy code", "[ui][frs]")
     goto_frs_settings();
     press(KEY_DOWN);
     press(KEY_ENTER);
+    REQUIRE(state.ui_screen == SETTINGS_FRS);
     bool sync = press(KEY_ENTER);
     REQUIRE(sync == true);
     for (size_t i = 0; i < FRS_CHANNEL_NUM; i++)
         REQUIRE(state.settings.frs_codes[i] == 0);
     REQUIRE(state.channel.fm.txToneEn == 0);
     REQUIRE(state.settings.frs_mode == 1);
+
+    /* The reset leaves the menu for the FRS screen, where TX is allowed */
+    REQUIRE(state.ui_screen == MAIN_FRS);
+    REQUIRE(state.settings.frs_channel == 1);
+    REQUIRE(state.txDisable == false);
+}
+
+TEST_CASE("Reset Codes stays in the menu while FRS mode is off", "[ui][frs]")
+{
+    settings_t settings = default_settings;
+    settings.frs_codes[3] = 9;
+    boot(settings);
+
+    goto_frs_settings();
+    press(KEY_DOWN);
+    press(KEY_ENTER);
+    press(KEY_ENTER);
+    REQUIRE(state.settings.frs_codes[3] == 0);
+    REQUIRE(state.ui_screen == SETTINGS_FRS);
+    REQUIRE(state.channel.rx_frequency == VFO_FREQ);
 }
 
 TEST_CASE("Reset to defaults leaves FRS mode", "[ui][frs]")

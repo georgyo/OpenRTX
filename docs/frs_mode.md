@@ -124,7 +124,8 @@ and 6 (tone mode, bandwidth, FM/M17, power) are refused because the channel
 plan fixes those parameters. The same goes for loading a bank or a codeplug
 channel and for the CTCSS and Radio (offset, direction, step) settings, which
 read `FRS` while the mode is on. `Settings > FRS > Reset Codes` (ENTER twice)
-clears the code on every channel.
+clears the code on every channel and, while the mode is on, returns to the FRS
+screen so that the cleared code is visible.
 
 Turning FRS mode off, or `Settings > Default Settings`, returns to the VFO
 screen with the frequency the radio had before FRS was enabled.
