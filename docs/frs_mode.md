@@ -92,10 +92,10 @@ Adding them is future work that starts in the RTX layer, not in FRS mode.
 **Receive tone squelch.** Where the hardware can decode CTCSS, a privacy code
 both transmits the tone and mutes the receiver until the same tone is heard
 (shown as `B` next to the tone on the main screen). The TYT MD-380/390 and
-MD-9600 drivers, and the Linux emulator, cannot detect a received tone
-(`radio_checkRxDigitalSquelch()` always returns false); enabling decode there
-would keep the receiver muted forever, so on these targets the code is
-transmit-only and the screen shows `T`.
+MD-9600 drivers, the RT-4D (whose radio driver is still a stub) and the Linux
+emulator cannot detect a received tone (`radio_checkRxDigitalSquelch()` always
+returns false); enabling decode there would keep the receiver muted forever,
+so on these targets the code is transmit-only and the screen shows `T`.
 
 ## Using it
 
