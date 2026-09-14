@@ -103,6 +103,7 @@ extern void _ui_drawSettingsDisplay(ui_state_t* ui_state);
 extern void _ui_drawSettingsM17(ui_state_t* ui_state);
 extern void _ui_drawSettingsFM(ui_state_t* ui_state);
 extern void _ui_drawSettingsFRS(ui_state_t* ui_state);
+extern void _ui_drawFRSCode(ui_state_t* ui_state);
 extern void _ui_drawSettingsVoicePrompts(ui_state_t* ui_state);
 extern void _ui_drawSettingsReset2Defaults(ui_state_t* ui_state);
 extern void _ui_drawSettingsRadio(ui_state_t* ui_state);
@@ -955,6 +956,58 @@ static void _ui_frs_inputDigit(uint8_t digit, bool *sync_rtx)
     state.ui_screen = MAIN_FRS_INPUT;
 }
 
+static void _ui_frs_setCode(uint8_t code, bool *sync_rtx)
+{
+    uint8_t channel = state.settings.frs_channel;
+
+    state.settings.frs_codes[channel] = code;
+    _ui_frs_apply(sync_rtx);
+
+    // "Code 12, tone 100.0 hertz" or "Code off"
+    vp_announceText(currentLanguage->code, vpqInit);
+    if (code == 0)
+        vp_queueStringTableEntry(&currentLanguage->off);
+    else
+        vp_queueInteger(code);
+    vp_announceCTCSS(state.channel.fm.rxToneEn, state.channel.fm.rxTone,
+                     state.channel.fm.txToneEn, state.channel.fm.txTone,
+                     vpqIncludeDescriptions | vpqPlayImmediately);
+}
+
+/*
+ * Open the privacy code picker with the current code highlighted, so that a
+ * neighbouring code is one key away.
+ */
+static void _ui_frs_openCodePicker()
+{
+    ui_state.menu_selected = state.settings.frs_codes[state.settings.frs_channel];
+    ui_state.input_number = 0;
+    ui_state.input_position = 0;
+    state.ui_screen = FRS_CODE;
+}
+
+/*
+ * Digit typed in the privacy code picker: each digit refines the highlight,
+ * "1 2" lands on code 12 and "5" on code 5. A pending first digit is kept
+ * only when a two-digit code can still start with it (1..3).
+ */
+static void _ui_frs_codeDigit(uint8_t digit)
+{
+    uint8_t code = ui_state.input_number * 10 + digit;
+
+    if ((ui_state.input_position == 1) && (code <= FRS_CODE_NUM))
+    {
+        ui_state.menu_selected = code;
+        ui_state.input_position = 0;
+    }
+    else
+    {
+        ui_state.menu_selected = digit;
+        ui_state.input_number = digit;
+        ui_state.input_position = ((digit >= 1) && (digit <= 3)) ? 1 : 0;
+    }
+}
+
 static void _ui_frs_resetCodes(bool *sync_rtx)
 {
     memset(state.settings.frs_codes, 0, sizeof(state.settings.frs_codes));
@@ -1071,6 +1124,25 @@ static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
 #endif // CONFIG_UI_NO_KEYBOARD
     // CTCSS Encode/Decode Selection
     enum vpQueueFlags queueFlags = vp_getVoiceLevelQueueFlags();
+
+    // FRS mode: keys 2 and 3 step the privacy code of the current channel
+    // in place of the raw CTCSS tone.
+    if(state.settings.frs_mode != 0)
+    {
+        uint8_t code = state.settings.frs_codes[state.settings.frs_channel];
+
+        switch(ui_state.input_number)
+        {
+            case 2:
+                _ui_frs_setCode((code == 0) ? FRS_CODE_NUM : code - 1, sync_rtx);
+                ui_state.input_number = 0;
+                break;
+            case 3:
+                _ui_frs_setCode((code >= FRS_CODE_NUM) ? 0 : code + 1, sync_rtx);
+                ui_state.input_number = 0;
+                break;
+        }
+    }
 
     switch(ui_state.input_number)
     {
@@ -2016,12 +2088,39 @@ void ui_updateFSM(bool *sync_rtx)
                         f1Handled = true;
                     }
                 }
+                else if(msg.keys & KEY_STAR || msg.keys & KEY_F2)
+                {
+                    _ui_frs_openCodePicker();
+                }
                 else if(input_isNumberPressed(msg))
                 {
                     _ui_frs_inputDigit(input_getPressedNumber(msg), sync_rtx);
                 }
                 // ESC (VFO/MEM switch) and # (1750 Hz tone, M17 destination)
                 // have no function in FRS mode and are ignored.
+                break;
+            // FRS privacy code picker
+            case FRS_CODE:
+                if(msg.keys & KEY_UP || msg.keys & KNOB_LEFT)
+                    _ui_menuUp(FRS_CODE_NUM + 1);
+                else if(msg.keys & KEY_DOWN || msg.keys & KNOB_RIGHT)
+                    _ui_menuDown(FRS_CODE_NUM + 1);
+                else if(msg.keys & KEY_ENTER)
+                {
+                    _ui_frs_setCode(ui_state.menu_selected, sync_rtx);
+                    ui_state.menu_selected = 0;
+                    state.ui_screen = MAIN_FRS;
+                }
+                else if(msg.keys & KEY_ESC || msg.keys & KEY_STAR)
+                {
+                    // Cancel, the code is unchanged
+                    ui_state.menu_selected = 0;
+                    state.ui_screen = MAIN_FRS;
+                }
+                else if(input_isNumberPressed(msg))
+                {
+                    _ui_frs_codeDigit(input_getPressedNumber(msg));
+                }
                 break;
             // FRS channel number entry screen
             case MAIN_FRS_INPUT:
@@ -2951,6 +3050,10 @@ bool ui_updateGUI()
         // FRS channel number entry screen
         case MAIN_FRS_INPUT:
             _ui_drawMainFRSInput(&ui_state);
+            break;
+        // FRS privacy code picker
+        case FRS_CODE:
+            _ui_drawFRSCode(&ui_state);
             break;
         // Top menu screen
         case MENU_TOP:

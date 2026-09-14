@@ -17,6 +17,7 @@
 #include "core/memory_profiling.h"
 #include "ui/ui_strings.h"
 #include "core/voicePromptUtils.h"
+#include "core/frs.h"
 
 #ifdef PLATFORM_TTWRPLUS
 #include "drivers/baseband/SA8x8.h"
@@ -511,6 +512,32 @@ int _ui_getFRSValueName(char *buf, uint8_t max_len, uint8_t index)
             if(frsSettingsEditMode)
                 sniprintf(buf, max_len, "%s", currentLanguage->enter);
             break;
+    }
+
+    return 0;
+}
+
+int _ui_getFRSCodeEntryName(char *buf, uint8_t max_len, uint8_t index)
+{
+    if(index > FRS_CODE_NUM) return -1;
+
+    if(index == 0)
+        sniprintf(buf, max_len, "%s", currentLanguage->off);
+    else
+        sniprintf(buf, max_len, "%d", index);
+
+    return 0;
+}
+
+int _ui_getFRSCodeValueName(char *buf, uint8_t max_len, uint8_t index)
+{
+    if(index > FRS_CODE_NUM) return -1;
+
+    buf[0] = '\0';
+    if(index != 0)
+    {
+        uint16_t tone = ctcss_tone[frs_codeToCtcss(index)];
+        sniprintf(buf, max_len, "%d.%d Hz", (tone / 10), (tone % 10));
     }
 
     return 0;
@@ -1082,6 +1109,18 @@ void _ui_drawSettingsFRS(ui_state_t* ui_state)
     frsSettingsEditMode = ui_state->edit_mode;
     _ui_drawMenuListValue(ui_state, ui_state->menu_selected, _ui_getFRSEntryName,
                           _ui_getFRSValueName);
+}
+
+void _ui_drawFRSCode(ui_state_t* ui_state)
+{
+    gfx_clearScreen();
+    // Print "Code  FRS n" on top bar
+    gfx_print(layout.top_pos, layout.top_font, TEXT_ALIGN_CENTER, color_white,
+              "%s  %s %d", currentLanguage->code, currentLanguage->frs,
+              last_state.settings.frs_channel + 1);
+    // Print the privacy codes with their tone
+    _ui_drawMenuListValue(ui_state, ui_state->menu_selected,
+                          _ui_getFRSCodeEntryName, _ui_getFRSCodeValueName);
 }
 
 void _ui_drawSettingsAccessibility(ui_state_t* ui_state)
