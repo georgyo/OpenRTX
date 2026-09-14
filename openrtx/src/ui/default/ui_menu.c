@@ -346,6 +346,13 @@ int _ui_getRadioValueName(char *buf, uint8_t max_len, uint8_t index)
     if(index >= settings_radio_num)
         return -1;
 
+    // Offset, direction and step are fixed by the FRS channel plan
+    if(last_state.settings.frs_mode != 0)
+    {
+        sniprintf(buf, max_len, "%s", currentLanguage->frs);
+        return 0;
+    }
+
     // Only returning the sign
     if(index == R_DIRECTION)
     {
@@ -464,6 +471,13 @@ int _ui_getFMValueName(char* buf, uint8_t max_len, uint8_t index)
 {
     if (index >= settings_fm_num)
         return -1;
+
+    // The tone is set by the FRS privacy code
+    if (last_state.settings.frs_mode != 0)
+    {
+        sniprintf(buf, max_len, "%s", currentLanguage->frs);
+        return 0;
+    }
 
     switch (index) {
         case CTCSS_Tone: {
