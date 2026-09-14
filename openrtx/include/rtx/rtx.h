@@ -78,6 +78,7 @@ typedef struct
     uint8_t  dmr_callState;    /**< DMR call state, enum dmrCallState      */
     uint8_t  dmr_slotLock;     /**< DMR timing: 0 none, 1 synced,
                                     2 timecode locked                      */
+    uint8_t  dmr_markers;      /**< DMR top-bar markers, enum dmrMarker    */
 }
 rtxStatus_t;
 
@@ -112,6 +113,20 @@ enum dmrCallState
     DMR_CALL_RX_HANG   = 2,     /**< Call ended, hang time running        */
     DMR_CALL_TX        = 3,     /**< Transmitting                         */
     DMR_CALL_TX_WAKEUP = 4      /**< Waking up a repeater before TX       */
+};
+
+/**
+ * \enum dmrMarker Bit mask of the markers the DMR opMode handler raises for
+ * the UI top bar in rtxStatus_t::dmr_markers. The first three are cleared at
+ * the next PTT press or a few seconds after being raised, the last one stays
+ * as long as DMR mode is selected on a radio without a DMR modem.
+ */
+enum dmrMarker
+{
+    DMR_MARK_NO_ID         = 0x01,  /**< PTT refused: no DMR ID configured  */
+    DMR_MARK_BUSY          = 0x02,  /**< TX rejected: channel busy          */
+    DMR_MARK_WAKEUP_FAILED = 0x04,  /**< Repeater did not answer the wakeup */
+    DMR_MARK_NOT_SUPPORTED = 0x08   /**< No DMR modem on this radio         */
 };
 
 /**
