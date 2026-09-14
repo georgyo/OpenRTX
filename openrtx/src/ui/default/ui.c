@@ -104,6 +104,7 @@ extern void _ui_drawSettingsM17(ui_state_t* ui_state);
 extern void _ui_drawSettingsFM(ui_state_t* ui_state);
 extern void _ui_drawSettingsFRS(ui_state_t* ui_state);
 extern void _ui_drawFRSCode(ui_state_t* ui_state);
+extern void _ui_drawSettingsDMR(ui_state_t* ui_state);
 extern void _ui_drawSettingsVoicePrompts(ui_state_t* ui_state);
 extern void _ui_drawSettingsReset2Defaults(ui_state_t* ui_state);
 extern void _ui_drawSettingsRadio(ui_state_t* ui_state);
@@ -135,6 +136,9 @@ const char *settings_items[] =
     "Radio",
 #ifdef CONFIG_M17
     "M17",
+#endif
+#ifdef CONFIG_DMR
+    "DMR",
 #endif
     "FM",
     "FRS",
@@ -191,6 +195,20 @@ const char *settings_frs_items[] =
     "FRS Mode",
     "Reset Codes"
 };
+
+#ifdef CONFIG_DMR
+const char *settings_dmr_items[] =
+{
+    "DMR ID",
+    "Talkgroup",
+    "Call type",
+    "Color code",
+    "Timeslot",
+    "Monitor",
+    "Access",
+    "Hang time"
+};
+#endif
 
 const char * settings_accessibility_items[] =
 {
@@ -278,6 +296,9 @@ const uint8_t settings_m17_num = sizeof(settings_m17_items)/sizeof(settings_m17_
 #endif
 const uint8_t settings_fm_num = sizeof(settings_fm_items) / sizeof(settings_fm_items[0]);
 const uint8_t settings_frs_num = sizeof(settings_frs_items) / sizeof(settings_frs_items[0]);
+#ifdef CONFIG_DMR
+const uint8_t settings_dmr_num = sizeof(settings_dmr_items) / sizeof(settings_dmr_items[0]);
+#endif
 const uint8_t settings_accessibility_num = sizeof(settings_accessibility_items)/sizeof(settings_accessibility_items[0]);
 const uint8_t backup_restore_num = sizeof(backup_restore_items)/sizeof(backup_restore_items[0]);
 const uint8_t info_num = sizeof(info_items)/sizeof(info_items[0]);
@@ -1026,6 +1047,237 @@ static void _ui_frs_resetCodes(bool *sync_rtx)
     vp_announceText(currentLanguage->resetCodes, vp_getVoiceLevelQueueFlags());
 }
 
+#ifdef CONFIG_DMR
+/*
+ * DMR mode helpers.
+ *
+ * The identity (DMR ID), the destination (talkgroup or private ID, with its
+ * call type) and the channel access policy live in the settings, as the M17
+ * destination does. The colour code and timeslot of the VFO live in
+ * state.channel.dmr and are seeded from the settings when the VFO is switched
+ * to DMR, since channel.dmr shares its storage with the FM and M17 channel
+ * data. Settings > DMR edits both, so that a fresh VFO keeps the last values.
+ */
+static void _ui_dmr_seedChannel()
+{
+    state.channel.dmr.rxColorCode   = state.settings.dmr_colorCode;
+    state.channel.dmr.txColorCode   = state.settings.dmr_colorCode;
+    state.channel.dmr.dmr_timeslot  = state.settings.dmr_timeslot;
+    state.channel.dmr.contact_index = 0;
+}
+
+static void _ui_dmr_changeColorCode(int variation)
+{
+    uint8_t colorCode = (state.settings.dmr_colorCode + 16 + variation) % 16;
+
+    state.settings.dmr_colorCode = colorCode;
+    if(state.channel.mode == OPMODE_DMR)
+    {
+        state.channel.dmr.rxColorCode = colorCode;
+        state.channel.dmr.txColorCode = colorCode;
+    }
+}
+
+static void _ui_dmr_toggleTimeslot()
+{
+    uint8_t timeslot = (state.settings.dmr_timeslot == 1) ? 2 : 1;
+
+    state.settings.dmr_timeslot = timeslot;
+    if(state.channel.mode == OPMODE_DMR)
+        state.channel.dmr.dmr_timeslot = timeslot;
+}
+
+static void _ui_dmr_changeCallType(int variation)
+{
+    state.settings.dmr_callType = (state.settings.dmr_callType + 3 + variation) % 3;
+}
+
+static void _ui_dmr_changeMonitor(int variation)
+{
+    state.settings.dmr_monitor = (state.settings.dmr_monitor + 3 + variation) % 3;
+}
+
+static void _ui_dmr_changeHangTime(int variation)
+{
+    int hangTime = state.settings.dmr_hangTime + variation;
+
+    if(hangTime < 0) hangTime = 0;
+    if(hangTime > 7) hangTime = 7;
+    state.settings.dmr_hangTime = hangTime;
+}
+
+/*
+ * "Group 31665", "Private 2345678" or "ALL": the current destination.
+ */
+static void _ui_dmr_announceDestination(enum vpQueueFlags queueFlags)
+{
+    switch(state.settings.dmr_callType)
+    {
+        case GROUP:
+            vp_announceText(currentLanguage->group, vpqInit);
+            vp_queueInteger(state.settings.dmr_talkgroup);
+            break;
+        case PRIVATE:
+            vp_announceText(currentLanguage->privateCall, vpqInit);
+            vp_queueInteger(state.settings.dmr_talkgroup);
+            break;
+        default:
+            vp_announceText(currentLanguage->broadcast, vpqInit);
+            break;
+    }
+
+    if((queueFlags & vpqPlayImmediately) ||
+       ((queueFlags & vpqPlayImmediatelyAtMediumOrHigher) &&
+        (state.settings.vpLevel >= vpMedium)))
+        vp_play();
+}
+
+/*
+ * Numeric entry of a DMR ID or talkgroup, shared by the main screens ('#')
+ * and by Settings > DMR. A digit that would take the number past DMR_ID_MAX,
+ * or past the eight digits it can span, is ignored; "0" is a valid entry and
+ * means "unset" for the DMR ID. ENTER with no digit typed keeps the old value.
+ */
+static void _ui_dmr_numberReset()
+{
+    ui_state.new_dmr_number = 0;
+    ui_state.new_dmr_digits = 0;
+}
+
+static void _ui_dmr_numberDigit(uint8_t digit)
+{
+    uint32_t number = (ui_state.new_dmr_number * 10) + digit;
+
+    if((ui_state.new_dmr_digits >= DMR_ID_DIGITS) || (number > DMR_ID_MAX))
+        return;
+
+    ui_state.new_dmr_number = number;
+    ui_state.new_dmr_digits++;
+    vp_announceInputChar('0' + digit);
+}
+
+static void _ui_dmr_numberDel()
+{
+    if(ui_state.new_dmr_digits == 0)
+        return;
+
+    ui_state.new_dmr_number /= 10;
+    ui_state.new_dmr_digits--;
+}
+
+/*
+ * Keys of the number entry: ENTER accepts the number typed and leaves the
+ * entry, ESC leaves it without a change, the arrows delete the last digit.
+ * Returns true when the entry has been left; *accepted is set when a number
+ * was confirmed, the caller then finds it in ui_state.new_dmr_number. The
+ * caller stores it itself: settings_t is packed, so no pointer to one of its
+ * fields is taken here.
+ */
+static bool _ui_dmr_numberInput(kbd_msg_t msg, bool *accepted)
+{
+    *accepted = false;
+
+    if(msg.keys & KEY_ENTER)
+    {
+        *accepted = (ui_state.new_dmr_digits != 0);
+        return true;
+    }
+    else if(msg.keys & KEY_ESC)
+    {
+        return true;
+    }
+    else if(msg.keys & KEY_UP || msg.keys & KEY_DOWN ||
+            msg.keys & KEY_LEFT || msg.keys & KEY_RIGHT)
+    {
+        _ui_dmr_numberDel();
+    }
+    else if(input_isNumberPressed(msg))
+    {
+        _ui_dmr_numberDigit(input_getPressedNumber(msg));
+    }
+
+    return false;
+}
+
+/*
+ * Talkgroup or private ID entry opened with '#' on the main screens. '#'
+ * pressed again cancels the entry, as ESC does.
+ */
+static void _ui_dmr_destinationInput(kbd_msg_t msg, bool *sync_rtx,
+                                     enum vpQueueFlags queueFlags)
+{
+    if(msg.keys & KEY_HASH)
+    {
+        ui_state.edit_mode = false;
+        return;
+    }
+
+    bool accepted = false;
+    if(_ui_dmr_numberInput(msg, &accepted))
+    {
+        if(accepted && (ui_state.new_dmr_number != state.settings.dmr_talkgroup))
+        {
+            state.settings.dmr_talkgroup = ui_state.new_dmr_number;
+            *sync_rtx = true;
+        }
+
+        ui_state.edit_mode = false;
+        _ui_dmr_announceDestination(queueFlags);
+    }
+}
+
+static void _ui_dmr_openDestinationInput(enum vpQueueFlags queueFlags)
+{
+    ui_state.edit_mode = true;
+    _ui_dmr_numberReset();
+    vp_announceText(currentLanguage->talkgroup, queueFlags);
+}
+
+static void _ui_dmr_toggleCallType(bool *sync_rtx, enum vpQueueFlags queueFlags)
+{
+    // A broadcast destination set in the menu goes back to a group call
+    state.settings.dmr_callType = (state.settings.dmr_callType == GROUP)
+                                ? PRIVATE : GROUP;
+    *sync_rtx = true;
+    _ui_dmr_announceDestination(queueFlags);
+}
+#endif
+
+/*
+ * Macro key 5: FM -> DMR -> M17 -> FM, skipping the modes the radio does not
+ * support. A VFO switched to DMR gets its colour code and timeslot from the
+ * settings, see the DMR helpers above.
+ */
+static void _ui_cycleOpMode()
+{
+    switch(state.channel.mode)
+    {
+        case OPMODE_FM:
+            #if defined(CONFIG_DMR)
+            state.channel.mode = OPMODE_DMR;
+            _ui_dmr_seedChannel();
+            #elif defined(CONFIG_M17)
+            state.channel.mode = OPMODE_M17;
+            #endif
+            break;
+
+        #ifdef CONFIG_DMR
+        case OPMODE_DMR:
+            #ifdef CONFIG_M17
+            state.channel.mode = OPMODE_M17;
+            #else
+            state.channel.mode = OPMODE_FM;
+            #endif
+            break;
+        #endif
+
+        default:
+            // M17, or an invalid mode: never lock the user out
+            state.channel.mode = OPMODE_FM;
+            break;
+    }
+}
+
 bool _ui_checkStandby(long long time_since_last_event)
 {
     if (standby)
@@ -1173,6 +1425,17 @@ static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
                     state.channel.fm.txToneEn, state.channel.fm.txTone,
                     queueFlags | vpqIncludeDescriptions);
             }
+            #ifdef CONFIG_DMR
+            else if(state.channel.mode == OPMODE_DMR)
+            {
+                // Next colour code
+                _ui_dmr_changeColorCode(+1);
+                *sync_rtx = true;
+                vp_announceColorCode(state.channel.dmr.rxColorCode,
+                                     state.channel.dmr.txColorCode,
+                                     queueFlags | vpqIncludeDescriptions);
+            }
+            #endif
             break;
         case 2:
             if (state.channel.mode == OPMODE_FM)
@@ -1195,6 +1458,16 @@ static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
                                  state.channel.fm.txTone,
                                  queueFlags);
             }
+            #ifdef CONFIG_DMR
+            else if(state.channel.mode == OPMODE_DMR)
+            {
+                // Other timeslot
+                _ui_dmr_toggleTimeslot();
+                *sync_rtx = true;
+                vp_announceTimeslot(state.channel.dmr.dmr_timeslot,
+                                    queueFlags | vpqIncludeDescriptions);
+            }
+            #endif
             break;
 
         case 3:
@@ -1210,6 +1483,16 @@ static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
                                  state.channel.fm.txTone,
                                  queueFlags |vpqIncludeDescriptions);
             }
+            #ifdef CONFIG_DMR
+            else if(state.channel.mode == OPMODE_DMR)
+            {
+                // Next monitor level: off, own colour code, any
+                _ui_dmr_changeMonitor(+1);
+                *sync_rtx = true;
+                vp_announceSettingsInt(&currentLanguage->monitor, queueFlags,
+                                       state.settings.dmr_monitor);
+            }
+            #endif
             break;
         case 4:
             if(state.channel.mode == OPMODE_FM)
@@ -1222,14 +1505,7 @@ static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
             break;
         case 5:
             // Cycle through radio modes
-            #ifdef CONFIG_M17
-            if(state.channel.mode == OPMODE_FM)
-                state.channel.mode = OPMODE_M17;
-            else if(state.channel.mode == OPMODE_M17)
-                state.channel.mode = OPMODE_FM;
-            else //catch any invalid states so they don't get locked out
-            #endif
-                state.channel.mode = OPMODE_FM;
+            _ui_cycleOpMode();
             *sync_rtx = true;
             vp_announceRadioMode(state.channel.mode, queueFlags);
             break;
@@ -1752,6 +2028,14 @@ void ui_updateFSM(bool *sync_rtx)
 
                 if(ui_state.edit_mode)
                 {
+                    #ifdef CONFIG_DMR
+                    // DMR talkgroup or private ID entry
+                    if(state.channel.mode == OPMODE_DMR)
+                    {
+                        _ui_dmr_destinationInput(msg, sync_rtx, queueFlags);
+                        break;
+                    }
+                    #endif
                     #ifdef CONFIG_M17
                     if(state.channel.mode == OPMODE_M17)
                     {
@@ -1814,6 +2098,14 @@ void ui_updateFSM(bool *sync_rtx)
                     }
                     else if(msg.keys & KEY_HASH)
                     {
+                        #ifdef CONFIG_DMR
+                        // Talkgroup or private ID entry when using DMR
+                        if(state.channel.mode == OPMODE_DMR)
+                        {
+                            _ui_dmr_openDestinationInput(queueFlags);
+                        }
+                        else
+                        #endif
                         #ifdef CONFIG_M17
                         // Only enter edit mode when using M17
                         if(state.channel.mode == OPMODE_M17)
@@ -1836,6 +2128,13 @@ void ui_updateFSM(bool *sync_rtx)
                             }
                         }
                     }
+                    #ifdef CONFIG_DMR
+                    else if((msg.keys & KEY_STAR) &&
+                            (state.channel.mode == OPMODE_DMR))
+                    {
+                        _ui_dmr_toggleCallType(sync_rtx, queueFlags);
+                    }
+                    #endif
                     else if(msg.keys & KEY_UP || msg.keys & KNOB_RIGHT)
                     {
                         // Increment TX and RX frequency of 12.5KHz
@@ -1944,6 +2243,14 @@ void ui_updateFSM(bool *sync_rtx)
                 // M17 Destination callsign input
                 if(ui_state.edit_mode)
                 {
+                    #ifdef CONFIG_DMR
+                    // DMR talkgroup or private ID entry
+                    if(state.channel.mode == OPMODE_DMR)
+                    {
+                        _ui_dmr_destinationInput(msg, sync_rtx, queueFlags);
+                        break;
+                    }
+                    #endif
                     {
                         if(msg.keys & KEY_ENTER)
                         {
@@ -2012,6 +2319,14 @@ void ui_updateFSM(bool *sync_rtx)
                     }
                     else if(msg.keys & KEY_HASH)
                     {
+                        #ifdef CONFIG_DMR
+                        // Talkgroup or private ID entry when using DMR
+                        if(state.channel.mode == OPMODE_DMR)
+                        {
+                            _ui_dmr_openDestinationInput(queueFlags);
+                        }
+                        else
+                        #endif
                         // Only enter edit mode when using M17
                         if(state.channel.mode == OPMODE_M17)
                         {
@@ -2030,6 +2345,13 @@ void ui_updateFSM(bool *sync_rtx)
                             }
                         }
                     }
+                    #ifdef CONFIG_DMR
+                    else if((msg.keys & KEY_STAR) &&
+                            (state.channel.mode == OPMODE_DMR))
+                    {
+                        _ui_dmr_toggleCallType(sync_rtx, queueFlags);
+                    }
+                    #endif
                     else if(msg.keys & KEY_F1)
                     {
                         if (state.settings.vpLevel > vpBeep)
@@ -2343,6 +2665,11 @@ void ui_updateFSM(bool *sync_rtx)
 #ifdef CONFIG_M17
                         case S_M17:
                             state.ui_screen = SETTINGS_M17;
+                            break;
+#endif
+#ifdef CONFIG_DMR
+                        case S_DMR:
+                            state.ui_screen = SETTINGS_DMR;
                             break;
 #endif
                         case S_FM:
@@ -2938,6 +3265,102 @@ void ui_updateFSM(bool *sync_rtx)
                     _ui_menuBack(MENU_SETTINGS);
                 break;
 
+#ifdef CONFIG_DMR
+            // DMR settings
+            case SETTINGS_DMR:
+                if(ui_state.edit_mode &&
+                   ((ui_state.menu_selected == DMR_ID) ||
+                    (ui_state.menu_selected == DMR_TALKGROUP)))
+                {
+                    // Numeric entry of the DMR ID or of the talkgroup
+                    bool accepted = false;
+                    if(_ui_dmr_numberInput(msg, &accepted))
+                    {
+                        ui_state.edit_mode = false;
+                        if(ui_state.menu_selected == DMR_ID)
+                        {
+                            if(accepted)
+                                state.settings.dmr_id = ui_state.new_dmr_number;
+                            vp_announceSettingsInt(&currentLanguage->dmrId,
+                                                   queueFlags,
+                                                   state.settings.dmr_id);
+                        }
+                        else
+                        {
+                            if(accepted)
+                                state.settings.dmr_talkgroup = ui_state.new_dmr_number;
+                            _ui_dmr_announceDestination(queueFlags);
+                        }
+                    }
+                }
+                else if(msg.keys & KEY_LEFT || msg.keys & KEY_RIGHT ||
+                        (ui_state.edit_mode &&
+                        (msg.keys & KEY_DOWN || msg.keys & KNOB_LEFT ||
+                         msg.keys & KEY_UP || msg.keys & KNOB_RIGHT)))
+                {
+                    int variation = (msg.keys & (KEY_LEFT | KEY_DOWN | KNOB_LEFT))
+                                  ? -1 : +1;
+                    switch(ui_state.menu_selected)
+                    {
+                        case DMR_CALLTYPE:
+                            _ui_dmr_changeCallType(variation);
+                            _ui_dmr_announceDestination(queueFlags);
+                            break;
+                        case DMR_COLORCODE:
+                            _ui_dmr_changeColorCode(variation);
+                            vp_announceSettingsInt(&currentLanguage->colorCode,
+                                                   queueFlags,
+                                                   state.settings.dmr_colorCode);
+                            break;
+                        case DMR_TIMESLOT:
+                            _ui_dmr_toggleTimeslot();
+                            vp_announceSettingsInt(&currentLanguage->timeslot,
+                                                   queueFlags,
+                                                   state.settings.dmr_timeslot);
+                            break;
+                        case DMR_MONITOR:
+                            _ui_dmr_changeMonitor(variation);
+                            vp_announceSettingsInt(&currentLanguage->monitor,
+                                                   queueFlags,
+                                                   state.settings.dmr_monitor);
+                            break;
+                        case DMR_ACCESS:
+                            state.settings.dmr_polite = !state.settings.dmr_polite;
+                            vp_announceText(state.settings.dmr_polite
+                                            ? currentLanguage->polite
+                                            : currentLanguage->impolite,
+                                            queueFlags);
+                            break;
+                        case DMR_HANGTIME:
+                            _ui_dmr_changeHangTime(variation);
+                            vp_announceSettingsInt(&currentLanguage->hangTime,
+                                                   queueFlags,
+                                                   state.settings.dmr_hangTime);
+                            break;
+                        default:
+                            // The DMR ID and the talkgroup are typed in
+                            break;
+                    }
+                }
+                else if(msg.keys & KEY_UP || msg.keys & KNOB_LEFT)
+                    _ui_menuUp(settings_dmr_num);
+                else if(msg.keys & KEY_DOWN || msg.keys & KNOB_RIGHT)
+                    _ui_menuDown(settings_dmr_num);
+                else if(msg.keys & KEY_ENTER)
+                {
+                    ui_state.edit_mode = !ui_state.edit_mode;
+                    if(ui_state.edit_mode)
+                        _ui_dmr_numberReset();
+                }
+                else if(msg.keys & KEY_ESC)
+                {
+                    ui_state.edit_mode = false;
+                    *sync_rtx = true;
+                    _ui_menuBack(MENU_SETTINGS);
+                }
+                break;
+#endif
+
             case SETTINGS_ACCESSIBILITY:
                 if(msg.keys & KEY_LEFT || (ui_state.edit_mode &&
                    (msg.keys & KEY_DOWN || msg.keys & KNOB_LEFT)))
@@ -3199,6 +3622,12 @@ bool ui_updateGUI()
         case SETTINGS_FRS:
             _ui_drawSettingsFRS(&ui_state);
             break;
+#ifdef CONFIG_DMR
+        // DMR settings screen
+        case SETTINGS_DMR:
+            _ui_drawSettingsDMR(&ui_state);
+            break;
+#endif
         case SETTINGS_ACCESSIBILITY:
             _ui_drawSettingsAccessibility(&ui_state);
             break;

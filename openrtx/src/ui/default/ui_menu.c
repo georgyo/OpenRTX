@@ -557,6 +557,87 @@ int _ui_getFRSCodeValueName(char *buf, uint8_t max_len, uint8_t index)
     return 0;
 }
 
+#ifdef CONFIG_DMR
+int _ui_getDMREntryName(char *buf, uint8_t max_len, uint8_t index)
+{
+    if(index >= settings_dmr_num) return -1;
+    sniprintf(buf, max_len, "%s", settings_dmr_items[index]);
+    return 0;
+}
+
+int _ui_getDMRValueName(char *buf, uint8_t max_len, uint8_t index)
+{
+    if(index >= settings_dmr_num) return -1;
+
+    const settings_t *settings = &last_state.settings;
+    switch(index)
+    {
+        case DMR_ID:
+            if(settings->dmr_id == 0)
+                sniprintf(buf, max_len, "%s", currentLanguage->off);
+            else
+                sniprintf(buf, max_len, "%lu",
+                          (unsigned long) settings->dmr_id);
+            break;
+
+        case DMR_TALKGROUP:
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) settings->dmr_talkgroup);
+            break;
+
+        case DMR_CALLTYPE:
+            switch(settings->dmr_callType)
+            {
+                case GROUP:
+                    sniprintf(buf, max_len, "%s", currentLanguage->group);
+                    break;
+                case PRIVATE:
+                    sniprintf(buf, max_len, "%s", currentLanguage->privateCall);
+                    break;
+                default:
+                    sniprintf(buf, max_len, "%s", currentLanguage->broadcast);
+                    break;
+            }
+            break;
+
+        case DMR_COLORCODE:
+            sniprintf(buf, max_len, "%d", settings->dmr_colorCode);
+            break;
+
+        case DMR_TIMESLOT:
+            sniprintf(buf, max_len, "%d", settings->dmr_timeslot);
+            break;
+
+        case DMR_MONITOR:
+            switch(settings->dmr_monitor)
+            {
+                case 0:
+                    sniprintf(buf, max_len, "%s", currentLanguage->off);
+                    break;
+                case 1:
+                    sniprintf(buf, max_len, "TG");
+                    break;
+                default:
+                    sniprintf(buf, max_len, "%s", currentLanguage->broadcast);
+                    break;
+            }
+            break;
+
+        case DMR_ACCESS:
+            sniprintf(buf, max_len, "%s", (settings->dmr_polite != 0)
+                                          ? currentLanguage->polite
+                                          : currentLanguage->impolite);
+            break;
+
+        case DMR_HANGTIME:
+            sniprintf(buf, max_len, "%d s", settings->dmr_hangTime);
+            break;
+    }
+
+    return 0;
+}
+#endif
+
 int _ui_getAccessibilityEntryName(char *buf, uint8_t max_len, uint8_t index)
 {
     if(index >= settings_accessibility_num) return -1;
@@ -1125,6 +1206,49 @@ void _ui_drawSettingsFRS(ui_state_t* ui_state)
                           _ui_getFRSValueName);
 }
 
+#ifdef CONFIG_DMR
+void _ui_drawSettingsDMR(ui_state_t* ui_state)
+{
+    gfx_clearScreen();
+    // Print "DMR Settings" on top bar
+    gfx_print(layout.top_pos, layout.top_font, TEXT_ALIGN_CENTER, color_white,
+              currentLanguage->dmrSettings);
+
+    if((ui_state->edit_mode) && ((ui_state->menu_selected == DMR_ID) ||
+                                 (ui_state->menu_selected == DMR_TALKGROUP)))
+    {
+        // Number being typed, in the box used for the M17 callsign
+        uint16_t rect_width = CONFIG_SCREEN_WIDTH - (layout.horizontal_pad * 2);
+        uint16_t rect_height = (CONFIG_SCREEN_HEIGHT - (layout.top_h + layout.bottom_h))/2;
+        point_t rect_origin = {(CONFIG_SCREEN_WIDTH - rect_width) / 2,
+                               (CONFIG_SCREEN_HEIGHT - rect_height) / 2};
+        const char *label = (ui_state->menu_selected == DMR_ID)
+                          ? currentLanguage->dmrId
+                          : currentLanguage->talkgroup;
+        char number[12] = { 0 };
+
+        if(ui_state->new_dmr_digits == 0)
+            sniprintf(number, sizeof(number), "_");
+        else
+            sniprintf(number, sizeof(number), "%lu_",
+                      (unsigned long) ui_state->new_dmr_number);
+
+        gfx_printLine(1, 4, layout.top_h, CONFIG_SCREEN_HEIGHT - layout.bottom_h,
+                      layout.horizontal_pad, layout.menu_font,
+                      TEXT_ALIGN_LEFT, color_white, label);
+        gfx_drawRect(rect_origin, rect_width, rect_height, color_white, false);
+        gfx_printLine(1, 1, layout.top_h, CONFIG_SCREEN_HEIGHT - layout.bottom_h,
+                      layout.horizontal_pad, layout.input_font,
+                      TEXT_ALIGN_CENTER, color_white, number);
+    }
+    else
+    {
+        _ui_drawMenuListValue(ui_state, ui_state->menu_selected,
+                              _ui_getDMREntryName, _ui_getDMRValueName);
+    }
+}
+#endif
+
 void _ui_drawFRSCode(ui_state_t* ui_state)
 {
     gfx_clearScreen();
@@ -1367,6 +1491,40 @@ bool _ui_drawMacroMenu(ui_state_t* ui_state)
             char encdec_str[9] = "        ";
             gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_CENTER,
                       color_white, encdec_str);
+        }
+    #endif
+    #ifdef CONFIG_DMR
+        else if (last_state.channel.mode == OPMODE_DMR)
+        {
+            // Colour code (1), timeslot (2) and monitor level (3) take the
+            // place of the CTCSS rows
+            static const char *monitor[] = { "OFF", "TG", "ALL" };
+            uint8_t level = last_state.settings.dmr_monitor;
+            if (level > 2)
+                level = 2;
+
+    #if defined(CONFIG_UI_NO_KEYBOARD)
+            if (ui_state->macro_menu_selected == 0)
+    #endif  // CONFIG_UI_NO_KEYBOARD
+                gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_LEFT,
+                          yellow_fab413, "1");
+            gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_LEFT,
+                      color_white, "  CC%d", last_state.channel.dmr.rxColorCode);
+    #if defined(CONFIG_UI_NO_KEYBOARD)
+            if (ui_state->macro_menu_selected == 1)
+    #endif // CONFIG_UI_NO_KEYBOARD
+                gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_CENTER,
+                          yellow_fab413, "2");
+            gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_CENTER,
+                      color_white, "      TS%d",
+                      last_state.channel.dmr.dmr_timeslot);
+    #if defined(CONFIG_UI_NO_KEYBOARD)
+            if (ui_state->macro_menu_selected == 2)
+    #endif  // CONFIG_UI_NO_KEYBOARD
+                gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_RIGHT,
+                          yellow_fab413, "3        ");
+            gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_RIGHT,
+                      color_white, " M %s", monitor[level]);
         }
     #endif
 
