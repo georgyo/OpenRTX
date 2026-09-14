@@ -1219,7 +1219,8 @@ void _ui_drawSettingsDMR(ui_state_t* ui_state)
     {
         // Number being typed, in the box used for the M17 callsign
         uint16_t rect_width = CONFIG_SCREEN_WIDTH - (layout.horizontal_pad * 2);
-        uint16_t rect_height = (CONFIG_SCREEN_HEIGHT - (layout.top_h + layout.bottom_h))/2;
+        uint16_t rect_height = (CONFIG_SCREEN_HEIGHT -
+                                (layout.top_h + layout.bottom_h)) / 2;
         point_t rect_origin = {(CONFIG_SCREEN_WIDTH - rect_width) / 2,
                                (CONFIG_SCREEN_HEIGHT - rect_height) / 2};
         const char *label = (ui_state->menu_selected == DMR_ID)
@@ -1233,11 +1234,13 @@ void _ui_drawSettingsDMR(ui_state_t* ui_state)
             sniprintf(number, sizeof(number), "%lu_",
                       (unsigned long) ui_state->new_dmr_number);
 
-        gfx_printLine(1, 4, layout.top_h, CONFIG_SCREEN_HEIGHT - layout.bottom_h,
+        gfx_printLine(1, 4, layout.top_h,
+                      CONFIG_SCREEN_HEIGHT - layout.bottom_h,
                       layout.horizontal_pad, layout.menu_font,
                       TEXT_ALIGN_LEFT, color_white, label);
         gfx_drawRect(rect_origin, rect_width, rect_height, color_white, false);
-        gfx_printLine(1, 1, layout.top_h, CONFIG_SCREEN_HEIGHT - layout.bottom_h,
+        gfx_printLine(1, 1, layout.top_h,
+                      CONFIG_SCREEN_HEIGHT - layout.bottom_h,
                       layout.horizontal_pad, layout.input_font,
                       TEXT_ALIGN_CENTER, color_white, number);
     }
@@ -1509,7 +1512,8 @@ bool _ui_drawMacroMenu(ui_state_t* ui_state)
                 gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_LEFT,
                           yellow_fab413, "1");
             gfx_print(layout.line1_pos, layout.top_font, TEXT_ALIGN_LEFT,
-                      color_white, "  CC%d", last_state.channel.dmr.rxColorCode);
+                      color_white, "  CC%d",
+                      last_state.channel.dmr.rxColorCode);
     #if defined(CONFIG_UI_NO_KEYBOARD)
             if (ui_state->macro_menu_selected == 1)
     #endif // CONFIG_UI_NO_KEYBOARD
