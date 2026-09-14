@@ -88,6 +88,150 @@ const char* _ui_getToneEnabledString(bool tone_tx_enable, bool tone_rx_enable,
     return strings[use_abbreviation][index];
 }
 
+/*
+ * Destination of a DMR call as shown on screen: "TG 31665" for a group call,
+ * "PC 2345678" for a private call, "ALL" for a broadcast. The small screens
+ * use the compact form without the space.
+ */
+static void _ui_dmrDestString(char *buf, size_t len, uint8_t callType,
+                              uint32_t id)
+{
+    #if CONFIG_SCREEN_HEIGHT > 127
+    static const char *sep = " ";
+    #else
+    static const char *sep = "";
+    #endif
+
+    switch(callType)
+    {
+        case GROUP:
+            sniprintf(buf, len, "TG%s%lu", sep, (unsigned long) id);
+            break;
+
+        case PRIVATE:
+            sniprintf(buf, len, "PC%s%lu", sep, (unsigned long) id);
+            break;
+
+        default:
+            sniprintf(buf, len, "%s", currentLanguage->broadcast);
+            break;
+    }
+}
+
+/*
+ * Destination being typed after '#': "TG 123_", with the prefix of the
+ * current call type.
+ */
+static void _ui_dmrDestInputString(char *buf, size_t len, ui_state_t* ui_state)
+{
+    const char *prefix = "TG";
+    if(last_state.settings.dmr_callType == PRIVATE)
+        prefix = "PC";
+    else if(last_state.settings.dmr_callType == ALL)
+        prefix = "ID";
+
+    if(ui_state->new_dmr_digits == 0)
+        sniprintf(buf, len, "%s _", prefix);
+    else
+        sniprintf(buf, len, "%s %lu_", prefix,
+                  (unsigned long) ui_state->new_dmr_number);
+}
+
+void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
+{
+    const channel_t *ch = &last_state.channel;
+    char dst[16] = { 0 };
+    char slot[16] = { 0 };
+
+    if(_ui_dmrCallReceived(status))
+    {
+        // Call type of the received call from its FLCO and destination:
+        // unit-to-unit is a private call, the all-ones ID a broadcast
+        uint8_t callType = GROUP;
+        if(status->dmr_rxFlco == 3)
+            callType = PRIVATE;
+        else if(status->dmr_rxDstId == DMR_ID_MAX)
+            callType = ALL;
+
+        _ui_dmrDestString(dst, sizeof(dst), callType, status->dmr_rxDstId);
+        sniprintf(slot, sizeof(slot), "CC%d TS%d",
+                  status->dmr_rxColorCodeSeen, status->dmr_rxTimeslot);
+
+        #if CONFIG_SCREEN_HEIGHT > 127
+        // Caller on line 1, destination on line 2, channel on line 3: the
+        // frequency is not drawn during a received call
+        gfx_drawSymbol(layout.line1_pos, layout.line1_symbol_size,
+                       TEXT_ALIGN_LEFT, color_white, SYMBOL_CALL_RECEIVED);
+        gfx_print(layout.line1_pos, layout.line1_font, TEXT_ALIGN_CENTER,
+                  color_white, "%lu", (unsigned long) status->dmr_rxSrcId);
+        gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
+                  color_white, "-> %s", dst);
+        gfx_print(layout.line3_pos, layout.line3_font, TEXT_ALIGN_CENTER,
+                  color_white, "%s", slot);
+        #else
+        // Caller on line 2, destination on line 3
+        gfx_drawSymbol(layout.line2_pos, layout.line2_symbol_size,
+                       TEXT_ALIGN_LEFT, color_white, SYMBOL_CALL_RECEIVED);
+        gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
+                  color_white, "%lu", (unsigned long) status->dmr_rxSrcId);
+        gfx_print(layout.line3_pos, layout.line3_font, TEXT_ALIGN_CENTER,
+                  color_white, "-> %s", dst);
+        #endif
+
+        return;
+    }
+
+    // Idle or transmitting: destination, colour code and timeslot of the
+    // channel. While transmitting the destination is the one the RTX stage
+    // is sending to.
+    bool tx = (status->dmr_callState == DMR_CALL_TX) ||
+              (status->dmr_callState == DMR_CALL_TX_WAKEUP);
+
+    if(ui_state->edit_mode)
+        _ui_dmrDestInputString(dst, sizeof(dst), ui_state);
+    else if(tx)
+        _ui_dmrDestString(dst, sizeof(dst), status->dmr_callType,
+                          status->dmr_dstId);
+    else
+        _ui_dmrDestString(dst, sizeof(dst), last_state.settings.dmr_callType,
+                          last_state.settings.dmr_talkgroup);
+
+    #if CONFIG_SCREEN_HEIGHT > 127
+    sniprintf(slot, sizeof(slot), "CC%d TS%d%s", ch->dmr.rxColorCode,
+              ch->dmr.dmr_timeslot,
+              (last_state.settings.dmr_monitor != 0) ? " MON" : "");
+    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_LEFT,
+              color_white, "%s%s", tx ? "TX -> " : "", dst);
+    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_RIGHT,
+              color_white, "%s", slot);
+    #else
+    sniprintf(slot, sizeof(slot), "C%dT%d%s", ch->dmr.rxColorCode,
+              ch->dmr.dmr_timeslot,
+              (last_state.settings.dmr_monitor != 0) ? " M" : "");
+    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
+              color_white, "%s%s %s", tx ? "TX->" : "", dst, slot);
+    #endif
+}
+
+/*
+ * Check whether a digital call is being received: the main screens then show
+ * the caller in place of the frequency and channel name.
+ */
+static bool _ui_callReceived()
+{
+    rtxStatus_t status = rtx_getCurrentStatus();
+
+    #ifdef CONFIG_M17
+    if((status.opMode == OPMODE_M17) && (status.lsfOk != false))
+        return true;
+    #endif
+
+    if((status.opMode == OPMODE_DMR) && _ui_dmrCallReceived(&status))
+        return true;
+
+    return false;
+}
+
 void _ui_drawModeInfo(ui_state_t* ui_state)
 {
     char bw_str[8] = { 0 };
@@ -121,10 +265,11 @@ void _ui_drawModeInfo(ui_state_t* ui_state)
             break;
 
         case OPMODE_DMR:
-            // Print talkgroup
-            gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
-                    color_white, "DMR TG%s", "");
+        {
+            rtxStatus_t rtxStatus = rtx_getCurrentStatus();
+            _ui_drawModeInfoDMR(ui_state, &rtxStatus);
             break;
+        }
 
         #ifdef CONFIG_M17
         case OPMODE_M17:
@@ -359,11 +504,8 @@ void _ui_drawMainVFO(ui_state_t* ui_state)
     _ui_drawMainTop(ui_state);
     _ui_drawModeInfo(ui_state);
 
-    #ifdef CONFIG_M17
-    // Show VFO frequency if the OpMode is not M17 or there is no valid LSF data
-    rtxStatus_t status = rtx_getCurrentStatus();
-    if((status.opMode != OPMODE_M17) || (status.lsfOk == false))
-    #endif
+    // Show VFO frequency unless a digital call is being received
+    if(_ui_callReceived() == false)
         _ui_drawFrequency();
 
     _ui_drawMainBottom();
@@ -452,11 +594,8 @@ void _ui_drawMainMEM(ui_state_t* ui_state)
     _ui_drawMainTop(ui_state);
     _ui_drawModeInfo(ui_state);
 
-    #ifdef CONFIG_M17
-    // Show channel data if the OpMode is not M17 or there is no valid LSF data
-    rtxStatus_t status = rtx_getCurrentStatus();
-    if((status.opMode != OPMODE_M17) || (status.lsfOk == false))
-    #endif
+    // Show channel data unless a digital call is being received
+    if(_ui_callReceived() == false)
     {
         _ui_drawBankChannel();
         _ui_drawFrequency();
