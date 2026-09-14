@@ -377,6 +377,57 @@ void _ui_drawMainVFOInput(ui_state_t* ui_state)
     _ui_drawMainBottom();
 }
 
+/*
+ * FRS main screen: privacy code on line 1, mode, frequency and power class
+ * on line 2, channel number in the large font. The values come from the
+ * FRS channel materialised in last_state.channel.
+ */
+void _ui_drawMainFRS(ui_state_t* ui_state)
+{
+    const channel_t *ch = &last_state.channel;
+    uint8_t channel = last_state.settings.frs_channel;
+    uint8_t code = last_state.settings.frs_codes[channel];
+
+    gfx_clearScreen();
+    _ui_drawMainTop(ui_state);
+
+    // Line 1: privacy code and its CTCSS tone
+    if((code == 0) || (ch->fm.txToneEn == 0))
+    {
+        gfx_print(layout.line1_pos, layout.line1_font, TEXT_ALIGN_CENTER,
+                  color_white, "%s %s", currentLanguage->code,
+                  currentLanguage->off);
+    }
+    else
+    {
+        uint16_t tone = ctcss_tone[ch->fm.txTone];
+        gfx_print(layout.line1_pos, layout.line1_font, TEXT_ALIGN_LEFT,
+                  color_white, "%s %d", currentLanguage->code, code);
+        gfx_print(layout.line1_pos, layout.line1_font, TEXT_ALIGN_RIGHT,
+                  color_white, "%d.%d Hz %s", (tone / 10), (tone % 10),
+                  _ui_getToneEnabledString(ch->fm.txToneEn, ch->fm.rxToneEn,
+                                           true));
+    }
+
+    // Line 2: bandwidth, channel frequency and power class
+    freq_t freq = platform_getPttStatus() ? ch->tx_frequency
+                                          : ch->rx_frequency;
+    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_LEFT,
+              color_white, (ch->bandwidth == BW_12_5) ? "NFM" : "FM");
+    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
+              color_white, "%03lu.%05lu", (unsigned long)(freq / 1000000lu),
+              (unsigned long)(freq % 1000000lu) / 10);
+    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_RIGHT,
+              color_white, (ch->power < 1000) ? "Lo" : "Hi");
+
+    // Line 3: channel number
+    gfx_print(layout.line3_large_pos, layout.line3_large_font,
+              TEXT_ALIGN_CENTER, color_white, "%s %d", currentLanguage->frs,
+              channel + 1);
+
+    _ui_drawMainBottom();
+}
+
 void _ui_drawMainMEM(ui_state_t* ui_state)
 {
     gfx_clearScreen();
