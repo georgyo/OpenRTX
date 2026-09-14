@@ -78,6 +78,7 @@ extern void _ui_drawMainVFO(ui_state_t* ui_state);
 extern void _ui_drawMainVFOInput(ui_state_t* ui_state);
 extern void _ui_drawMainMEM(ui_state_t* ui_state);
 extern void _ui_drawMainFRS(ui_state_t* ui_state);
+extern void _ui_drawMainFRSInput(ui_state_t* ui_state);
 /* UI menu functions, their implementation is in "ui_menu.c" */
 extern void _ui_drawMenuTop(ui_state_t* ui_state);
 extern void _ui_drawMenuBank(ui_state_t* ui_state);
@@ -902,6 +903,56 @@ static void _ui_frs_toggle(bool *sync_rtx)
 
     vp_announceSettingsOnOffToggle(&currentLanguage->frsMode, queueFlags,
                                    state.settings.frs_mode);
+}
+
+static void _ui_frs_setChannel(uint8_t channel, bool *sync_rtx)
+{
+    state.settings.frs_channel = channel;
+    _ui_frs_apply(sync_rtx);
+
+    // The channel name is "FRS n": spoken as "channel n, F R S n"
+    vp_announceChannelName(&state.channel, channel + 1,
+                           vp_getVoiceLevelQueueFlags());
+}
+
+/*
+ * Digit typed on the FRS screens. Channels 3-9 are selected at once, since
+ * no two-digit channel starts with them; 1 and 2 are kept pending on the
+ * MAIN_FRS_INPUT screen until a second digit, ENTER or the entry timeout.
+ */
+static void _ui_frs_inputDigit(uint8_t digit, bool *sync_rtx)
+{
+    if (state.ui_screen == MAIN_FRS_INPUT)
+    {
+        uint8_t channel = ui_state.input_number * 10 + digit;
+        if ((channel >= 1) && (channel <= FRS_CHANNEL_NUM))
+        {
+            _ui_frs_setChannel(channel - 1, sync_rtx);
+            state.ui_screen = MAIN_FRS;
+            return;
+        }
+
+        // Not a channel: restart the entry with this digit
+    }
+
+    if (digit == 0)
+    {
+        _ui_frs_refuse();
+        return;
+    }
+
+    vp_announceInputChar('0' + digit);
+
+    if ((digit >= 3) && (state.ui_screen == MAIN_FRS))
+    {
+        _ui_frs_setChannel(digit - 1, sync_rtx);
+        return;
+    }
+
+    ui_state.input_number = digit;
+    ui_state.input_position = 1;
+    ui_state.last_keypress = getTick();
+    state.ui_screen = MAIN_FRS_INPUT;
 }
 
 static void _ui_frs_resetCodes(bool *sync_rtx)
@@ -1930,6 +1981,22 @@ void ui_updateFSM(bool *sync_rtx)
                     // Open Menu
                     state.ui_screen = MENU_TOP;
                 }
+                else if(msg.keys & KEY_UP || msg.keys & KNOB_RIGHT)
+                {
+                    // Next channel, 22 wraps to 1
+                    uint8_t next = state.settings.frs_channel + 1;
+                    if(next >= FRS_CHANNEL_NUM)
+                        next = 0;
+                    _ui_frs_setChannel(next, sync_rtx);
+                }
+                else if(msg.keys & KEY_DOWN || msg.keys & KNOB_LEFT)
+                {
+                    // Previous channel, 1 wraps to 22
+                    uint8_t prev = state.settings.frs_channel;
+                    if(prev == 0)
+                        prev = FRS_CHANNEL_NUM;
+                    _ui_frs_setChannel(prev - 1, sync_rtx);
+                }
                 else if(msg.keys & KEY_F1)
                 {
                     if (state.settings.vpLevel > vpBeep)
@@ -1948,6 +2015,32 @@ void ui_updateFSM(bool *sync_rtx)
 
                         f1Handled = true;
                     }
+                }
+                else if(input_isNumberPressed(msg))
+                {
+                    _ui_frs_inputDigit(input_getPressedNumber(msg), sync_rtx);
+                }
+                // ESC (VFO/MEM switch) and # (1750 Hz tone, M17 destination)
+                // have no function in FRS mode and are ignored.
+                break;
+            // FRS channel number entry screen
+            case MAIN_FRS_INPUT:
+                if(msg.keys & KEY_ENTER)
+                {
+                    // Accept the pending digit as the channel
+                    _ui_frs_setChannel(ui_state.input_number - 1, sync_rtx);
+                    state.ui_screen = MAIN_FRS;
+                }
+                else if(msg.keys & KEY_ESC || msg.keys & KEY_UP ||
+                        msg.keys & KEY_DOWN || msg.keys & KNOB_LEFT ||
+                        msg.keys & KNOB_RIGHT)
+                {
+                    // Cancel channel entry, the channel is unchanged
+                    state.ui_screen = MAIN_FRS;
+                }
+                else if(input_isNumberPressed(msg))
+                {
+                    _ui_frs_inputDigit(input_getPressedNumber(msg), sync_rtx);
                 }
                 break;
             // Top menu screen
@@ -2802,6 +2895,17 @@ void ui_updateFSM(bool *sync_rtx)
         }
 #endif //            CONFIG_GPS
 
+        // FRS channel entry: accept the pending digit once the timeout has
+        // elapsed. This does not go through the key handling epilogue, so
+        // re-enable TX for the main screen here.
+        if ((state.ui_screen == MAIN_FRS_INPUT) &&
+            ((now - ui_state.last_keypress) >= FRS_INPUT_TIMEOUT))
+        {
+            _ui_frs_setChannel(ui_state.input_number - 1, sync_rtx);
+            state.ui_screen = MAIN_FRS;
+            state.txDisable = false;
+        }
+
         if (txOngoing || rtx_rxSquelchOpen() || (state.volume != last_state.volume))
         {
             _ui_exitStandby(now);
@@ -2843,6 +2947,10 @@ bool ui_updateGUI()
         // FRS main screen
         case MAIN_FRS:
             _ui_drawMainFRS(&ui_state);
+            break;
+        // FRS channel number entry screen
+        case MAIN_FRS_INPUT:
+            _ui_drawMainFRSInput(&ui_state);
             break;
         // Top menu screen
         case MENU_TOP:
