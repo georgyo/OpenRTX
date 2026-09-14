@@ -5,10 +5,12 @@
  */
 
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
 #include <cstring>
 
 extern "C" {
 #include "core/frs.h"
+#include "core/settings.h"
 #include "interfaces/platform.h"
 }
 
@@ -109,6 +111,26 @@ TEST_CASE("FRS channel descriptor", "[frs]")
         REQUIRE(ch.fm.txToneEn == 0);
         REQUIRE(ch.fm.txTone == 0);
     }
+}
+
+TEST_CASE("FRS settings layout", "[frs]")
+{
+    /*
+     * The FRS fields are appended to settings_t so that records written by
+     * older firmware load with the tail zeroed (FRS off, channel 1, no
+     * codes), and the whole record must still fit the CS7000 EEEP limit.
+     */
+    REQUIRE(sizeof(settings_t) == 108);
+    REQUIRE(sizeof(settings_t) < 255);
+    REQUIRE(offsetof(settings_t, frs_mode) == 84);
+    REQUIRE(offsetof(settings_t, frs_channel) == 85);
+    REQUIRE(offsetof(settings_t, frs_codes) == 86);
+    REQUIRE(sizeof(default_settings.frs_codes) == FRS_CHANNEL_NUM);
+
+    REQUIRE(default_settings.frs_mode == 0);
+    REQUIRE(default_settings.frs_channel == 0);
+    for (size_t i = 0; i < FRS_CHANNEL_NUM; i++)
+        REQUIRE(default_settings.frs_codes[i] == 0);
 }
 
 TEST_CASE("FRS hardware support check", "[frs]")
