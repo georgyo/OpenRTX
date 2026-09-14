@@ -233,15 +233,23 @@ TEST_CASE("FRS channel keypad entry", "[ui][frs]")
         REQUIRE(state.settings.frs_channel == 21);
     }
 
-    SECTION("Invalid second digit restarts the entry, ENTER accepts")
+    SECTION("Invalid second digit restarts the entry with that digit")
     {
+        /* 25 is not a channel; 5 needs no second digit, so it is selected */
         press(KEY_2);
         press(KEY_5);
-        REQUIRE(state.ui_screen == MAIN_FRS_INPUT);
-        REQUIRE(state.settings.frs_channel == 0);
-        press(KEY_ENTER);
         REQUIRE(state.ui_screen == MAIN_FRS);
         REQUIRE(state.settings.frs_channel == 4);
+        REQUIRE(state.txDisable == false);
+    }
+
+    SECTION("ENTER accepts a pending digit")
+    {
+        press(KEY_2);
+        REQUIRE(state.ui_screen == MAIN_FRS_INPUT);
+        press(KEY_ENTER);
+        REQUIRE(state.ui_screen == MAIN_FRS);
+        REQUIRE(state.settings.frs_channel == 1);
     }
 
     SECTION("ESC cancels, zero is refused")

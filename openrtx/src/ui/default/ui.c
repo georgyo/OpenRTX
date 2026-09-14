@@ -925,6 +925,9 @@ static void _ui_frs_setChannel(uint8_t channel, bool *sync_rtx)
  * Digit typed on the FRS screens. Channels 3-9 are selected at once, since
  * no two-digit channel starts with them; 1 and 2 are kept pending on the
  * MAIN_FRS_INPUT screen until a second digit, ENTER or the entry timeout.
+ * A second digit that does not complete a channel ("2 5") restarts the entry
+ * with that digit, which then follows the same rules: "2 5" lands on channel
+ * 5 at once.
  */
 static void _ui_frs_inputDigit(uint8_t digit, bool *sync_rtx)
 {
@@ -949,9 +952,10 @@ static void _ui_frs_inputDigit(uint8_t digit, bool *sync_rtx)
 
     vp_announceInputChar('0' + digit);
 
-    if ((digit >= 3) && (state.ui_screen == MAIN_FRS))
+    if (digit >= 3)
     {
         _ui_frs_setChannel(digit - 1, sync_rtx);
+        state.ui_screen = MAIN_FRS;
         return;
     }
 
