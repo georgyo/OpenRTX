@@ -2146,6 +2146,15 @@ void ui_updateFSM(bool *sync_rtx)
                     ui_state.menu_selected = 0;
                     state.ui_screen = MAIN_FRS;
                 }
+                else if(msg.keys & KEY_F1)
+                {
+                    // Repeat the last prompt, as on the FRS screen
+                    if (state.settings.vpLevel > vpBeep)
+                    {
+                        vp_replayLastPrompt();
+                        f1Handled = true;
+                    }
+                }
                 else if(input_isNumberPressed(msg))
                 {
                     _ui_frs_codeDigit(input_getPressedNumber(msg));
