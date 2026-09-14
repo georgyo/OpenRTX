@@ -428,6 +428,24 @@ void _ui_drawMainFRS(ui_state_t* ui_state)
     _ui_drawMainBottom();
 }
 
+/*
+ * FRS channel number entry: the pending first digit with an underscore for
+ * the second one, plus a hint of the valid range.
+ */
+void _ui_drawMainFRSInput(ui_state_t* ui_state)
+{
+    gfx_clearScreen();
+    _ui_drawMainTop(ui_state);
+
+    gfx_print(layout.line1_pos, layout.line1_font, TEXT_ALIGN_CENTER,
+              color_white, currentLanguage->channelRange);
+    gfx_print(layout.line3_large_pos, layout.line3_large_font,
+              TEXT_ALIGN_CENTER, color_white, "%s %d_", currentLanguage->frs,
+              ui_state->input_number);
+
+    _ui_drawMainBottom();
+}
+
 void _ui_drawMainMEM(ui_state_t* ui_state)
 {
     gfx_clearScreen();
