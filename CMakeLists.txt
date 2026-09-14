@@ -90,6 +90,7 @@ target_sources(app
     openrtx/src/core/gps.c
     openrtx/src/core/dsp.cpp
     openrtx/src/core/cps.c
+    openrtx/src/core/frs.c
     openrtx/src/core/crc.c
     openrtx/src/core/datetime.c
     openrtx/src/core/openrtx.c
