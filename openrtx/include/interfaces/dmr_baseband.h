@@ -146,6 +146,14 @@ struct dmrbbConfig {
 };
 
 /**
+ * Default value for dmrbbConfig::modeReg, register 0x10: DMR, Tier II,
+ * timeslot mode, Layer 2, repeater, aligned (G4EML bit map; manual §5.4.3
+ * gives 0x68/0x6A). UNVERIFIED on hardware, selectable from the monitor
+ * screen once it exists.
+ */
+#define DMRBB_MODE_REG_DEFAULT 0x6E
+
+/**
  * Initialise the DMR modem driver: interrupt lines, ISR mailbox, SPI ports.
  * Does not put the chip into DMR mode, see dmrbb_configure().
  *

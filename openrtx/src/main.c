@@ -13,10 +13,18 @@
 
 #ifdef PLATFORM_LINUX
 #include "emulator/sdl_engine.h"
+#include "emulator/emulator.h"
 #endif
 
-int main(void)
+int main(int argc, char *argv[])
 {
+    (void) argc;
+    (void) argv;
+
+#ifdef PLATFORM_LINUX
+    emulator_parseArgs(argc, argv);
+#endif
+
     // MD-9600 does not have a proper power on/off mechanism and the MCU is
     // always powered on. We thus need to place a busy wait on the power on
     // button to manage the on/off mechanism.
