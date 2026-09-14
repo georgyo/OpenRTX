@@ -30,8 +30,11 @@ working after visiting it.
 comes from the HR_C6000 manual, the CS7000 schematic or the observation of
 other firmwares, but has not been confirmed on a CS7000, is marked
 `UNVERIFIED on hardware` in the code and is listed in `docs/dmr_bringup.md`
-once stage 3 arrives. Stage 1 contains no such value: it does not touch the
-hardware.
+once stage 3 arrives. Stage 1 does not touch the hardware; its only such
+assumption is the 12-octet layout of the HR_C6000 link control RAM used by
+`FullLC::toChipLc()` and `FullLC::fromChipLc()` (the 9 LC octets followed by
+the 3 RS(12,9) parity octets the chip is expected to compute itself), taken
+from the chip manual and to be confirmed in stage 3.
 
 ## Targets
 
