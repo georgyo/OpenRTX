@@ -79,7 +79,8 @@ openrtx_src = ['openrtx/src/core/state.c',
                'openrtx/src/protocols/DMR/FEC/SlotType.cpp',
                'openrtx/src/protocols/DMR/FEC/Emb.cpp',
                'openrtx/src/protocols/DMR/LinkControl.cpp',
-               'openrtx/src/protocols/DMR/CallController.cpp']
+               'openrtx/src/protocols/DMR/CallController.cpp',
+               'openrtx/src/rtx/OpMode_DMR.cpp']
 
 openrtx_inc = ['openrtx/include', 'platform']
 
