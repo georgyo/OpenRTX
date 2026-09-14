@@ -59,16 +59,17 @@ when FRS mode is turned off.
 ## Main screen
 
 On the 160x128 displays the line under the top bar shows the destination on
-the left and the channel on the right:
+the left and, in the small font on the right, the channel in the compact form
+`C<colour code>T<timeslot>`:
 
 ```
-TG 31665            CC1 TS2
-PC 2345678      CC1 TS2 MON
-ALL                 CC1 TS2
+TG 31665               C1T2
+PC 2345678           C1T2 M
+ALL                    C1T2
 ```
 
 `TG` is a group call to a talkgroup, `PC` a private call to a radio ID, `ALL`
-a broadcast; `MON` is shown while the monitor setting is not off. During a
+a broadcast; `M` is shown while the monitor setting is not off. During a
 received call the frequency gives way to the caller and the destination:
 
 ```
@@ -77,9 +78,11 @@ received call the frequency gives way to the caller and the destination:
   CC1 TS2
 ```
 
-While transmitting the destination line reads `TX -> TG 31665`. The 128x64
-displays put the same information on one line, `TG31665 C1T2`, and show the
-caller on line 2 with the destination on line 3 during a call.
+While transmitting the destination line reads `TX -> TG 31665` and while a
+destination is being typed it reads `TG 316_`; in both cases the channel is
+left out, since `TX -> PC 16777215` alone fills the line. The 128x64 displays
+put the same information on one line, `TG31665 C1T2`, and show the caller on
+line 2 with the destination on line 3 during a call.
 
 Keys on the main screens while the VFO is in DMR:
 

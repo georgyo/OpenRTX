@@ -11,6 +11,7 @@
 
 extern "C" {
 #include "core/event.h"
+#include "core/graphics.h"
 #include "core/input.h"
 #include "core/settings.h"
 #include "core/state.h"
@@ -707,6 +708,40 @@ TEST_CASE("The main screen renders in every DMR call state", "[ui][dmr]")
     ui_saveState();
     REQUIRE(ui_updateGUI() == true);
 }
+
+#if CONFIG_SCREEN_HEIGHT > 127
+TEST_CASE("The idle DMR line fits the destination and the channel", "[ui][dmr]")
+{
+    /*
+     * Mirrors the strings of _ui_drawModeInfoDMR(): destination on the left
+     * of line 2 in layout.line2_font, channel on the right in
+     * layout.message_font, inside the horizontal padding. The widest idle
+     * destination is a private call to the largest ID, the widest channel
+     * string is colour code 15, timeslot 2 and the monitor on. While
+     * transmitting or typing the destination has the line for itself.
+     */
+    const char *idle[] = { "PC 16777215", "TG 16777215", "ALL" };
+    const char *alone[] = { "TX -> PC 16777215", "TX -> TG 16777215",
+                            "TX -> ALL", "PC 16777215_", "ID 16777215_" };
+    const char *slot = "C15T2 M";
+    const uint16_t usable = CONFIG_SCREEN_WIDTH - 2 * layout.horizontal_pad;
+    const uint16_t gap = 4;
+
+    uint16_t slotWidth = gfx_getTextWidth(layout.message_font, slot);
+    for (const char *dst : idle) {
+        uint16_t dstWidth = gfx_getTextWidth(layout.line2_font, dst);
+        INFO(dst << " (" << dstWidth << " px) + " << slot << " (" << slotWidth
+                 << " px) in " << usable << " px");
+        REQUIRE(dstWidth + gap + slotWidth <= usable);
+    }
+
+    for (const char *dst : alone) {
+        uint16_t dstWidth = gfx_getTextWidth(layout.line2_font, dst);
+        INFO(dst << " (" << dstWidth << " px) in " << usable << " px");
+        REQUIRE(dstWidth <= usable);
+    }
+}
+#endif
 
 TEST_CASE("The RTX stage keeps the DMR receive report across a configuration",
           "[ui][dmr][rtx]")
