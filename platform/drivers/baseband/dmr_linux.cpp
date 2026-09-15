@@ -92,7 +92,7 @@ constexpr unsigned EVENT_QUEUE_SIZE = 256;
 constexpr unsigned SCRIPT_QUEUE_SIZE = 2048;
 constexpr unsigned TICK_US = 30000;
 
-/* Synthetic call replay: first call after 2 s, then every 9 s */
+/* Synthetic call replay: first call after 2 s, then 9 s after each call */
 constexpr uint32_t REPLAY_FIRST_TICKS = 67;
 constexpr uint32_t REPLAY_PERIOD_TICKS = 300;
 constexpr unsigned REPLAY_BURSTS = 50;
@@ -114,6 +114,7 @@ bool running = false; /* 0x40 has TxEn/RxEn: timeslots tick   */
 uint8_t tcNext = 0;   /* CACH TC of the next timeslot started */
 uint32_t tsCount = 0;
 uint32_t sysCount = 0;
+uint32_t tsEpoch = 0; /* tick of slot zero, see pushTsEvent()    */
 
 uint32_t replaySrc = 0;
 uint32_t replayDst = 0;
@@ -138,7 +139,13 @@ void pushTsEvent(uint8_t cc)
     e.snap.r52 = (uint8_t)((cc << 4) | (tcNext ? R52_TC : 0));
     e.snap.tsCount = ++tsCount;
     e.snap.sysCount = sysCount;
-    e.snap.tsTick = (uint32_t)getTick();
+    /*
+     * Timestamp of the slot clock: the fake chip's axis is this counter,
+     * one slot per event, so the tick advances by a slot per event rather
+     * than following the host scheduler (a late clock thread is not a
+     * missed slot here, unlike a late ISR on the radio).
+     */
+    e.snap.tsTick = tsEpoch + tsCount * (TICK_US / 1000);
     tcNext ^= 1;
     pushEvent(e);
 }
@@ -547,6 +554,7 @@ void dmrEmu_reset(void)
     tcNext = 0;
     tsCount = 0;
     sysCount = 0;
+    tsEpoch = (uint32_t)getTick();
     replaySrc = 0;
     replayDst = 0;
     replayTicks = 0;
