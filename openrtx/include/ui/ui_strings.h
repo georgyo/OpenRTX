@@ -124,6 +124,11 @@ typedef struct
     const char* dmrBusy;
     const char* dmrWakeupFailed;
     const char* dmrNotSupported;
+    const char* dmrMonitor;
+    const char* testTone;
+    const char* resync;
+    const char* berTest;
+    const char* twoPointTest;
 }
 stringsTable_t;
 
