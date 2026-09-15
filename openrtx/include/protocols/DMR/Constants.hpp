@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "protocols/DMR/Silence.h"
 
 /*
  * DMR air interface constants, written from the ETSI text:
@@ -194,21 +195,14 @@ static constexpr size_t VOICE_PAYLOAD_BYTES = 27;
 
 /*
  * AMBE+2 silence pattern: one burst of already encoded "silence" frames,
- * used to fill a voice burst when no vocoder output is available. The values
- * are the only thing in this tree taken from a third party:
- *
- *   MMDVMHost, DMRDefines.h ("DMR_SILENCE_DATA"),
- *   Copyright (C) 2015,2016 by Jonathan Naylor G4KLX,
- *   SPDX-License-Identifier: GPL-2.0-or-later
- *
- * A 27-byte constant is not codec code: no AMBE encoder or decoder lives in
- * this tree.
+ * used to fill a voice burst when no vocoder output is available. The bytes
+ * live in Silence.c with their attribution (MMDVMHost DMRDefines.h,
+ * GPL-2.0-or-later), C-visible for the vocoder backends: this is the C++
+ * name of that array.
  */
-static constexpr uint8_t AMBE_SILENCE[VOICE_PAYLOAD_BYTES] = {
-    0xB9, 0xE8, 0x81, 0x52, 0x61, 0x73, 0x00, 0x2A, 0x6B,
-    0xB9, 0xE8, 0x81, 0x52, 0x61, 0x73, 0x00, 0x2A, 0x6B,
-    0xB9, 0xE8, 0x81, 0x52, 0x61, 0x73, 0x00, 0x2A, 0x6B
-};
+static_assert(DMR_AMBE_SILENCE_BYTES == VOICE_PAYLOAD_BYTES,
+              "silence pattern size");
+static const uint8_t (&AMBE_SILENCE)[VOICE_PAYLOAD_BYTES] = dmr_ambeSilence;
 
 } /* namespace DMR */
 
