@@ -306,18 +306,15 @@ static inline bool _ui_frsRefuseMarkerVisible(long long now)
  * @param status: current RTX status.
  * @return marker text, or NULL when no marker is to be shown.
  */
-static inline const char *_ui_dmrMarkerText(const rtxStatus_t *status)
+static inline const char *_ui_dmrMarkerText(uint8_t markers)
 {
-    if(status->opMode != OPMODE_DMR)
-        return NULL;
-
-    if(status->dmr_markers & DMR_MARK_NOT_SUPPORTED)
+    if(markers & DMR_MARK_NOT_SUPPORTED)
         return currentLanguage->dmrNotSupported;
-    if(status->dmr_markers & DMR_MARK_NO_ID)
+    if(markers & DMR_MARK_NO_ID)
         return currentLanguage->dmrNoId;
-    if(status->dmr_markers & DMR_MARK_BUSY)
+    if(markers & DMR_MARK_BUSY)
         return currentLanguage->dmrBusy;
-    if(status->dmr_markers & DMR_MARK_WAKEUP_FAILED)
+    if(markers & DMR_MARK_WAKEUP_FAILED)
         return currentLanguage->dmrWakeupFailed;
 
     return NULL;

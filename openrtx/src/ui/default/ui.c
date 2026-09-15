@@ -3724,10 +3724,7 @@ bool ui_updateGUI()
     // ID, channel busy, repeater wake-up failed, no DMR modem on this radio.
     // They share the FRS marker's place and look; FRS wins when both apply.
     if(marker == NULL)
-    {
-        rtxStatus_t rtxSts = rtx_getCurrentStatus();
-        marker = _ui_dmrMarkerText(&rtxSts);
-    }
+        marker = _ui_dmrMarkerText(rtx_getDmrMarkers());
     #endif
 
     if(marker != NULL)
