@@ -57,6 +57,10 @@ void OpMode_DMR::enable()
     rfState = RF_OFF;
     markers = ready ? 0 : DMR_MARK_NOT_SUPPORTED;
     audioStub.reset();
+
+    /* The controller keeps its markers across restarts: a fresh mode entry
+     * starts without any. */
+    ctrl.clearMarkers();
 }
 
 void OpMode_DMR::disable()
@@ -112,7 +116,12 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
     bb.polite = c.polite;
     bb.modeReg = DMRBB_MODE_REG_DEFAULT;
 
-    bool modemChange = force || !cfgValid || (c.colorCode != cfg.colorCode)
+    /*
+     * A reconfiguration deferred by an earlier call stays due: cfg/bbCfg
+     * already hold the new values, so the comparison alone would miss it.
+     */
+    bool modemChange = force || !cfgValid || cfgPending
+                    || (c.colorCode != cfg.colorCode)
                     || (c.timeslot != cfg.timeslot) || (c.ownId != cfg.ownId)
                     || (c.polite != cfg.polite)
                     || (bb.colorCode != bbCfg.colorCode);
