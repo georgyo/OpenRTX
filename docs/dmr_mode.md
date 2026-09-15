@@ -11,20 +11,24 @@ in, and the rules the series follows.
 
 ## Read this first: status of the series
 
-DMR support lands in six stages. **Stages 1 and 2 are in the tree.** With
-them, DMR is a mode the user can select and configure, and the RTX stage runs
+DMR support lands in six stages. **Stages 1 to 3 are in the tree.** With
+them, DMR is a mode the user can select and configure, the RTX stage runs
 the complete Layer-2 call state machine (`OpMode_DMR` in `rtx.cpp`) against
-an abstract modem interface. On the Linux emulator the modem is a scriptable
-fake, so calls are received and transmitted headlessly; on the radios the
-modem driver is still a stub that reports "not supported", so selecting DMR
-does nothing on the air yet and the analog FM and M17 modes keep working
-after visiting it.
+an abstract modem interface, and stage 3 adds what is needed to bring that
+interface up on the CS7000 radios: the STM32 external interrupt shim
+(`openrtx/include/peripherals/gpio_irq.h`), the HR_C6000 DMR modem driver,
+and the DMR monitor screen with its bring-up checklist
+([dmr_bringup.md](dmr_bringup.md)). On the Linux emulator the modem is a
+scriptable fake, so calls are received and transmitted headlessly. Nothing
+has been run on a radio: the analog FM and M17 modes keep working after
+visiting DMR, and the monitor screen exists so that the first person with a
+radio can find out which of the documented assumptions hold.
 
 | Stage | Title | Status |
 |---|---|---|
 | 1 | DMR data model, settings, UI mode selection and ETSI protocol library (no RF) | in tree |
 | 2 | Call-control state machine, `dmr_baseband` interface, `OpMode_DMR` and the emulator modem model | in tree |
-| 3 | HR_C6000 DMR driver, EXTI shim, `radio_CS7000` branches and the DMR monitor screen (RX sync, colour code, slot and LC with caller display, no audio) | planned |
+| 3 | HR_C6000 DMR driver, EXTI shim, `radio_CS7000` branches and the DMR monitor screen (RX sync, colour code, slot and LC with caller display, no audio) | in tree |
 | 4 | RX voice plumbing: vocoder backend interface, `dmr_audio` thread, PCM to the speaker through the C6000 DAC, and the internal-vocoder experiment | planned |
 | 5 | TX voice calls: simplex (DMO, active timing) first, then repeater (RMO, passive timing with wake-up) | planned |
 | 6 | Contacts and talkgroup UI, last heard, private calls from history, voice prompts and documentation polish | planned |
@@ -33,7 +37,7 @@ after visiting it.
 comes from the HR_C6000 manual, the CS7000 schematic or the observation of
 other firmwares, but has not been confirmed on a CS7000, is marked
 `UNVERIFIED on hardware` in the code and is listed in `docs/dmr_bringup.md`
-once stage 3 arrives. Stage 1 does not touch the hardware; its only such
+together with the check that settles it. Stage 1 does not touch the hardware; its only such
 assumption is the 12-octet layout of the HR_C6000 link control RAM used by
 `FullLC::toChipLc()` and `FullLC::fromChipLc()` (the 9 LC octets followed by
 the 3 RS(12,9) parity octets the chip is expected to compute itself), taken
@@ -119,11 +123,51 @@ take it past that value is ignored.
 | Monitor | Off, TG, ALL | `settings.dmr_monitor` | Off: colour code, timeslot and destination must match. TG: own colour code, any talkgroup. ALL: any colour code and timeslot |
 | Access | Polite, Impolite | `settings.dmr_polite` | Polite: do not transmit over a call on the own colour code |
 | Hang time | 0-7 s | `settings.dmr_hangTime` | How long a finished call stays on screen and keeps the channel; default 3 s, the `T_CallHt` of TS 102 361-2 |
+| Test tone | Off, On | `settings.dmr_testTone` | Debug: the null vocoder of stage 4 plays a tone instead of silence on received voice |
+| DMR monitor | (ENTER) | - | Opens the DMR monitor screen, see below |
 
 The DMR ID and the talkgroup are typed in: ENTER opens the entry, digits
 compose the number, ENTER stores it, ESC leaves the old value, the arrows
 delete the last digit. The other items change with the arrows, in edit mode
-(ENTER) or directly with LEFT and RIGHT.
+(ENTER) or directly with LEFT and RIGHT; ENTER on `DMR monitor` opens the
+screen.
+
+## DMR monitor screen
+
+`Settings > DMR > DMR monitor` is the bring-up tool of stage 3: a read-out
+of what the DMR opMode handler sees on the modem, plus a handful of raw
+register writes for the assumptions that only a radio can settle. It is not
+needed to operate the radio. Its content comes from the
+`rtxStatus_t::dmr_mon` block the opMode handler publishes on every pass
+(interrupt counters, per-EXTI-line counters, the registers read in the
+timeslot and system passes, the last link control RAM with its decoded
+fields) and from `dmrbb_readRegister()` for a few registers read back at
+every redraw.
+
+The rows are grouped in four sections, each starting on a new page; a
+section spans as many pages as the display height needs (six rows per page
+on 160x128, five on 128x64: 7 and 8 pages), the top bar reading
+`DMR monitor n/N`:
+
+1. counters: `TS`, `SYS`, `RFTX` interrupts, `PC0`..`PC3` pulses per EXTI
+   line, slot lock, timecode, last `0x82` / `0x84` / `0x86`;
+2. registers: last `0x51`, `0x52`, `0x5F`, `0x42`, the colour code,
+   timecode and sync type decoded from them, RSSI, FSK error, and `0x10`,
+   `0x06`, `0x12`, `0x14`-`0x16` read back;
+3. link control: the 12 LC RAM octets in hex, source, destination, FLCO, FID
+   and the CRC verdict of the last header;
+4. actions: `Resync` (0x41 = 0x20), `Mode 0x10` (0x6E / 0x6A, also pushed
+   to the RTX stage as `rtxStatus_t::dmr_modeReg` so that it survives the
+   modem reconfigurations until power off), `Reg 0x06` (cycles 0x21, 0x01,
+   0x24, 0x20, 0x00), `BER test` (0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41) and
+   `Two-point` (0x12 bit6 toggled); the value column shows the register and
+   the value the next ENTER writes.
+
+LEFT and RIGHT flip the pages (UP, DOWN and ENTER do too, except on the
+action page where UP and DOWN select the action and ENTER runs it), ESC
+returns to `Settings > DMR`. PTT is disabled on this screen as on every
+menu. What to look for on each page, and what to change if the expectation
+fails, is written down check by check in [dmr_bringup.md](dmr_bringup.md).
 
 The destination lives in the settings rather than in the channel, mirroring
 the M17 destination, because on the CS7000 radios there is no codeplug yet to
@@ -147,13 +191,18 @@ the current size.
 
 `rtxStatus_t` carries the DMR configuration the UI thread pushes on every
 synchronisation (`dmr_srcId`, `dmr_dstId`, `dmr_callType`, `dmr_rxColorCode`,
-`dmr_txColorCode`, `dmr_timeslot`, `dmr_monitor`, `dmr_polite`) and a receive
-report the DMR opMode handler will fill from stage 2 on (`dmr_lcOk`,
+`dmr_txColorCode`, `dmr_timeslot`, `dmr_monitor`, `dmr_polite`, and
+`dmr_modeReg`, the mode word override of the monitor screen, 0 for the driver
+default), a receive report the DMR opMode handler fills (`dmr_lcOk`,
 `dmr_rxSrcId`, `dmr_rxDstId`, `dmr_rxFlco`, `dmr_rxColorCodeSeen`,
-`dmr_rxTimeslot`, `dmr_rxSyncType`, `dmr_callState`, `dmr_slotLock`). The
-report fields are owned by the opMode handler: `rtx_task()` keeps them across
-the copy of a new configuration, together with `opStatus`. The call state is
-one of `DMR_CALL_IDLE`, `DMR_CALL_RX`, `DMR_CALL_RX_HANG`, `DMR_CALL_TX` and
+`dmr_rxTimeslot`, `dmr_rxSyncType`, `dmr_callState`, `dmr_slotLock`,
+`dmr_markers`) and the bring-up block `dmr_mon` (`dmrMonitor_t`, 64 bytes:
+interrupt and EXTI line counters, the last 0x82/0x84/0x86 flags,
+0x51/0x52/0x5F/0x42, RSSI, FSK error, timecode, the last LC RAM with its
+decoded source, destination, FLCO, FID and CRC verdict). The report and the
+block are owned by the opMode handler: `rtx_task()` keeps them across the
+copy of a new configuration, together with `opStatus`. The call state is one
+of `DMR_CALL_IDLE`, `DMR_CALL_RX`, `DMR_CALL_RX_HANG`, `DMR_CALL_TX` and
 `DMR_CALL_TX_WAKEUP`.
 
 ## Stage 2: call control, `OpMode_DMR` and the emulator modem
@@ -177,7 +226,11 @@ to do in the next 30 ms timeslot (`dmrbb_setNextSlot()`, register 0x41 of the
 HR_C6000), the type of the next transmitted burst (`dmrbb_setTxFrameType()`,
 register 0x50), the link control and voice payload of that burst, and a
 blocking `dmrbb_waitEvent()` returning the timeslot and system interrupts
-with a snapshot of the registers they refer to. The register numbers are the
+with a snapshot of the registers they refer to; the snapshot also carries
+the interrupt counters and, for the bring-up, one pulse counter per EXTI
+line PC0..PC3 (`lineCount[]`, zero on the emulator and the stub). The raw
+`dmrbb_readRegister()` / `dmrbb_writeRegister()` pair serves the monitor
+screen only. The register numbers are the
 HR_C6000 ones and every value that only the manual or another firmware
 vouches for is marked `UNVERIFIED on hardware`, both in the header and in
 `ModemPort.hpp` where the state machine's constants live in one place.
@@ -301,8 +354,9 @@ counts of headers, voice bursts, terminators and driver calls);
   the monitor level, modem reconfiguration on a parameter change and its
   deferral during a transmission, the speaker and microphone audio paths
   (requested for a call and its hang time / for a transmission, released
-  after, and by `disable()` mid-call), and the "not supported" path. It
-  prints the sizes: `OpMode_DMR` is 344 bytes as a static object,
+  after, and by `disable()` mid-call), the "not supported" path, and the
+  publication of the bring-up block (counters, registers, decoded LC, CRC
+  verdict, the mode word override). It prints the sizes: `OpMode_DMR` is 344 bytes as a static object,
   `DMR::CallController` 176, `struct dmrbbSnapshot` 72.
 - Stack: the handler is a static object, so only the frames of `update()`
   and what it calls sit on the 512 byte rtx thread stack. Measured with
@@ -320,7 +374,10 @@ counts of headers, voice bursts, terminators and driver calls);
   (`getAbsoluteFreeStack()` of the rtx thread with DMR active) is still
   pending: the emulator cannot provide it (the functions return 0 outside
   Miosix), it is part of the stage 3 hardware bring-up.
-- `ui_dmr_test`: also the marker text selection.
+- `ui_dmr_test`: also the marker text selection and the monitor screen
+  (opening from `Settings > DMR`, the page walk on both key sets, the
+  rendering of every row from a scripted call on the fake modem, and each
+  action's register writes as recorded by `dmrEmu_record()->regLog`).
 
 ## Licensing
 
@@ -386,7 +443,8 @@ meson test -C build_linux --print-errorlogs
 
 `ui_dmr_test` covers the mode cycling and the RTX synchronisation, the seeding
 of the DMR VFO from the settings, the exclusion with FRS mode, every item of
-`Settings > DMR`, the `#` and `*` keys, the macro menu keys, the rendering of
-the main screen in the idle, receive, hang, transmit and wake-up call states,
-the preservation of the receive report in `rtx_task()`, the size and the
-defaults of `settings_t`.
+`Settings > DMR` (the test tone and the monitor entry included), the `#` and
+`*` keys, the macro menu keys, the rendering of the main screen in the idle,
+receive, hang, transmit and wake-up call states, the DMR monitor screen with
+its pages and actions, the preservation of the receive report in
+`rtx_task()`, the size and the defaults of `settings_t`.

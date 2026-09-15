@@ -32,9 +32,9 @@ nothing touches the SPI bus in interrupt context.
   driver deliberately never writes `SYSCFG_PMCR`, so a falling-edge EXTI on
   PC2 or PC3 should see the pulses.
 - Check: in DMR receive near an active repeater or hotspot, the per-line
-  counters of the DMR monitor screen (stage 3, part B) must show PC0 ticking
-  at about 33 Hz (TIME_SLOT_INTER) and PC3 or PC1 pulsing roughly every 60 ms
-  (SYS_INTER), PC2 staying idle in receive.
+  counters of the DMR monitor screen (section 2, rows `PC0`..`PC3`) must
+  show PC0 ticking at about 33 Hz (TIME_SLOT_INTER) and PC3 or PC1 pulsing
+  roughly every 60 ms (SYS_INTER), PC2 staying idle in receive.
 - If wrong: if PC2/PC3 never fire while PC0 does, the switches are open on
   this board (an option byte or the bootloader may have set `PC2SO`/`PC3SO`).
   Clear them once at init in `platform.c` of the CS7000-PLUS target, with a
@@ -52,7 +52,8 @@ nothing touches the SPI bus in interrupt context.
   engineering of the F405 CS7000 firmware); the CS7000-M17 Plus schematic says
   TS = PC0, RF_TX = PC2_C, SYS = PC3_C and puts the 2T/5T analogue tone
   detector on PC1. The two boards may differ.
-- Check: the counters of check 1.1 tell which line pulses every 60 ms.
+- Check: the counters of check 1.1 tell which line pulses every 60 ms, see
+  3.1.
 - If wrong: fix `DMR_SYS_INT` per target. The EXTI shim attaches PC0..PC3 all
   four during bring-up, so no rebuild is needed to see the answer.
 
@@ -64,9 +65,10 @@ nothing touches the SPI bus in interrupt context.
   the edge in hardware and the handler only records it; the timing budget of
   the slot (t2 = 27 ms to program the next slot) tolerates the latency of the
   SPI DMA interrupts and of the audio streams.
-- Check: the TS counter must not skip values while the display refreshes and
-  the OpenMusic DAC stream runs (stage 4); the monitor screen shows a "TS lost"
-  count once the modem driver tracks the 30 ms period.
+- Check: the `TS` counter of the monitor screen must keep counting at 33 per
+  second while the display refreshes and, from stage 4, while the OpenMusic
+  DAC stream runs; a "TS lost" row is to be added once the modem driver
+  tracks the 30 ms period.
 - If wrong: lower the number (higher priority), keeping it above the SPI DMA
   streams so that a callback can never pre-empt a bus transfer that the rtx
   thread will read right after.
@@ -84,3 +86,261 @@ nothing touches the SPI bus in interrupt context.
 - Check: the CS7000 and CS7000-PLUS firmwares link (done in CI); the vector
   table entry for EXTI0 must point into `gpio_irq_stm32.cpp` (`arm-none-eabi-nm
   openrtx_cs7000p | grep EXTI0`).
+
+## 2. The DMR monitor screen (`Settings > DMR > DMR monitor`)
+
+The checks below are run from the DMR monitor screen, the bring-up tool of
+stage 3. It shows what the DMR opMode handler publishes into
+`rtxStatus_t::dmr_mon` on every pass (`OpMode_DMR::monitor()`), reads a few
+registers back, and can write the registers whose value is in doubt without a
+rebuild. Nothing on it is needed for normal operation.
+
+Pages are flipped with LEFT and RIGHT (UP, DOWN and ENTER flip them too,
+except on the action page, where UP and DOWN select the action and ENTER runs
+it); ESC returns to `Settings > DMR`. The rows come in four sections, each
+starting on a new page and spanning as many pages as the screen height needs
+(7 pages on the 160x128 displays, 8 on 128x64; the title reads
+`DMR monitor n/N`):
+
+| Section | Rows | Source |
+|---|---|---|
+| 1. Counters | `TS`, `SYS`, `RFTX` interrupt counts; `PC0`..`PC3` EXTI pulses per line; `Lock` (0 none, 1 slots ticking, 2 timecode locked); `Timecode`; last `0x82`, `0x84`, `0x86` | `dmrbbSnapshot` counters, `lineCount[]`, flags of the last SYS event |
+| 2. Registers | last `0x51`, `0x52`, `0x5F`, `0x42`; `CC` (0x52[7:4]); `TC` (0x52 bit2); `Sync` (0x5F[1:0]: MS, BS, TDMA1, TDMA2); `RSSI` (0x43:0x44); `FSK err` (0x0F); `rd 0x10`, `rd 0x06`, `rd 0x12`, `rd 0x14-16` read back over U_SPI at every redraw | registers read in the TS/SYS passes; `dmrbb_readRegister()` |
+| 3. Link control | `LC 0-5`, `LC 6-11` (the 12 LC RAM octets in hex), `Src`, `Dst`, `FLCO`, `FID` decoded from them, `CRC` (`ok`/`bad` from 0x51 bit2, `*` appended when the 9 octets do not parse as a standard Full LC) | RX RAM of the last header, terminator or late entry |
+| 4. Actions | `Resync`, `Mode 0x10`, `Reg 0x06`, `BER test`, `Two-point`, the value column showing the register and the value the next ENTER writes | `dmrbb_writeRegister()` on the CONFIG page (U_SPI opmode 4) |
+
+The actions, all `UNVERIFIED on hardware` (`openrtx/src/ui/default/ui.c`,
+`_ui_dmr_monitorAction()`):
+
+| Action | Writes | Meaning |
+|---|---|---|
+| Resync | 0x41 = 0x20 | "SyncFail": drop the received timing, search for sync again (manual 5.4.5) |
+| Mode 0x10 | 0x10 = 0x6A, then 0x6E, alternately | Mode word: 0x6E is the OpenGD77 value (DMR, Tier II, timeslot mode, Layer 2, repeater, aligned), 0x6A the manual's example. The chosen word is also pushed to the RTX stage (`rtxStatus_t::dmr_modeReg`), so the opMode handler reprograms the modem with it and keeps it through the watchdog reconfigurations; it is forgotten at power off |
+| Reg 0x06 | 0x06 = 0x21, 0x01, 0x24, 0x20, 0x00 in turn | Vocoder port variants: V_SPI under MCU control (OEM value), TX/RX RAM under MCU control, HR_V3000 hook-up value, V_SPI without MCU control, all off |
+| BER test | 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41 | PHY-layer BER test of manual 5.4.6: 36 raw bytes per frame in RX RAM 0x30, 0x82 bit0 per frame |
+| Two-point | 0x12 bit6 toggled (read-modify-write) | 40 Hz square wave on MOD1/MOD2 to balance the two-point modulation |
+
+Two things to keep in mind:
+
+- The modem is reprogrammed from scratch (`dmrbb_configure()`, table 4.1 of
+  the design note) whenever the colour code, timeslot, ID, access policy or
+  mode word changes, and after 2 s without timeslot interrupts. `Reg 0x06`,
+  `BER test` and `Two-point` are therefore overwritten within 2 s while no
+  signal is being received; read `rd 0x06` / `rd 0x12` right after the
+  action, or run the check with a signal present. `Mode 0x10` survives, see
+  above.
+- PTT is disabled on every menu screen. For the checks that need
+  transmission, run the action, press ESC back to the main screen, key the
+  radio (a DMR transmission with silence frames), release, and come back to
+  the monitor: the counters and readbacks are kept.
+
+## 3. Hardware checks, in order
+
+Each check names the unknown, what to do, what is expected and what to change
+where if it fails. Record the outcome in the table of section 4.
+
+### 3.1 Interrupt lines: which pin carries SYS_INTER (PC1 or PC3) and whether RF_TX_INTER reaches PC2
+
+- Where: `DMR_SYS_INT` / `DMR_TX_INT` in `platform/targets/CS7000/pinmap.h`
+  and `platform/targets/CS7000-PLUS/pinmap.h`; the lines the stage-3 modem
+  driver attaches (`platform/drivers/baseband/dmr_CS7000.cpp`); checks 1.1
+  and 1.2 above.
+- Do: select DMR (MONI + 5) near an active repeater or hotspot on the
+  configured colour code, open the monitor, section 1, and watch `TS`, `SYS`
+  and `PC0`..`PC3` for a few seconds while the repeater carries a call. Then
+  go back to the main screen, key the radio for two seconds, and come back.
+- Expect: `TS` and `PC0` counting at about 33 per second once sync is found
+  (`Lock` 1, then 2); `SYS` and exactly one of `PC1` / `PC3` counting about
+  16 per second during the call (one SYS event per 60 ms burst on the
+  monitored slot, twice that with both slots busy); `PC2` at 0 while
+  receiving, then `RFTX` and `PC2` both counting about 16 per second after
+  the transmission. `0x82` shows `08` (control frame) or `10` (late entry)
+  during the call.
+- If wrong: `PC3` counts and `PC1` stays at 0 on the Plus: set
+  `DMR_SYS_INT` to PC3 in the CS7000-PLUS pinmap (the schematic). `PC1`
+  counts: the pinmap is right for that board. Neither counts while `PC0`
+  does: SYS interrupts are masked, see 3.5. `PC0` never counts: no sync, see
+  3.3 and 3.7. `PC2` never counts during TX while `RFTX` is expected: the
+  `_C` pad switch, check 1.1; if `PC2` counts but `RFTX` does not, the
+  driver attaches the wrong line for RF_TX.
+
+### 3.2 Mode word 0x10: 0x6E or 0x6A
+
+- Where: `DMRBB_MODE_REG_DEFAULT` in `openrtx/include/interfaces/dmr_baseband.h`
+  and the 0x10 row of `dmrMode()` in the stage-3 driver.
+- Do: with the repeater active and `TS` stuck at 0 after several seconds,
+  run `Mode 0x10` once (writes 0x6A, `rd 0x10` must read `6A`) and watch
+  `TS` again; run it again to go back to 0x6E.
+- Expect: `TS` counting with one of the two words, `rd 0x10` reading what
+  was written (which also answers 3.7 for this register).
+- If wrong: only 0x6A works: change `DMRBB_MODE_REG_DEFAULT` to 0x6A and
+  the driver table. Neither works: 0x40 / 0x41 sequence (3.4) or the RX
+  path (3.8).
+
+### 3.3 RX next-slot value 0x41: 0x50 or 0x40
+
+- Where: `DMR::R41_RX` in `openrtx/include/protocols/DMR/ModemPort.hpp`,
+  `dmrbb_startRx()` in the driver.
+- Do: during a call, section 2: watch `0x51` and `SYS`.
+- Expect: `0x51` cycling through `10` (voice LC header, class 00), then
+  `11`, `21`, ... `61` (voice bursts A..F, class 01), then `20`
+  (terminator); `SYS` counting per burst. With 0x50 the voice payload is
+  routed to the vocoder port as well (bit4 "begin_v_layer2"), which stage 4
+  needs: whether V_SPI then returns non-zero payloads is a stage-4 check.
+- If wrong: headers appear (`0x51` = `10`) but no voice-class events
+  follow: try `R41_RX` = 0x40 (blind reception of the manual's minimal
+  sequence) in `ModemPort.hpp` and the driver, rebuild; `Resync` after
+  changing nothing else re-runs the sync search on the current values.
+
+### 3.4 Interrupt masks 0x81 / 0x85 / 0x87 polarity
+
+- Where: the 0x83 / 0x81 / 0x85 / 0x87 rows of `dmrMode()` in the driver
+  (0xFF / 0xFE / 0xFF / 0xFF assumed; FM writes 0x81 = 0x00 "all masked",
+  the MD-3x0 OEM capture writes 0x85 / 0x87 = 0x00 during setup).
+- Do: sections 1 and 2 during a call and after a transmission.
+- Expect: `SYS` counting, `0x82` non-zero during the call; after keying,
+  `0x82` shows bit6 / bit5 (`40` / `20`) with `0x84` = `80` (voice TX start)
+  and `0x86` non-zero.
+- If wrong: `TS` counts but `SYS` never does: 0x81 polarity is inverted,
+  write 0x01 instead of 0xFE. `SYS` counts on 0x82 bit6/bit5 but `0x84` /
+  `0x86` stay 0: invert 0x85 / 0x87 (0x00).
+
+### 3.5 Status registers 0x51 / 0x52 / 0x5F bit meanings
+
+- Where: `R51_*`, `R52_*`, `R5F_*` in `ModemPort.hpp`, their use in
+  `openrtx/src/protocols/DMR/CallController.cpp`.
+- Do: section 2 during a call on a repeater with a known colour code, then
+  on a hotspot in direct mode.
+- Expect: `CC` = the repeater's colour code (0x52[7:4]); `TC` alternating
+  0/1 with the timeslot; `Sync` = `BS` on the repeater, `MS` on a hotspot in
+  DMO (`TDMA1` / `TDMA2` only from a radio transmitting in DMO); `0x51`
+  sequencing as in 3.3 with `CRC` = `ok` on the header and the terminator;
+  `Lock` = 2 and `Timecode` matching the slot the call is on; section 3
+  shows a `Src` / `Dst` that matches the hotspot's log.
+- If wrong: the colour code appears in the low nibble, the sequence never
+  reaches `61`, or `CRC` reads `bad` on every header: fix the constants in
+  `ModemPort.hpp` (bit positions of CC, TC, CRC, sync class) and the
+  parsing in `CallController.cpp`. `Src` / `Dst` swapped or shifted: the
+  12-octet LC RAM layout assumed by `FullLC::fromChipLc()`
+  (`openrtx/src/protocols/DMR/LinkControl.cpp`) is wrong, compare `LC 0-5` /
+  `LC 6-11` with the hotspot's LC.
+
+### 3.6 Own ID registers 0x14-0x16 byte order
+
+- Where: `dmrbb_configure()` in the driver (G4EML: L/M/H; the MD-3x0 OEM
+  capture looks H/M/L).
+- Do: set `Settings > DMR > DMR ID` to 2345678 (0x23CACE), select DMR, open
+  the monitor, section 2, `rd 0x14-16`.
+- Expect: `CE CA 23` if the driver writes L/M/H as assumed and the chip
+  keeps the bytes; `23 CA CE` means the driver was changed to H/M/L; any
+  other reading means the registers are write-only or masked.
+- If wrong: harmless for calls (address matching is done on the MCU), fix
+  the order in the driver for the record. If the readback is garbage while
+  `rd 0x10` reads correctly, the registers are write-only: note it and move
+  on.
+
+### 3.7 U_SPI clock: 12.5 MHz (current SPI2 setting) versus the documented 4 MHz maximum
+
+- Where: SPI2 setup in `platform/targets/CS7000-PLUS/hwconfig.c` and
+  `platform/targets/CS7000/hwconfig.c` (`c6000_spi`).
+- Do: section 2 right after selecting DMR: `rd 0x10` must read the mode
+  word (`6E`), `rd 0x06` = `21`, `rd 0x12` = the driver's value (0x98
+  assumed). Run `Mode 0x10` and `Reg 0x06` and read them back.
+- Expect: every readback equal to what was written.
+- If wrong: any mismatch or unstable readback: lower the SPI2 clock to
+  4 MHz in `hwconfig.c` (both targets) and repeat; the OpenMusic DAC refill
+  (`platform/drivers/audio/Cx000_dac.cpp`, 64 bytes every 4 ms) still fits
+  at 4 MHz but the margin should be re-checked with a beep playing in FM.
+
+### 3.8 AK2365A IF path into the C6000 ADC
+
+- Where: filter and AGC values in `platform/drivers/baseband/AK2365A.c` and
+  `radio_enableRx()` in `platform/drivers/baseband/radio_CS7000.cpp`
+  (BPF_6 + NARROW, AGC 0x02 = 0x1E, 0x0B, 0x0C as in FM).
+- Do: with a DMR signal generator (or a hotspot at high level) and no sync
+  after 3.2: `BER test`, then watch `SYS` and `0x82`.
+- Expect: in BER mode the chip raises 0x82 bit0 once per received frame:
+  `SYS` counting and `0x82` = `01` means the IF path and the 4FSK demodulator
+  work and the problem is in the Layer-2 configuration (3.2-3.5); `RSSI` and
+  `FSK err` move with the generator level.
+- If wrong: no PHY frames: sweep the AK2365A AGC registers (0x02 step/time,
+  0x0B, 0x0C gains) and confirm BPF_6 / NARROW are selected for DMR in
+  `radio_enableRx()`; check the 450 kHz IF word (0x07-0x09 = 0x0B, 0xB8,
+  0x00) in the driver. Leave BER mode by switching to FM and back.
+
+### 3.9 Two-point modulation balance and 4FSK deviation
+
+- Where: 0x45 / 0x46 from `txDigitalPathQ` / `txDigitalPathI` in
+  `radio_updateConfiguration()` (`radio_CS7000.cpp`), 0x12 bit7 in the
+  driver.
+- Do: `Two-point` (0x12 bit6 set, `rd 0x12` reads `D8` with the assumed
+  0x98), ESC to the main screen, key the radio on a dummy load with a
+  deviation meter or spectrum analyser, release, run `Two-point` again to
+  clear the bit. Then key the radio normally and measure the 4FSK deviation.
+- Expect: a 40 Hz square wave with flat top on both edges (MOD1 and MOD2
+  balanced); symbol deviation +/- 1.944 kHz (+/- 648 Hz inner symbols) and
+  the DMR emission mask with the digital calibration pair.
+- If wrong: tilted square wave: adjust the 0x45 / 0x46 ratio; deviation off:
+  the `txAnalogPath*` pair may be the right one, or the calibration
+  interpolation, in `radio_updateConfiguration()`.
+
+### 3.10 V_SPI voice payload (deferred to stage 4)
+
+- Where: `dmrbb_waitEvent()` in the driver (V_SPI command 0x83, 27 bytes),
+  register 0x06.
+- Do: nothing observable on the monitor screen in stage 3: the `Reg 0x06`
+  action prepares the variants (0x21 V_SPI, 0x01 RAM) for the stage-4
+  `dmr_audio` experiment, which adds a "non-zero voice payload" count.
+- Expect / if wrong: stage 4.
+
+### 3.11 Round trip and side effects
+
+- Do: FM -> DMR -> FM and FM -> DMR -> M17 -> FM with the mode key; in DMR
+  press a key (beep) and check the counters keep running; late entry: start
+  listening in the middle of a call (Pi-Star with `EmbeddedLCOnly=1`).
+- Expect: FM RX audio, CTCSS and M17 working after the visit (registers
+  0x26 / 0x36 / 0x25 restored by `fmMode()`); `TS` / `SYS` unaffected by the
+  beep (0x06 bit1 read-modify-write in `Cx000_dac.cpp`); the caller shown
+  within 360 ms of the late entry through 0x82 bit4 (`0x82` = `10`).
+- If wrong: FM audio dead after DMR: compare `fmMode()` with the DMR table
+  for a register it does not restore. Beeps stop the interrupts: the DAC
+  driver still writes 0x06 wholesale. No late entry: the embedded LC
+  assembly is not enabled in the driver (0x82 bit4 masked) or 3.4.
+
+## 4. Results
+
+Fill one column per radio; leave a cell empty until the check was run.
+
+| # | Check | Expected | CS7000 (F405) observed | CS7000-M17 Plus (H743) observed | Date / who |
+|---|---|---|---|---|---|
+| 1.1 | PC2_C / PC3_C reach EXTI | PC2 / PC3 count | | | |
+| 1.2 | SYS_INTER pin | PC1 or PC3 counts at 16/s | | | |
+| 1.3 | EXTI priority 14 | no TS skipped | | | |
+| 3.1 | RF_TX_INTER on PC2 | PC2 and RFTX count in TX | | | |
+| 3.2 | Mode word | 0x6E / 0x6A gives TS | | | |
+| 3.3 | 0x41 RX value | 0x51 cycles 10, 11..61, 20 | | | |
+| 3.4 | 0x81/0x85/0x87 polarity | SYS counts, 0x84 = 80 in TX | | | |
+| 3.5 | 0x51/0x52/0x5F bits | CC, TC, Sync, CRC as listed | | | |
+| 3.6 | 0x14-0x16 byte order | CE CA 23 for ID 2345678 | | | |
+| 3.7 | U_SPI 12.5 MHz readback | rd 0x10/0x06/0x12 as written | | | |
+| 3.8 | AK2365A IF path | BER frames, RSSI tracks level | | | |
+| 3.9 | Two-point / deviation | flat 40 Hz square, +/- 1.944 kHz | | | |
+| 3.10 | V_SPI payload | stage 4 | | | |
+| 3.11 | Round trip, beeps, late entry | FM/M17 intact, TS unaffected, caller in 360 ms | | | |
+
+## 5. Flashing back to the OEM DMR firmware
+
+Connect Systems publishes, on the CS7000 M17 PLUS software page, the OEM
+bootloader (`M17PLUS_Bootloader_B7.06.dfu`) and the DMR + analog host
+firmware (V9.00.96) together with DfuSeDemo / STM32CubeProgrammer, and its
+application note "Converting DMR to M17 Protocol" states that the radio
+carries either the DMR or the M17 (OpenRTX) firmware, never both, and
+describes the erase-and-load procedure with DfuSeDemo in the OpenRTX
+direction. The reverse procedure is not documented in this tree: the
+`dmr/flashing_dmr.md` page of the M17-Project `cs7000-wiki` is a placeholder
+with no steps yet, and nobody on this series has done it. Until somebody
+writes it down here after doing it, the only guidance is the outline above:
+put the radio in DFU mode, load the OEM bootloader `.dfu` with
+DfuSeDemo / STM32CubeProgrammer, then the OEM firmware with the tool Connect
+Systems ships for it, and keep a copy of the OEM firmware files before
+flashing OpenRTX.
