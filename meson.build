@@ -86,6 +86,27 @@ openrtx_src = ['openrtx/src/core/state.c',
 openrtx_inc = ['openrtx/include', 'platform']
 
 ##
+## DMR vocoder backend, see openrtx/include/core/dmr_vocoder.h and the
+## "Vocoder" section of docs/dmr_mode.md. No AMBE code is in the tree: the
+## null backend (silence / test tone) is built for every target, the loopback
+## backend (a tone descriptor, for the emulator) is added on the Linux target
+## with 'auto' or everywhere with 'loopback', and 'external' builds neither so
+## that an out-of-tree object providing dmrVocoder_get() can be linked. Both
+## files compile to nothing without CONFIG_DMR.
+##
+
+dmr_vocoder = get_option('dmr_vocoder')
+dmr_vocoder_null_src = ['openrtx/src/core/dmr_vocoder_null.c']
+dmr_vocoder_loopback_src = ['openrtx/src/core/dmr_vocoder_loopback.c']
+
+if dmr_vocoder == 'loopback'
+  openrtx_src += dmr_vocoder_null_src + dmr_vocoder_loopback_src
+  openrtx_def += {'CONFIG_DMR_VOCODER_LOOPBACK': ''}
+elif dmr_vocoder != 'external'
+  openrtx_src += dmr_vocoder_null_src
+endif
+
+##
 ## OpenRTX UI sources
 ##
 
@@ -395,6 +416,13 @@ linux_inc = ['platform/targets/linux',
              'platform/drivers/tones']
 
 linux_def = {'PLATFORM_LINUX': '', 'VP_USE_FILESYSTEM':''}
+
+# The emulator plays the loopback vocoder by default: an injected DMR call is
+# then audible as a tone through SDL.
+if dmr_vocoder == 'auto'
+  linux_src += dmr_vocoder_loopback_src
+  linux_def += {'CONFIG_DMR_VOCODER_LOOPBACK': ''}
+endif
 
 sdl_dep     = dependency('SDL2',     required: false)
 threads_dep = dependency('threads',  required: false)
