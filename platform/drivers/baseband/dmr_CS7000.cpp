@@ -455,6 +455,8 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
             s->sysCount = sysCount;
             s->rftxCount = rftxCount;
             s->tsTick = tsTick;
+            for (unsigned i = 0; i < NUM_LINES; i++)
+                s->lineCount[i] = lineCount[i];
         }
 
         if (ev != 0)
