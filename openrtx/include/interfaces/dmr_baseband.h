@@ -264,9 +264,28 @@ void dmrbb_writeVoice(const uint8_t ambe[27]);
 uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs);
 
 /**
+ * Pseudo page of dmrbb_readRegister() / dmrbb_writeRegister() reserved to
+ * the knobs and counters of the modem driver itself, for the DMR monitor
+ * screen: no SPI traffic is generated. Addresses:
+ *
+ *  - DMRBB_DRV_VOICE_PATH (read/write): transport of the 27-byte voice
+ *    payloads, 0 = V_SPI (default, register 0x06 = 0x21, manual §4.6.1),
+ *    1 = TX RAM 0x30 / RX RAM 0x30 over the "user" SPI. UNVERIFIED on
+ *    hardware, both; the register 0x06 variant (0x01) is written separately
+ *    through page 4 by whoever flips this.
+ *  - DMRBB_DRV_LINE_COUNT(n) + b (read only): byte b (0 = least significant)
+ *    of the 32-bit interrupt counter of EXTI line n, n = 0..3 (PC0..PC3),
+ *    for the bring-up of the SYS_INTER pin assignment. The counters of the
+ *    mapped lines are also reported in dmrbbSnapshot.
+ */
+#define DMRBB_PAGE_DRIVER 0xFF
+#define DMRBB_DRV_VOICE_PATH 0x00
+#define DMRBB_DRV_LINE_COUNT(n) (0x10 + ((n) * 4))
+
+/**
  * Raw register access for the DMR monitor screen only.
  *
- * @param page: U_SPI page (1 AUX, 4 CONFIG, ...).
+ * @param page: U_SPI page (1 AUX, 4 CONFIG, ...), or DMRBB_PAGE_DRIVER.
  * @param addr: register address.
  * @return register value.
  */
