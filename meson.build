@@ -1391,6 +1391,31 @@ cx000_dac_test = executable('cx000_dac_test',
                             dependencies        : [threads_dep, catch2_dep],
                             link_args           : linux_l_args)
 
+# Same driver with the register 0x06 preset to the DMR vocoder value.
+cx000_dac_dmr_test = executable('cx000_dac_dmr_test',
+                                sources : ['platform/drivers/audio/Cx000_dac.cpp',
+                                           'tests/unit/cx000_dac_dmr.cpp'],
+                                c_args              : linux_c_args,
+                                cpp_args            : linux_cpp_args,
+                                include_directories : ['tests/unit/fake'] + linux_inc,
+                                dependencies        : [threads_dep, catch2_dep],
+                                link_args           : linux_l_args)
+
+# HR_C6000 DMR driver of the CS7000/CS7000-PLUS against a recording fake SPI
+# bus, fake gpio ports and a fake gpio interrupt shim: the fake hwconfig.h in
+# tests/unit/fake/cs7000 shadows the target one, the Miosix interrupt lock
+# comes from the fake in tests/unit/fake_stm32.
+hr_c6000_dmr_test = executable('hr_c6000_dmr_test',
+                               sources : ['tests/unit/hr_c6000_dmr.cpp',
+                                          'platform/drivers/baseband/HR_Cx000.cpp',
+                                          'platform/drivers/baseband/HR_C6000.cpp',
+                                          'platform/drivers/baseband/HR_C6000_CS7000.cpp',
+                                          'platform/drivers/baseband/dmr_CS7000.cpp'],
+                               cpp_args            : linux_cpp_args,
+                               include_directories : ['tests/unit/fake/cs7000',
+                                                      'tests/unit/fake_stm32'] + openrtx_inc,
+                               dependencies        : [catch2_dep],
+                               link_args           : linux_l_args)
 # Compiles the STM32H7 clock tree setup against fake registers, see
 # tests/unit/stubs/stm32h7xx/stm32h7xx.h
 stm32h7_clock_tree_test = executable('stm32h7_clock_tree_test',
@@ -1446,6 +1471,8 @@ if build_machine.system() != 'darwin'
   test('Audio Threading Test', audio_threading_test)
 endif
 test('Cx000 DAC Test',       cx000_dac_test)
+test('Cx000 DAC DMR Test',   cx000_dac_dmr_test)
+test('HR_C6000 DMR Driver Test', hr_c6000_dmr_test)
 
 ##
 ## Host tests of the register-level STM32 drivers, compiled against the fake
