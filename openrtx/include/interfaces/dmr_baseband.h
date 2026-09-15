@@ -124,6 +124,18 @@ struct dmrbbSnapshot {
     uint32_t sysCount;  /**< SYS_INTER counter                          */
     uint32_t rftxCount; /**< RF_TX_INTER counter                        */
     uint32_t tsTick;    /**< getTick() latched by the TS interrupt      */
+
+    /*
+     * Bring-up counters of the interrupt lines themselves, one per EXTI
+     * line PC0..PC3 in that order, counted by the ISR regardless of which
+     * modem signal the driver expects on the pin. The CS7000-M17 Plus
+     * schematic routes TIME_SLOT_INTER to PC0, RF_TX_INTER to PC2_C and
+     * SYS_INTER to PC3_C while the pinmaps say SYS = PC1 (and PC1 is the
+     * 2T/5T tone detector on the Plus): the DMR monitor screen shows these
+     * four counters so that the mapping can be read off the radio. Zero on
+     * drivers without interrupt lines (emulator, stub).
+     */
+    uint32_t lineCount[4];
 };
 
 /**

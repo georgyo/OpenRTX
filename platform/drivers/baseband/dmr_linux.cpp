@@ -135,7 +135,7 @@ void pushEvent(const Event &e)
 void pushTsEvent(uint8_t cc)
 {
     Event e;
-    memset(&e, 0x00, sizeof(e));
+    memset(&e, 0x00, sizeof(e)); /* lineCount[]: no EXTI lines here */
     e.mask = DMRBB_EV_TS;
     e.snap.r52 = (uint8_t)((cc << 4) | (tcNext ? R52_TC : 0));
     e.snap.tsCount = ++tsCount;
@@ -531,12 +531,27 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
 
 uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
 {
-    return regs[page & 0x07][addr];
+    pthread_mutex_lock(&mtx);
+    uint8_t v = regs[page & 0x07][addr];
+    pthread_mutex_unlock(&mtx);
+    return v;
 }
 
 void dmrbb_writeRegister(uint8_t page, uint8_t addr, uint8_t v)
 {
+    pthread_mutex_lock(&mtx);
     regs[page & 0x07][addr] = v;
+
+    struct dmrEmuRegWrite &w = rec.regLog[rec.regWrites % DMR_EMU_REG_LOG];
+    w.page = page;
+    w.addr = addr;
+    w.value = v;
+    rec.regWrites++;
+    pthread_mutex_unlock(&mtx);
+
+    if (clockEnabled)
+        printf("dmr_linux: writeRegister(page %u, 0x%02X) = 0x%02X\n", page,
+               addr, v);
 }
 
 /*
