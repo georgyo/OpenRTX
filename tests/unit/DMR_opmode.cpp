@@ -12,6 +12,7 @@
 #include "interfaces/delays.h"
 #include "protocols/DMR/CallController.hpp"
 #include "protocols/DMR/Constants.hpp"
+#include "protocols/DMR/LinkControl.hpp"
 #include "protocols/DMR/ModemPort.hpp"
 #include "rtx/OpMode_DMR.hpp"
 #include "rtx/rtx.h"
@@ -674,4 +675,115 @@ TEST_CASE("DMR OpMode: a radio without a DMR modem stays off with a marker",
     REQUIRE(b.status.opStatus == RX);
     REQUIRE(b.status.dmr_markers == 0);
     REQUIRE(b.rec->configureCount == 1);
+}
+
+TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
+{
+    Bench b;
+    b.start();
+    const dmrMonitor_t *mon = &b.status.dmr_mon;
+    REQUIRE(mon->tsCount == 0);
+    REQUIRE(mon->sysCount == 0);
+
+    /* Timeslot events: counters and the registers read in the TS pass */
+    b.ticks(6);
+    REQUIRE(mon->tsCount == 6);
+    REQUIRE(mon->sysCount == 0);
+    REQUIRE(mon->rftxCount == 0);
+    REQUIRE(mon->r52 == 0x14);
+    REQUIRE(mon->timecode <= 1);
+    REQUIRE(b.status.dmr_slotLock == 2);
+
+    /* A header burst: flags, registers, line counters and the decoded LC */
+    struct dmrbbSnapshot s;
+    memset(&s, 0x00, sizeof(s));
+    s.irq82 = R82_CTRL_FRAME;
+    s.sub84 = 0x80;
+    s.sub86 = 0x40;
+    s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_HEADER);
+    s.r52 = 0x14;
+    s.r5f = R5F_SYNC_BS;
+    s.r42 = 0x60;
+    s.rssi = 4321;
+    s.fskErr = 3;
+    s.lineCount[0] = 7;
+    s.lineCount[3] = 1;
+
+    FullLC lc;
+    lc.clear();
+    lc.flco = FLCO_GRP_V_CH_USR;
+    lc.fid = FID_STANDARD;
+    lc.dst = TALKGROUP;
+    lc.src = CALLER;
+    lc.toChipLc(s.lc);
+
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(mon->tsCount == 6);
+    REQUIRE(mon->sysCount == 1);
+    REQUIRE(mon->irq82 == R82_CTRL_FRAME);
+    REQUIRE(mon->sub84 == 0x80);
+    REQUIRE(mon->sub86 == 0x40);
+    REQUIRE(mon->r51 == s.r51);
+    REQUIRE(mon->r52 == 0x14);
+    REQUIRE(mon->r5f == R5F_SYNC_BS);
+    REQUIRE(mon->rssi == 4321);
+    REQUIRE(mon->fskErr == 3);
+    REQUIRE(mon->lineCount[0] == 7);
+    REQUIRE(mon->lineCount[1] == 0);
+    REQUIRE(mon->lineCount[3] == 1);
+    REQUIRE(memcmp(mon->lc, s.lc, CHIP_LC_BYTES) == 0);
+    REQUIRE(mon->lcSrc == CALLER);
+    REQUIRE(mon->lcDst == TALKGROUP);
+    REQUIRE(mon->lcFlco == FLCO_GRP_V_CH_USR);
+    REQUIRE(mon->lcFid == FID_STANDARD);
+    REQUIRE(mon->lcValid == 0x03);
+
+    /* A voice burst keeps the LC of the header */
+    s.r51 = (uint8_t)((1 << 4) | R51_CLASS_VOICE);
+    s.voiceValid = true;
+    memset(s.lc, 0xFF, sizeof(s.lc));
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(mon->sysCount == 2);
+    REQUIRE(mon->r51 == s.r51);
+    REQUIRE(mon->lcSrc == CALLER);
+    REQUIRE(mon->lc[0] == 0x00);
+
+    /* A terminator with a bad CRC: the chip's verdict is reported */
+    s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_HEADER | R51_CRC_BAD);
+    s.voiceValid = false;
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(mon->sysCount == 3);
+    REQUIRE(mon->lc[0] == 0xFF);
+    REQUIRE((mon->lcValid & 0x01) == 0);
+
+    /* Timeouts keep the block, the timecode follows the controller */
+    b.run(3);
+    REQUIRE(mon->tsCount == 6);
+    REQUIRE(mon->sysCount == 3);
+    REQUIRE(mon->lcValid == 0x00);
+
+    /* A new enable() starts from zero */
+    dmr.disable();
+    b.start();
+    REQUIRE(mon->tsCount == 0);
+    REQUIRE(mon->sysCount == 0);
+    REQUIRE(mon->lcSrc == 0);
+    REQUIRE(mon->irq82 == 0);
+    REQUIRE(b.rec->configureCount == 2);
+    REQUIRE(b.rec->config.modeReg == DMRBB_MODE_REG_DEFAULT);
+
+    /* The monitor screen's mode word reprograms the modem, once */
+    b.status.dmr_modeReg = 0x6A;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 3);
+    REQUIRE(b.rec->config.modeReg == 0x6A);
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 3);
+    b.status.dmr_modeReg = 0;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 4);
+    REQUIRE(b.rec->config.modeReg == DMRBB_MODE_REG_DEFAULT);
 }

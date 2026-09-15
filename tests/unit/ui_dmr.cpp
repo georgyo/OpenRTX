@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <pthread.h>
+#include <string>
 
 extern "C" {
 #include "core/event.h"
@@ -17,10 +18,12 @@ extern "C" {
 #include "core/state.h"
 #include "core/ui.h"
 #include "interfaces/delays.h"
+#include "interfaces/dmr_baseband.h"
 #include "interfaces/keyboard.h"
 #include "rtx/rtx.h"
 #include "ui/ui_default.h"
 }
+#include "emulator.h"
 
 /*
  * Drives the default UI state machine of the Linux build (160x128, GPS, RTC,
@@ -140,6 +143,7 @@ static rtxStatus_t sync_rtx_stage()
     cfg.dmr_timeslot = state.channel.dmr.dmr_timeslot;
     cfg.dmr_monitor = state.settings.dmr_monitor;
     cfg.dmr_polite = state.settings.dmr_polite;
+    cfg.dmr_modeReg = state.dmr_modeReg;
 
     rtx_configure(&cfg);
     rtx_task();
@@ -831,4 +835,476 @@ TEST_CASE("The DMR top-bar marker follows the RTX marker flags", "[ui][dmr]")
         REQUIRE(lang->dmrWakeupFailed != NULL);
         REQUIRE(lang->dmrNotSupported != NULL);
     }
+}
+
+/*
+ * DMR monitor (bring-up) screen: Settings > DMR > DMR monitor.
+ */
+
+/* From a main screen: Menu > Settings > DMR > DMR monitor */
+static void goto_dmr_monitor()
+{
+    goto_dmr_settings();
+    pressN(KEY_DOWN, DMR_MONITOR_ENTRY);
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == DMR_MONITOR_SCREEN);
+}
+
+/* Redraw the current screen, the way the UI thread does on a status event */
+static void render()
+{
+    ui_pushEvent(EVENT_STATUS, 0);
+    bool sync = false;
+    ui_updateFSM(&sync);
+    ui_saveState();
+    REQUIRE(ui_updateGUI() == true);
+}
+
+/*
+ * Fresh radio with the RTX stage switched to DMR on a reset fake modem: the
+ * RTX stage keeps the DMR opMode handler enabled across the tests, so it is
+ * first taken through FM, the modem record cleared, then brought back to DMR
+ * (enable() clears the bring-up counters).
+ */
+static void fresh_dmr_rtx()
+{
+    boot();
+    rtxStatus_t status = sync_rtx_stage();
+    REQUIRE(status.opMode == OPMODE_FM);
+    dmrEmu_reset();
+
+    press(KEY_MONI | KEY_5);
+    REQUIRE(state.channel.mode == OPMODE_DMR);
+    status = sync_rtx_stage();
+    REQUIRE(status.opMode == OPMODE_DMR);
+    REQUIRE(status.dmr_mon.tsCount == 0);
+    REQUIRE(status.dmr_mon.sysCount == 0);
+}
+
+/* The n-th most recent register write of the fake modem, 0 = last */
+static const struct dmrEmuRegWrite *lastWrite(unsigned back = 0)
+{
+    const struct dmrEmuRecord *rec = dmrEmu_record();
+    REQUIRE(rec->regWrites > back);
+    return &rec->regLog[(rec->regWrites - 1 - back) % DMR_EMU_REG_LOG];
+}
+
+static void requireWrite(const struct dmrEmuRegWrite *w, uint8_t addr,
+                         uint8_t value)
+{
+    INFO("write page " << (int)w->page << " addr 0x" << std::hex << (int)w->addr
+                       << " = 0x" << (int)w->value);
+    REQUIRE(w->page == DMRMON_PAGE_CONFIG);
+    REQUIRE(w->addr == addr);
+    REQUIRE(w->value == value);
+}
+
+static std::string monitorValue(uint8_t row)
+{
+    char buf[MAX_ENTRY_LEN];
+    REQUIRE(_ui_getDMRMonitorValueName(buf, sizeof(buf), row) == 0);
+    return std::string(buf);
+}
+
+static std::string monitorEntry(uint8_t row)
+{
+    char buf[MAX_ENTRY_LEN];
+    REQUIRE(_ui_getDMRMonitorEntryName(buf, sizeof(buf), row) == 0);
+    return std::string(buf);
+}
+
+TEST_CASE("Settings > DMR: test tone and DMR monitor items",
+          "[ui][dmr][monitor]")
+{
+    boot_dmr();
+    goto_dmr_settings();
+    REQUIRE(settings_dmr_num == DMR_MONITOR_ENTRY + 1);
+
+    SECTION("Test tone toggles settings.dmr_testTone")
+    {
+        pressN(KEY_DOWN, DMR_TESTTONE);
+        press(KEY_ENTER);
+        press(KEY_UP);
+        REQUIRE(state.settings.dmr_testTone == 1);
+        press(KEY_DOWN);
+        REQUIRE(state.settings.dmr_testTone == 0);
+        press(KEY_ENTER);
+
+        /* Left and right work without entering edit mode */
+        press(KEY_RIGHT);
+        REQUIRE(state.settings.dmr_testTone == 1);
+        REQUIRE(ui_updateGUI() == true);
+        press(KEY_LEFT);
+        REQUIRE(state.settings.dmr_testTone == 0);
+        REQUIRE(state.ui_screen == SETTINGS_DMR);
+    }
+
+    SECTION("DMR monitor opens with ENTER and ESC comes back to its item")
+    {
+        pressN(KEY_DOWN, DMR_MONITOR_ENTRY);
+        REQUIRE(ui_updateGUI() == true);
+        press(KEY_ENTER);
+        REQUIRE(state.ui_screen == DMR_MONITOR_SCREEN);
+        REQUIRE(state.txDisable == true);
+        render();
+
+        press(KEY_ESC);
+        REQUIRE(state.ui_screen == SETTINGS_DMR);
+        press(KEY_ENTER);
+        REQUIRE(state.ui_screen == DMR_MONITOR_SCREEN);
+        press(KEY_ESC);
+        REQUIRE(state.ui_screen == SETTINGS_DMR);
+        pressN(KEY_ESC, 3);
+        REQUIRE(state.ui_screen == MAIN_VFO);
+        REQUIRE(state.channel.mode == OPMODE_DMR);
+    }
+
+    SECTION("Every language carries the monitor strings")
+    {
+        for (const stringsTable_t *lang = languages;
+             lang < languages + NUM_LANGUAGES; lang++) {
+            REQUIRE(lang->dmrMonitor != NULL);
+            REQUIRE(lang->testTone != NULL);
+            REQUIRE(lang->resync != NULL);
+            REQUIRE(lang->berTest != NULL);
+            REQUIRE(lang->twoPointTest != NULL);
+        }
+    }
+}
+
+TEST_CASE("DMR monitor: the pages cover every row, section by section",
+          "[ui][dmr][monitor]")
+{
+    boot_dmr();
+    dmrEmu_reset();
+    goto_dmr_monitor();
+
+    uint8_t pages = _ui_dmrMonitorPages();
+    REQUIRE(pages >= DMRMON_SECTION_NUM);
+    printf("DMR monitor: %u pages on %ux%u\n", pages, CONFIG_SCREEN_WIDTH,
+           CONFIG_SCREEN_HEIGHT);
+
+    /* Consecutive pages walk the rows in order, the sections start a page */
+    uint8_t expectFirst = 0;
+    bool sectionStart[DMRMON_ROWS_NUM] = { false };
+    uint8_t actionPages = 0;
+    for (uint8_t p = 0; p < pages; p++) {
+        uint8_t first = 0xFF;
+        uint8_t count = 0;
+        _ui_dmrMonitorPageRows(p, &first, &count);
+        INFO("page " << (int)p << " first " << (int)first << " count "
+                     << (int)count);
+        REQUIRE(count > 0);
+        REQUIRE(first == expectFirst);
+        expectFirst = first + count;
+        sectionStart[first] = true;
+        if (first >= DMRMON_ACTION_FIRST)
+            actionPages++;
+    }
+    REQUIRE(expectFirst == DMRMON_ROWS_NUM);
+    REQUIRE(sectionStart[DMRMON_TS]);
+    REQUIRE(sectionStart[DMRMON_R51]);
+    REQUIRE(sectionStart[DMRMON_LC_LO]);
+    REQUIRE(sectionStart[DMRMON_ACT_RESYNC]);
+    REQUIRE(actionPages == 1);
+
+    /* Wrapped page numbers */
+    uint8_t first = 0;
+    uint8_t count = 0;
+    _ui_dmrMonitorPageRows(pages, &first, &count);
+    REQUIRE(first == DMRMON_TS);
+    _ui_dmrMonitorPageRows(pages - 1, &first, &count);
+    REQUIRE(first == DMRMON_ACT_RESYNC);
+    REQUIRE(count == DMRMON_ACTION_NUM);
+
+    /* RIGHT walks the pages and wraps, LEFT walks back; each page renders */
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == 0);
+    for (uint8_t p = 1; p <= pages; p++) {
+        press(KEY_RIGHT);
+        render();
+        REQUIRE(_ui_dmrMonitorCurrentPage() == (p % pages));
+    }
+    press(KEY_LEFT);
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == pages - 1);
+    pressN(KEY_LEFT, pages - 1);
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == 0);
+
+    /* UP, DOWN and ENTER flip the pages too while not on the actions */
+    press(KEY_DOWN);
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == 1);
+    press(KEY_UP);
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == 0);
+    press(KEY_ENTER);
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == 1);
+    REQUIRE(dmrEmu_record()->regWrites == 0);
+
+    /* The row labels: registers by number, actions by their strings */
+    REQUIRE(monitorEntry(DMRMON_TS) == "TS");
+    REQUIRE(monitorEntry(DMRMON_PC3) == "PC3");
+    REQUIRE(monitorEntry(DMRMON_R82) == "0x82");
+    REQUIRE(monitorEntry(DMRMON_R5F) == "0x5F");
+    REQUIRE(monitorEntry(DMRMON_LC_HI) == "LC 6-11");
+    REQUIRE(monitorEntry(DMRMON_ACT_RESYNC) == currentLanguage->resync);
+    REQUIRE(monitorEntry(DMRMON_ACT_BER) == currentLanguage->berTest);
+    REQUIRE(monitorEntry(DMRMON_ACT_TWOPOINT) == currentLanguage->twoPointTest);
+    char buf[MAX_ENTRY_LEN];
+    REQUIRE(_ui_getDMRMonitorEntryName(buf, sizeof(buf), DMRMON_ROWS_NUM)
+            == -1);
+    REQUIRE(_ui_getDMRMonitorValueName(buf, sizeof(buf), DMRMON_ROWS_NUM)
+            == -1);
+
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == SETTINGS_DMR);
+}
+
+TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
+          "[ui][dmr][monitor]")
+{
+    fresh_dmr_rtx();
+
+    /* Six idle timeslots, then a header burst with recognisable registers */
+    for (unsigned i = 0; i < 6; i++) {
+        dmrEmu_pushTs();
+        rtx_task();
+    }
+
+    static const uint8_t lc[12] = { 0x00, 0x00, 0x00, 0x00, 0x7B, 0xB1,
+                                    0x23, 0xCA, 0xCE, 0x00, 0x00, 0x00 };
+    struct dmrbbSnapshot s;
+    memset(&s, 0x00, sizeof(s));
+    s.irq82 = 0x08;
+    s.sub84 = 0x80;
+    s.sub86 = 0x40;
+    s.r51 = 0x10;
+    s.r52 = 0x14;
+    s.r5f = 0x01;
+    s.rssi = 1234;
+    s.fskErr = 7;
+    s.lineCount[0] = 6;
+    s.lineCount[3] = 1;
+    memcpy(s.lc, lc, sizeof(s.lc));
+    dmrEmu_pushSys(&s);
+    rtx_task();
+
+    rtxStatus_t status = rtx_getCurrentStatus();
+    REQUIRE(status.dmr_mon.tsCount == 6);
+    REQUIRE(status.dmr_mon.sysCount == 1);
+    REQUIRE(status.dmr_mon.lineCount[0] == 6);
+    REQUIRE(status.dmr_mon.lineCount[3] == 1);
+    REQUIRE(status.dmr_mon.irq82 == 0x08);
+    REQUIRE(status.dmr_mon.lcSrc == 2345678);
+    REQUIRE(status.dmr_mon.lcDst == 31665);
+    REQUIRE(status.dmr_mon.lcValid == 0x03);
+    REQUIRE(status.dmr_slotLock == 2);
+
+    /* A configuration pushed by the UI keeps the block */
+    status = sync_rtx_stage();
+    REQUIRE(status.dmr_mon.tsCount == 6);
+    REQUIRE(status.dmr_mon.sysCount == 1);
+
+    goto_dmr_monitor();
+    render();
+    REQUIRE(monitorValue(DMRMON_TS) == "6");
+    REQUIRE(monitorValue(DMRMON_SYS) == "1");
+    REQUIRE(monitorValue(DMRMON_RFTX) == "0");
+    REQUIRE(monitorValue(DMRMON_PC0) == "6");
+    REQUIRE(monitorValue(DMRMON_PC1) == "0");
+    REQUIRE(monitorValue(DMRMON_PC2) == "0");
+    REQUIRE(monitorValue(DMRMON_PC3) == "1");
+    REQUIRE(monitorValue(DMRMON_LOCK) == "2");
+    REQUIRE(monitorValue(DMRMON_R82) == "08");
+    REQUIRE(monitorValue(DMRMON_R84) == "80");
+    REQUIRE(monitorValue(DMRMON_R86) == "40");
+    REQUIRE(monitorValue(DMRMON_R51) == "10");
+    REQUIRE(monitorValue(DMRMON_R52) == "14");
+    REQUIRE(monitorValue(DMRMON_R5F) == "01");
+    REQUIRE(monitorValue(DMRMON_CC) == "1");
+    REQUIRE(monitorValue(DMRMON_TC) == "1");
+    REQUIRE(monitorValue(DMRMON_SYNC) == "BS");
+    REQUIRE(monitorValue(DMRMON_RSSI) == "1234");
+    REQUIRE(monitorValue(DMRMON_FSKERR) == "7");
+    REQUIRE(monitorValue(DMRMON_LC_LO) == "000000007BB1");
+    REQUIRE(monitorValue(DMRMON_LC_HI) == "23CACE000000");
+    REQUIRE(monitorValue(DMRMON_LC_SRC) == "2345678");
+    REQUIRE(monitorValue(DMRMON_LC_DST) == "31665");
+    REQUIRE(monitorValue(DMRMON_LC_FLCO) == "0");
+    REQUIRE(monitorValue(DMRMON_LC_FID) == "00");
+    REQUIRE(monitorValue(DMRMON_LC_CRC) == "ok");
+    REQUIRE(monitorValue(DMRMON_ACT_RESYNC) == "41<-20");
+    REQUIRE(monitorValue(DMRMON_ACT_MODE) == "10<-6A");
+    REQUIRE(monitorValue(DMRMON_ACT_R06) == "06<-21");
+    REQUIRE(monitorValue(DMRMON_ACT_BER) == "10 40 41");
+    REQUIRE(monitorValue(DMRMON_ACT_TWOPOINT) == "12^40");
+
+    /* More slots: the screen follows on the next draw */
+    for (unsigned i = 0; i < 4; i++) {
+        dmrEmu_pushTs();
+        rtx_task();
+    }
+    render();
+    REQUIRE(monitorValue(DMRMON_TS) == "10");
+
+    /* A bad CRC and a manufacturer LC are flagged */
+    s.r51 = 0x24;
+    s.lc[1] = 0x10;
+    dmrEmu_pushSys(&s);
+    rtx_task();
+    render();
+    REQUIRE(monitorValue(DMRMON_SYS) == "2");
+    REQUIRE(monitorValue(DMRMON_R51) == "24");
+    REQUIRE(monitorValue(DMRMON_LC_FID) == "10");
+    REQUIRE(monitorValue(DMRMON_LC_CRC) == "bad");
+    s.lc[0] = 0x80;
+    dmrEmu_pushSys(&s);
+    rtx_task();
+    render();
+    REQUIRE(monitorValue(DMRMON_LC_CRC) == "bad*");
+
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == SETTINGS_DMR);
+}
+
+TEST_CASE("DMR monitor: the actions write the documented registers",
+          "[ui][dmr][monitor]")
+{
+    fresh_dmr_rtx();
+    goto_dmr_monitor();
+    const struct dmrEmuRecord *rec = dmrEmu_record();
+    REQUIRE(rec->regWrites == 0);
+
+    /* The action page is the last one: LEFT wraps to it */
+    uint8_t pages = _ui_dmrMonitorPages();
+    press(KEY_LEFT);
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == pages - 1);
+    REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
+
+    /* Resync: 0x41 = 0x20 */
+    press(KEY_ENTER);
+    REQUIRE(rec->regWrites == 1);
+    requireWrite(lastWrite(), 0x41, 0x20);
+    REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x41) == 0x20);
+
+    /* Mode: the driver default is 0x6E, the first press tries 0x6A */
+    press(KEY_DOWN);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction() == 1);
+    REQUIRE(monitorValue(DMRMON_RB10) == "00");
+    bool sync = press(KEY_ENTER);
+    REQUIRE(rec->regWrites == 2);
+    requireWrite(lastWrite(), 0x10, 0x6A);
+    render();
+    REQUIRE(monitorValue(DMRMON_ACT_MODE) == "10<-6E");
+    REQUIRE(monitorValue(DMRMON_RB10) == "6A");
+
+    /* The word is pushed to the RTX stage: the modem is reprogrammed with
+     * it, so that the watchdog reconfiguration keeps it */
+    REQUIRE(sync == true);
+    REQUIRE(state.dmr_modeReg == 0x6A);
+    uint32_t configured = rec->configureCount;
+    rtxStatus_t status = sync_rtx_stage();
+    REQUIRE(status.dmr_modeReg == 0x6A);
+    REQUIRE(rec->configureCount == configured + 1);
+    REQUIRE(rec->config.modeReg == 0x6A);
+    sync_rtx_stage();
+    REQUIRE(rec->configureCount == configured + 1);
+
+    sync = press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x10, 0x6E);
+    REQUIRE(rec->regWrites == 3);
+    REQUIRE(sync == true);
+    REQUIRE(state.dmr_modeReg == 0x6E);
+    sync_rtx_stage();
+    REQUIRE(rec->configureCount == configured + 2);
+    REQUIRE(rec->config.modeReg == 0x6E);
+
+    /* 0x06 variant: the five values in turn, then round again */
+    static const uint8_t variants[DMRMON_R06_VARIANTS] = { 0x21, 0x01, 0x24,
+                                                           0x20, 0x00 };
+    press(KEY_DOWN);
+    for (unsigned i = 0; i < DMRMON_R06_VARIANTS; i++) {
+        press(KEY_ENTER);
+        requireWrite(lastWrite(), 0x06, variants[i]);
+    }
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x06, 0x21);
+    REQUIRE(rec->regWrites == 9);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB06) == "21");
+
+    /* BER test: 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41 in this order */
+    press(KEY_DOWN);
+    press(KEY_ENTER);
+    REQUIRE(rec->regWrites == 12);
+    requireWrite(lastWrite(2), 0x10, 0x02);
+    requireWrite(lastWrite(1), 0x40, 0x40);
+    requireWrite(lastWrite(0), 0x41, 0x41);
+
+    /* Two-point test: bit6 of 0x12 toggled from its current value */
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x98);
+    press(KEY_DOWN);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction() == DMRMON_ACTION_NUM - 1);
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, 0xD8);
+    REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12) == 0xD8);
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, 0x98);
+    REQUIRE(rec->regWrites == 15);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+
+    /* Own ID registers are read back in address order */
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x14, 0xCE);
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x15, 0xCA);
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x16, 0x23);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB14) == "CE CA 23");
+    REQUIRE(monitorEntry(DMRMON_RB14) == "rd 0x14-16");
+    REQUIRE(rec->regWrites == 18);
+
+    /* UP and DOWN wrap over the actions, the knob works as well */
+    press(KEY_DOWN);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
+    press(KEY_UP);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction() == DMRMON_ACTION_NUM - 1);
+    press(KNOB_RIGHT);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
+    press(KNOB_LEFT);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction() == DMRMON_ACTION_NUM - 1);
+
+    /* Leaving the page resets the selection; nothing else was written */
+    press(KEY_RIGHT);
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == 0);
+    press(KEY_LEFT);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
+    REQUIRE(rec->regWrites == 18);
+
+    /* Reopening the screen starts from the mode word in force */
+    press(KEY_ESC);
+    press(KEY_ENTER);
+    press(KEY_LEFT);
+    render();
+    REQUIRE(monitorValue(DMRMON_ACT_MODE) == "10<-6A");
+
+    /* The settings were not touched by the register writes */
+    REQUIRE(state.settings.dmr_colorCode == 1);
+    REQUIRE(state.settings.dmr_testTone == 0);
+
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == SETTINGS_DMR);
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == MENU_SETTINGS);
 }
