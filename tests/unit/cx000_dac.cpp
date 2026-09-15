@@ -99,6 +99,10 @@ static void setupStream()
 
     memset(&fakeC6000, 0, sizeof(fakeC6000));
     memset(&ctx, 0, sizeof(ctx));
+
+    // Register 0x06 as fmMode() leaves it: the driver's read-modify-write
+    // of the "OpenMusic" bit then writes 0x22 / 0x20 as before.
+    fakeC6000.reg06 = 0x20;
     ctx.buffer = buf;
     ctx.bufSize = 320;
     ctx.bufMode = BUF_CIRC_DOUBLE;

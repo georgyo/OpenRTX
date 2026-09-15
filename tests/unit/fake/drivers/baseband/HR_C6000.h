@@ -14,16 +14,23 @@
  * Minimal stand-in for the HR_C6000 baseband driver, shadowing the real
  * header when platform/drivers/audio/Cx000_dac.cpp is compiled for the host
  * unit tests. Register accesses are recorded into a global state defined by
- * the test program.
+ * the test program: register 0x06 (vocoder interface and "OpenMusic" bit) is
+ * held so that a read-modify-write of the driver sees what it wrote, and
+ * every configuration register write is logged in order.
  */
 #define FAKE_HR_C6000 1
+
+#define FAKE_C6000_LOG_SIZE 64
 
 struct FakeC6000State {
     volatile bool fifoNotEmpty;  ///< Value of bit 0 of register 0x88.
     const uint8_t *lastAudio;    ///< Pointer passed to the last sendAudio().
     volatile size_t audioChunks; ///< Number of sendAudio() calls.
     void (*onCfgWrite)(uint8_t reg,
-                       uint8_t value); ///< Hook called on register write.
+                       uint8_t value);      ///< Hook called on register write.
+    uint8_t reg06;                          ///< Current value of register 0x06.
+    size_t cfgWrites;                       ///< Number of register writes.
+    uint8_t cfgLog[FAKE_C6000_LOG_SIZE][2]; ///< Register writes, {reg, value}.
 };
 
 extern struct FakeC6000State fakeC6000;
@@ -37,6 +44,16 @@ public:
 
     inline void writeCfgRegister(const uint8_t reg, const uint8_t value)
     {
+        if (reg == 0x06)
+            fakeC6000.reg06 = value;
+
+        if (fakeC6000.cfgWrites < FAKE_C6000_LOG_SIZE) {
+            fakeC6000.cfgLog[fakeC6000.cfgWrites][0] = reg;
+            fakeC6000.cfgLog[fakeC6000.cfgWrites][1] = value;
+        }
+
+        fakeC6000.cfgWrites += 1;
+
         if (fakeC6000.onCfgWrite != NULL)
             fakeC6000.onCfgWrite(reg, value);
     }
@@ -45,6 +62,9 @@ public:
     {
         if (reg == 0x88)
             return fakeC6000.fifoNotEmpty ? 0x01 : 0x00;
+
+        if (reg == 0x06)
+            return fakeC6000.reg06;
 
         return 0;
     }
