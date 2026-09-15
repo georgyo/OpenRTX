@@ -18,6 +18,9 @@
 #include "ui/ui_strings.h"
 #include "core/voicePromptUtils.h"
 #include "core/frs.h"
+#ifdef CONFIG_DMR
+#include "interfaces/dmr_baseband.h"
+#endif
 
 #ifdef PLATFORM_TTWRPLUS
 #include "drivers/baseband/SA8x8.h"
@@ -632,9 +635,316 @@ int _ui_getDMRValueName(char *buf, uint8_t max_len, uint8_t index)
         case DMR_HANGTIME:
             sniprintf(buf, max_len, "%d s", settings->dmr_hangTime);
             break;
+
+        case DMR_TESTTONE:
+            sniprintf(buf, max_len, "%s", (settings->dmr_testTone != 0)
+                                          ? currentLanguage->on
+                                          : currentLanguage->off);
+            break;
+
+        default:
+            // DMR monitor: opened with ENTER, no value
+            buf[0] = '\0';
+            break;
     }
 
     return 0;
+}
+
+/*
+ * DMR monitor (bring-up) screen. The rows are read from the rtx status and
+ * the UI state captured by _ui_drawDMRMonitor(), so that the getters keep
+ * the signature of the other menus and the unit tests can read them back
+ * after a draw. Register numbers are those of the HR_C6000 CONFIG page,
+ * see interfaces/dmr_baseband.h; the action values are the ones ui.c writes.
+ */
+static rtxStatus_t dmrMonStatus;
+static uint8_t dmrMonModeReg = DMRBB_MODE_REG_DEFAULT;
+static uint8_t dmrMonR06 = 0;
+static uint8_t dmrMonPage = 0;
+static uint8_t dmrMonSelected = 0;
+static uint8_t dmrMonReadback[6];   // 0x10, 0x06, 0x12, 0x14, 0x15, 0x16
+
+// First row of each section, plus the end marker
+static const uint8_t dmrMonSectionFirst[DMRMON_SECTION_NUM + 1] =
+{
+    DMRMON_TS, DMRMON_R51, DMRMON_LC_LO, DMRMON_ACT_RESYNC, DMRMON_ROWS_NUM
+};
+
+// Same values as the "0x06 variant" action of ui.c, in the same order
+static const uint8_t dmrMonR06Values[DMRMON_R06_VARIANTS] =
+{
+    0x21, 0x01, 0x24, 0x20, 0x00
+};
+
+static uint8_t _ui_dmrMonitorRowsPerPage()
+{
+    return (CONFIG_SCREEN_HEIGHT - 1 - layout.line1_pos.y) / layout.menu_h + 1;
+}
+
+uint8_t _ui_dmrMonitorPages()
+{
+    uint8_t rows = _ui_dmrMonitorRowsPerPage();
+    uint8_t pages = 0;
+
+    for(uint8_t sec = 0; sec < DMRMON_SECTION_NUM; sec++)
+    {
+        uint8_t n = dmrMonSectionFirst[sec + 1] - dmrMonSectionFirst[sec];
+        pages += (n + rows - 1) / rows;
+    }
+
+    return pages;
+}
+
+void _ui_dmrMonitorPageRows(uint8_t page, uint8_t *first, uint8_t *count)
+{
+    uint8_t rows = _ui_dmrMonitorRowsPerPage();
+    page %= _ui_dmrMonitorPages();
+
+    for(uint8_t sec = 0; sec < DMRMON_SECTION_NUM; sec++)
+    {
+        uint8_t n = dmrMonSectionFirst[sec + 1] - dmrMonSectionFirst[sec];
+        uint8_t sectionPages = (n + rows - 1) / rows;
+
+        if(page < sectionPages)
+        {
+            uint8_t left = n - (page * rows);
+            *first = dmrMonSectionFirst[sec] + (page * rows);
+            *count = (left < rows) ? left : rows;
+            return;
+        }
+
+        page -= sectionPages;
+    }
+
+    // Not reached: page is wrapped into the page count above
+    *first = DMRMON_TS;
+    *count = 0;
+}
+
+int _ui_getDMRMonitorEntryName(char *buf, uint8_t max_len, uint8_t index)
+{
+    static const char *const names[DMRMON_ROWS_NUM] =
+    {
+        "TS", "SYS", "RFTX", "PC0", "PC1", "PC2", "PC3", "Lock", "Timecode",
+        "0x82", "0x84", "0x86",
+        "0x51", "0x52", "0x5F", "0x42", "CC", "TC", "Sync", "RSSI", "FSK err",
+        "rd 0x10", "rd 0x06", "rd 0x12", "rd 0x14-16",
+        "LC 0-5", "LC 6-11", "Src", "Dst", "FLCO", "FID", "CRC",
+        "", "Mode 0x10", "Reg 0x06", "", ""
+    };
+
+    if(index >= DMRMON_ROWS_NUM) return -1;
+
+    switch(index)
+    {
+        case DMRMON_ACT_RESYNC:
+            sniprintf(buf, max_len, "%s", currentLanguage->resync);
+            break;
+        case DMRMON_ACT_BER:
+            sniprintf(buf, max_len, "%s", currentLanguage->berTest);
+            break;
+        case DMRMON_ACT_TWOPOINT:
+            sniprintf(buf, max_len, "%s", currentLanguage->twoPointTest);
+            break;
+        default:
+            sniprintf(buf, max_len, "%s", names[index]);
+            break;
+    }
+
+    return 0;
+}
+
+int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
+{
+    static const char *const syncNames[4] = { "MS", "BS", "TDMA1", "TDMA2" };
+    const dmrMonitor_t *mon = &dmrMonStatus.dmr_mon;
+
+    if(index >= DMRMON_ROWS_NUM) return -1;
+
+    switch(index)
+    {
+        case DMRMON_TS:
+            sniprintf(buf, max_len, "%lu", (unsigned long) mon->tsCount);
+            break;
+        case DMRMON_SYS:
+            sniprintf(buf, max_len, "%lu", (unsigned long) mon->sysCount);
+            break;
+        case DMRMON_RFTX:
+            sniprintf(buf, max_len, "%lu", (unsigned long) mon->rftxCount);
+            break;
+        case DMRMON_PC0:
+        case DMRMON_PC1:
+        case DMRMON_PC2:
+        case DMRMON_PC3:
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) mon->lineCount[index - DMRMON_PC0]);
+            break;
+        case DMRMON_LOCK:
+            sniprintf(buf, max_len, "%d", dmrMonStatus.dmr_slotLock);
+            break;
+        case DMRMON_TIMECODE:
+            sniprintf(buf, max_len, "%d", mon->timecode);
+            break;
+        case DMRMON_R82:
+            sniprintf(buf, max_len, "%02X", mon->irq82);
+            break;
+        case DMRMON_R84:
+            sniprintf(buf, max_len, "%02X", mon->sub84);
+            break;
+        case DMRMON_R86:
+            sniprintf(buf, max_len, "%02X", mon->sub86);
+            break;
+        case DMRMON_R51:
+            sniprintf(buf, max_len, "%02X", mon->r51);
+            break;
+        case DMRMON_R52:
+            sniprintf(buf, max_len, "%02X", mon->r52);
+            break;
+        case DMRMON_R5F:
+            sniprintf(buf, max_len, "%02X", mon->r5f);
+            break;
+        case DMRMON_R42:
+            sniprintf(buf, max_len, "%02X", mon->r42);
+            break;
+        case DMRMON_CC:
+            sniprintf(buf, max_len, "%d", mon->r52 >> 4);
+            break;
+        case DMRMON_TC:
+            sniprintf(buf, max_len, "%d", (mon->r52 >> 2) & 0x01);
+            break;
+        case DMRMON_SYNC:
+            sniprintf(buf, max_len, "%s", syncNames[mon->r5f & 0x03]);
+            break;
+        case DMRMON_RSSI:
+            sniprintf(buf, max_len, "%u", mon->rssi);
+            break;
+        case DMRMON_FSKERR:
+            sniprintf(buf, max_len, "%u", mon->fskErr);
+            break;
+        case DMRMON_RB10:
+        case DMRMON_RB06:
+        case DMRMON_RB12:
+            sniprintf(buf, max_len, "%02X", dmrMonReadback[index - DMRMON_RB10]);
+            break;
+        case DMRMON_RB14:
+            // In address order: byte order UNVERIFIED on hardware
+            sniprintf(buf, max_len, "%02X %02X %02X", dmrMonReadback[3],
+                      dmrMonReadback[4], dmrMonReadback[5]);
+            break;
+        case DMRMON_LC_LO:
+        case DMRMON_LC_HI:
+        {
+            const uint8_t *lc = &mon->lc[(index == DMRMON_LC_LO) ? 0 : 6];
+            sniprintf(buf, max_len, "%02X%02X%02X%02X%02X%02X", lc[0], lc[1],
+                      lc[2], lc[3], lc[4], lc[5]);
+            break;
+        }
+        case DMRMON_LC_SRC:
+            sniprintf(buf, max_len, "%lu", (unsigned long) mon->lcSrc);
+            break;
+        case DMRMON_LC_DST:
+            sniprintf(buf, max_len, "%lu", (unsigned long) mon->lcDst);
+            break;
+        case DMRMON_LC_FLCO:
+            sniprintf(buf, max_len, "%d", mon->lcFlco);
+            break;
+        case DMRMON_LC_FID:
+            sniprintf(buf, max_len, "%02X", mon->lcFid);
+            break;
+        case DMRMON_LC_CRC:
+            // Chip verdict (0x51 bit2), "*" when the 9 octets did not parse
+            // as a standard Full LC
+            sniprintf(buf, max_len, "%s%s",
+                      (mon->lcValid & 0x01) ? "ok" : "bad",
+                      (mon->lcValid & 0x02) ? "" : "*");
+            break;
+        case DMRMON_ACT_RESYNC:
+            sniprintf(buf, max_len, "41<-20");
+            break;
+        case DMRMON_ACT_MODE:
+            sniprintf(buf, max_len, "10<-%02X",
+                      (dmrMonModeReg == 0x6E) ? 0x6A : 0x6E);
+            break;
+        case DMRMON_ACT_R06:
+            sniprintf(buf, max_len, "06<-%02X", dmrMonR06Values[dmrMonR06]);
+            break;
+        case DMRMON_ACT_BER:
+            sniprintf(buf, max_len, "10 40 41");
+            break;
+        case DMRMON_ACT_TWOPOINT:
+            sniprintf(buf, max_len, "12^40");
+            break;
+        default:
+            buf[0] = '\0';
+            break;
+    }
+
+    return 0;
+}
+
+void _ui_drawDMRMonitor(ui_state_t* ui_state)
+{
+    uint8_t first = 0;
+    uint8_t count = 0;
+    uint8_t pages = _ui_dmrMonitorPages();
+    char entry_buf[MAX_ENTRY_LEN] = "";
+    char value_buf[MAX_ENTRY_LEN] = "";
+
+    dmrMonStatus = rtx_getCurrentStatus();
+    dmrMonModeReg = ui_state->dmr_mon_modeReg;
+    dmrMonR06 = ui_state->dmr_mon_r06 % DMRMON_R06_VARIANTS;
+    ui_state->dmr_mon_page %= pages;
+    _ui_dmrMonitorPageRows(ui_state->dmr_mon_page, &first, &count);
+    bool actions = (first >= DMRMON_ACTION_FIRST);
+    dmrMonPage = ui_state->dmr_mon_page;
+    dmrMonSelected = ui_state->menu_selected;
+
+    // Live readback of the registers the actions and the driver write
+    dmrMonReadback[0] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x10);
+    dmrMonReadback[1] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x06);
+    dmrMonReadback[2] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12);
+    dmrMonReadback[3] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x14);
+    dmrMonReadback[4] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x15);
+    dmrMonReadback[5] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x16);
+
+    gfx_clearScreen();
+    // Print "DMR monitor n/N" on top bar
+    gfx_print(layout.top_pos, layout.top_font, TEXT_ALIGN_CENTER, color_white,
+              "%s %d/%d", currentLanguage->dmrMonitor,
+              ui_state->dmr_mon_page + 1, pages);
+
+    point_t pos = layout.line1_pos;
+    for(uint8_t i = 0; i < count; i++)
+    {
+        color_t text_color = color_white;
+        _ui_getDMRMonitorEntryName(entry_buf, sizeof(entry_buf), first + i);
+        _ui_getDMRMonitorValueName(value_buf, sizeof(value_buf), first + i);
+
+        if(actions && (i == ui_state->menu_selected))
+        {
+            // Selected action, drawn as a selected menu entry
+            text_color = color_black;
+            point_t rect_pos = {0, pos.y - layout.menu_h + 3};
+            gfx_drawRect(rect_pos, CONFIG_SCREEN_WIDTH, layout.menu_h,
+                         color_white, true);
+        }
+
+        gfx_print(pos, layout.menu_font, TEXT_ALIGN_LEFT, text_color, entry_buf);
+        gfx_print(pos, layout.menu_font, TEXT_ALIGN_RIGHT, text_color,
+                  value_buf);
+        pos.y += layout.menu_h;
+    }
+}
+
+uint8_t _ui_dmrMonitorCurrentPage()
+{
+    return dmrMonPage;
+}
+
+uint8_t _ui_dmrMonitorSelectedAction()
+{
+    return dmrMonSelected;
 }
 #endif
 

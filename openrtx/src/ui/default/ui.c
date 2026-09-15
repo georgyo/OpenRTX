@@ -58,6 +58,9 @@
 #include "interfaces/cps_io.h"
 #include "interfaces/nvmem.h"
 #include "interfaces/delays.h"
+#ifdef CONFIG_DMR
+#include "interfaces/dmr_baseband.h"
+#endif
 #include <string.h>
 #include "core/battery.h"
 #include "core/input.h"
@@ -206,7 +209,9 @@ const char *settings_dmr_items[] =
     "Timeslot",
     "Monitor",
     "Access",
-    "Hang time"
+    "Hang time",
+    "Test tone",
+    "DMR monitor"
 };
 #endif
 
@@ -1283,6 +1288,126 @@ static void _ui_dmr_toggleCallType(bool *sync_rtx, enum vpQueueFlags queueFlags)
                                 ? PRIVATE : GROUP;
     *sync_rtx = true;
     _ui_dmr_announceDestination(queueFlags);
+}
+
+/*
+ * DMR monitor screen (bring-up): Settings > DMR > DMR monitor. The pages of
+ * counters, registers and link control are drawn by ui_menu.c from the rtx
+ * status; the action page writes HR_C6000 CONFIG registers straight through
+ * dmrbb_writeRegister() so that a wrong assumption can be tried out on the
+ * radio without a rebuild. Every value here is UNVERIFIED on hardware: the
+ * expected outcome of each action is written down in docs/dmr_bringup.md.
+ * The DMR opMode handler reprograms the modem (dmrbb_configure) on a
+ * configuration change or after 2 s without timeslot interrupts, which
+ * undoes the 0x06, BER and two-point writes: they are meant to be observed
+ * right after being made. The mode word is pushed to the RTX stage as well
+ * (state.dmr_modeReg), so that the reprogramming keeps it.
+ */
+static const uint8_t dmr_mon_r06Values[DMRMON_R06_VARIANTS] =
+{
+    0x21,   // V_SPI vocoder, DMRFrom = V_SPI, MCU controls the vocoder (OEM)
+    0x01,   // MCU controls the vocoder, voice through TX/RX RAM instead
+    0x24,   // HR_V3000 hook-up value of the manual (manual section 4.6.1)
+    0x20,   // DMRFrom = V_SPI, vocoder not under MCU control
+    0x00    // everything off
+};
+
+static void _ui_dmr_monitorClose()
+{
+    ui_state.dmr_mon_page = 0;
+    state.ui_screen = SETTINGS_DMR;
+    ui_state.menu_selected = DMR_MONITOR_ENTRY;
+    vp_playMenuBeepIfNeeded(true);
+}
+
+/*
+ * The mode word chosen on the screen is a RAM-only override: on a fresh
+ * boot it is the driver default again, and the screen starts from there.
+ */
+static void _ui_dmr_monitorOpen()
+{
+    ui_state.dmr_mon_page = 0;
+    ui_state.menu_selected = 0;
+    ui_state.dmr_mon_modeReg = (state.dmr_modeReg != 0)
+                             ? state.dmr_modeReg : DMRBB_MODE_REG_DEFAULT;
+    state.ui_screen = DMR_MONITOR_SCREEN;
+    vp_announceText(currentLanguage->dmrMonitor, vpqInit);
+}
+
+static bool _ui_dmr_monitorOnActions()
+{
+    uint8_t first = 0;
+    uint8_t count = 0;
+    _ui_dmrMonitorPageRows(ui_state.dmr_mon_page, &first, &count);
+    return (first >= DMRMON_ACTION_FIRST);
+}
+
+static void _ui_dmr_monitorPage(int variation)
+{
+    uint8_t pages = _ui_dmrMonitorPages();
+    ui_state.dmr_mon_page = (ui_state.dmr_mon_page + pages + variation) % pages;
+    ui_state.menu_selected = 0;
+}
+
+static void _ui_dmr_monitorSelect(int variation)
+{
+    ui_state.menu_selected = (ui_state.menu_selected + DMRMON_ACTION_NUM
+                              + variation) % DMRMON_ACTION_NUM;
+}
+
+static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
+{
+    uint8_t value;
+
+    switch(DMRMON_ACTION_FIRST + action)
+    {
+        case DMRMON_ACT_RESYNC:
+            // UNVERIFIED on hardware: 0x41 = 0x20 "SyncFail", drop the
+            // received timing and search for sync again (manual 5.4.5)
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x41, 0x20);
+            break;
+
+        case DMRMON_ACT_MODE:
+            // UNVERIFIED on hardware: 0x10 = 0x6E (OpenGD77) or 0x6A (manual
+            // section 5.4.3), toggled at each press. Written at once, and
+            // pushed to the RTX stage so that the modem is reprogrammed
+            // with it from now on (the watchdog reconfiguration would
+            // otherwise put the default back within 2 s).
+            value = (ui_state.dmr_mon_modeReg == 0x6E) ? 0x6A : 0x6E;
+            ui_state.dmr_mon_modeReg = value;
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x10, value);
+            state.dmr_modeReg = value;
+            *sync_rtx = true;
+            break;
+
+        case DMRMON_ACT_R06:
+            // UNVERIFIED on hardware: vocoder port register 0x06 variants
+            value = dmr_mon_r06Values[ui_state.dmr_mon_r06];
+            ui_state.dmr_mon_r06 = (ui_state.dmr_mon_r06 + 1)
+                                 % DMRMON_R06_VARIANTS;
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x06, value);
+            break;
+
+        case DMRMON_ACT_BER:
+            // UNVERIFIED on hardware: PHY-layer BER test of manual section
+            // 5.4.6, 36 raw bytes per frame in RX RAM 0x30 on 0x82 bit0
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x10, 0x02);
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x40, 0x40);
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x41, 0x41);
+            break;
+
+        case DMRMON_ACT_TWOPOINT:
+            // UNVERIFIED on hardware: 0x12 bit6 puts a 40 Hz square wave on
+            // MOD1/MOD2 to balance the two-point modulation, toggled
+            value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12) ^ 0x40;
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, value);
+            break;
+
+        default:
+            break;
+    }
+
+    vp_playMenuBeepIfNeeded(false);
 }
 #endif
 
@@ -3387,8 +3512,16 @@ void ui_updateFSM(bool *sync_rtx)
                                                    queueFlags,
                                                    state.settings.dmr_hangTime);
                             break;
+                        case DMR_TESTTONE:
+                            state.settings.dmr_testTone =
+                                !state.settings.dmr_testTone;
+                            vp_announceSettingsOnOffToggle(
+                                &currentLanguage->testTone, queueFlags,
+                                state.settings.dmr_testTone);
+                            break;
                         default:
-                            // The DMR ID and the talkgroup are typed in
+                            // The DMR ID and the talkgroup are typed in,
+                            // the monitor screen is opened with ENTER
                             break;
                     }
                 }
@@ -3398,15 +3531,56 @@ void ui_updateFSM(bool *sync_rtx)
                     _ui_menuDown(settings_dmr_num);
                 else if(msg.keys & KEY_ENTER)
                 {
-                    ui_state.edit_mode = !ui_state.edit_mode;
-                    if(ui_state.edit_mode)
-                        _ui_dmr_numberReset();
+                    if(ui_state.menu_selected == DMR_MONITOR_ENTRY)
+                    {
+                        ui_state.edit_mode = false;
+                        _ui_dmr_monitorOpen();
+                    }
+                    else
+                    {
+                        ui_state.edit_mode = !ui_state.edit_mode;
+                        if(ui_state.edit_mode)
+                            _ui_dmr_numberReset();
+                    }
                 }
                 else if(msg.keys & KEY_ESC)
                 {
                     ui_state.edit_mode = false;
                     *sync_rtx = true;
                     _ui_menuBack(MENU_SETTINGS);
+                }
+                break;
+
+            // DMR monitor screen: LEFT/RIGHT flip the pages, UP/DOWN too
+            // except on the action page where they select the action
+            case DMR_MONITOR_SCREEN:
+                if(msg.keys & KEY_ESC)
+                    _ui_dmr_monitorClose();
+                else if(msg.keys & KEY_RIGHT)
+                    _ui_dmr_monitorPage(+1);
+                else if(msg.keys & KEY_LEFT)
+                    _ui_dmr_monitorPage(-1);
+                else if(msg.keys & KEY_DOWN || msg.keys & KNOB_RIGHT)
+                {
+                    if(_ui_dmr_monitorOnActions())
+                        _ui_dmr_monitorSelect(+1);
+                    else
+                        _ui_dmr_monitorPage(+1);
+                }
+                else if(msg.keys & KEY_UP || msg.keys & KNOB_LEFT)
+                {
+                    if(_ui_dmr_monitorOnActions())
+                        _ui_dmr_monitorSelect(-1);
+                    else
+                        _ui_dmr_monitorPage(-1);
+                }
+                else if(msg.keys & KEY_ENTER)
+                {
+                    if(_ui_dmr_monitorOnActions())
+                        _ui_dmr_monitorAction(ui_state.menu_selected,
+                                              sync_rtx);
+                    else
+                        _ui_dmr_monitorPage(+1);
                 }
                 break;
 #endif
@@ -3676,6 +3850,10 @@ bool ui_updateGUI()
         // DMR settings screen
         case SETTINGS_DMR:
             _ui_drawSettingsDMR(&ui_state);
+            break;
+        // DMR monitor (bring-up) screen
+        case DMR_MONITOR_SCREEN:
+            _ui_drawDMRMonitor(&ui_state);
             break;
 #endif
         case SETTINGS_ACCESSIBILITY:

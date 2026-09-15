@@ -59,6 +59,7 @@ enum uiScreen
     FRS_CODE,
     SETTINGS_FRS,
     SETTINGS_DMR,
+    DMR_MONITOR_SCREEN,
     LOW_BAT
 };
 
@@ -177,11 +178,76 @@ enum settingsDMRItems
     DMR_TIMESLOT,
     DMR_MONITOR,
     DMR_ACCESS,
-    DMR_HANGTIME
+    DMR_HANGTIME,
+    DMR_TESTTONE,
+    DMR_MONITOR_ENTRY
 };
 
 // Longest DMR ID or talkgroup entry, in digits: DMR_ID_MAX is 16777215
 #define DMR_ID_DIGITS 8
+
+#ifdef CONFIG_DMR
+/*
+ * Rows of the DMR monitor (bring-up) screen, Settings > DMR > DMR monitor.
+ * The rows are grouped in four sections, each starting on a new page and
+ * spanning as many pages as the screen height requires: 1. interrupt
+ * counters, slot lock and 0x82 flags; 2. status registers; 3. link control;
+ * 4. actions, register writes selected with UP/DOWN and run with ENTER.
+ * Register numbers are those of the HR_C6000 CONFIG page.
+ */
+enum dmrMonitorRows
+{
+    DMRMON_TS = 0,        // TIME_SLOT_INTER count
+    DMRMON_SYS,           // SYS_INTER count
+    DMRMON_RFTX,          // RF_TX_INTER count
+    DMRMON_PC0,           // EXTI pulses on PC0..PC3
+    DMRMON_PC1,
+    DMRMON_PC2,
+    DMRMON_PC3,
+    DMRMON_LOCK,          // slot lock: none, synced, timecode locked
+    DMRMON_TIMECODE,      // local timecode
+    DMRMON_R82,           // last 0x82 interrupt flags
+    DMRMON_R84,           // last 0x84 TX start sub-status
+    DMRMON_R86,           // last 0x86 TX end sub-status
+    DMRMON_R51,           // last 0x51 data type / CRC / sync class
+    DMRMON_R52,           // last 0x52 colour code / CACH
+    DMRMON_R5F,           // last 0x5F sync type
+    DMRMON_R42,           // last 0x42 slot status
+    DMRMON_CC,            // colour code, 0x52[7:4]
+    DMRMON_TC,            // CACH timecode, 0x52 bit2
+    DMRMON_SYNC,          // sync type, 0x5F[1:0]
+    DMRMON_RSSI,          // 0x43:0x44
+    DMRMON_FSKERR,        // 0x0F
+    DMRMON_RB10,          // register 0x10 read back at draw time
+    DMRMON_RB06,          // register 0x06 read back
+    DMRMON_RB12,          // register 0x12 read back
+    DMRMON_RB14,          // registers 0x14, 0x15, 0x16 read back (own ID)
+    DMRMON_LC_LO,         // LC RAM bytes 0-5
+    DMRMON_LC_HI,         // LC RAM bytes 6-11
+    DMRMON_LC_SRC,        // decoded source
+    DMRMON_LC_DST,        // decoded destination
+    DMRMON_LC_FLCO,       // decoded FLCO
+    DMRMON_LC_FID,        // decoded FID
+    DMRMON_LC_CRC,        // chip CRC verdict and parse result
+    DMRMON_ACT_RESYNC,    // 0x41 = 0x20
+    DMRMON_ACT_MODE,      // 0x10 = 0x6E / 0x6A
+    DMRMON_ACT_R06,       // 0x06 = next variant
+    DMRMON_ACT_BER,       // 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41
+    DMRMON_ACT_TWOPOINT,  // 0x12 bit6 toggle
+    DMRMON_ROWS_NUM
+};
+
+// First row of each section of the monitor screen, in order
+#define DMRMON_SECTION_NUM   4
+#define DMRMON_ACTION_FIRST  DMRMON_ACT_RESYNC
+#define DMRMON_ACTION_NUM    (DMRMON_ROWS_NUM - DMRMON_ACT_RESYNC)
+
+// U_SPI page of the HR_C6000 main configuration registers (opmode 4)
+#define DMRMON_PAGE_CONFIG   4
+
+// Values register 0x06 cycles through with the "0x06 variant" action
+#define DMRMON_R06_VARIANTS  5
+#endif
 
 // FRS channel number entry: auto-accept timeout after the first digit, in ms
 #define FRS_INPUT_TIMEOUT 2000
@@ -269,6 +335,13 @@ typedef struct ui_state_t
     // DMR ID or talkgroup being typed, with the number of digits entered
     uint32_t new_dmr_number;
     uint8_t new_dmr_digits;
+#ifdef CONFIG_DMR
+    // DMR monitor screen: page shown, last 0x10 value written by the "Mode"
+    // action and index of the next "0x06 variant" value
+    uint8_t dmr_mon_page;
+    uint8_t dmr_mon_modeReg;
+    uint8_t dmr_mon_r06;
+#endif
     freq_t new_offset;
     // Which state to return to when we exit menu
     uint8_t last_main_state;
@@ -370,6 +443,56 @@ static inline bool _ui_dmrCallReceived(const rtxStatus_t *status)
  * @param status: rtx status the call information is taken from.
  */
 void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status);
+
+#ifdef CONFIG_DMR
+/**
+ * Number of pages of the DMR monitor screen for the current layout: every
+ * section of enum dmrMonitorRows starts on a new page and spans as many
+ * pages as its rows need.
+ *
+ * @return page count, at least DMRMON_SECTION_NUM.
+ */
+uint8_t _ui_dmrMonitorPages(void);
+
+/**
+ * Rows shown by a page of the DMR monitor screen.
+ *
+ * @param page: page number, 0-based, wrapped into the page count.
+ * @param first: set to the first row of the page (enum dmrMonitorRows).
+ * @param count: set to the number of rows of the page.
+ */
+void _ui_dmrMonitorPageRows(uint8_t page, uint8_t *first, uint8_t *count);
+
+/**
+ * Label of a row of the DMR monitor screen, list getter signature.
+ */
+int _ui_getDMRMonitorEntryName(char *buf, uint8_t max_len, uint8_t index);
+
+/**
+ * Value of a row of the DMR monitor screen, list getter signature: from the
+ * rtx status, the register readback and the UI state captured by the last
+ * _ui_drawDMRMonitor().
+ */
+int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index);
+
+/**
+ * Draw the DMR monitor screen. Implemented in ui_menu.c.
+ *
+ * @param ui_state: UI state, for the page and the selected action.
+ */
+void _ui_drawDMRMonitor(ui_state_t *ui_state);
+
+/**
+ * @return the page drawn by the last _ui_drawDMRMonitor(), 0-based.
+ */
+uint8_t _ui_dmrMonitorCurrentPage(void);
+
+/**
+ * @return the action highlighted by the last _ui_drawDMRMonitor(), as an
+ * offset from DMRMON_ACTION_FIRST.
+ */
+uint8_t _ui_dmrMonitorSelectedAction(void);
+#endif
 
 extern const color_t color_black;
 extern const color_t color_grey;
