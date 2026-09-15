@@ -29,7 +29,7 @@ radio can find out which of the documented assumptions hold.
 | 1 | DMR data model, settings, UI mode selection and ETSI protocol library (no RF) | in tree |
 | 2 | Call-control state machine, `dmr_baseband` interface, `OpMode_DMR` and the emulator modem model | in tree |
 | 3 | HR_C6000 DMR driver, EXTI shim, `radio_CS7000` branches and the DMR monitor screen (RX sync, colour code, slot and LC with caller display, no audio) | in tree |
-| 4 | RX voice plumbing: vocoder backend interface, `dmr_audio` thread, PCM to the speaker through the C6000 DAC, and the internal-vocoder experiment | planned |
+| 4 | RX voice plumbing: vocoder backend interface, `dmr_audio` thread, PCM to the speaker through the C6000 DAC, and the internal-vocoder experiment | in progress: the vocoder seam and the null / loopback backends are in tree (see [Vocoder](#vocoder)) |
 | 5 | TX voice calls: simplex (DMO, active timing) first, then repeater (RMO, passive timing with wake-up) | planned |
 | 6 | Contacts and talkgroup UI, last heard, private calls from history, voice prompts and documentation polish | planned |
 
@@ -413,18 +413,173 @@ OpenRTX is GPL-3.0-or-later and the DMR series keeps it that way:
   decode-only and carries a patent notice, the OEM blobs are proprietary and
   upstream OpenRTX declined AMBE code in the past (issue #33). The reasoning
   is laid out in the feasibility study of the series.
-- The vocoder is therefore a pluggable backend (`core/dmr_vocoder.h`, stage
-  4). The tree ships a null backend (silence on TX, silence or a debug test
-  tone on RX, enabled by the `dmr_testTone` setting) and an emulator loopback
-  backend, so that the slot machinery, the V_SPI transfers, the audio paths
-  and the interoperation with repeaters and hotspots are exercised end to
-  end. A Meson option will let whoever holds a licence link an out-of-tree
-  backend. Whether the chip can decode voice by itself after all is the first
-  experiment of stage 4; the documentation says it cannot.
+- The vocoder is therefore a pluggable backend (`core/dmr_vocoder.h`, see
+  the [Vocoder](#vocoder) section). The tree ships a null backend (silence
+  on TX, silence or a debug test tone on RX, enabled by the `dmr_testTone`
+  setting) and an emulator loopback backend, so that the slot machinery, the
+  V_SPI transfers, the audio paths and the interoperation with repeaters and
+  hotspots are exercised end to end. The `dmr_vocoder` Meson option lets
+  whoever holds a licence link an out-of-tree backend. Whether the chip can
+  decode voice by itself after all is the first experiment of stage 4; the
+  documentation says it cannot.
 
 Until a vocoder backend is available, a DMR call carries no audible voice:
 the radio shows the caller, the talkgroup, the colour code and the slot, and
 transmits headers, terminators and silence frames.
+
+## Vocoder
+
+### What is shipped, and what is not
+
+A DMR voice burst carries 216 bits of voice: three 72-bit AMBE+2 frames of
+20 ms each (ETSI TS 102 361-1 §6.1, Figure 6.2; TS 102 361-2 §5.2.1 names
+the codec). The HR_C6000 does not contain the codec. Its user manual (§4.6,
+"Vocoder interface") describes a V_SPI port on which the chip hands the 27
+bytes of every received voice burst to an external vocoder and takes the 27
+bytes of every burst to transmit from it, and on the CS7000 boards that
+port is wired to the STM32 (CS7000-M17 Plus schematic V01, nets VOC_*):
+the OEM firmware runs AMBE+2 in software on the MCU, as the TYT and
+Radioddity firmwares do on their HR_C5000/HR_C6000 radios. OpenRTX's own
+CS7000 initialisation writes register 0x06 = 0x21, "V_SPI vocoder, MCU
+controls the vocoder", since before this series.
+
+OpenRTX cannot ship that codec:
+
+- AMBE+2 is covered by DVSI's US patent 8,359,197 B2 ("Half-rate vocoder",
+  <https://patents.google.com/patent/US8359197B2/en>), in force until
+  2028-05-20; DVSI licenses it as a closed library or in the AMBE-3000 chip
+  (<https://www.dvsinc.com/soft_products/ambe_p2.shtml>);
+- `mbelib` (<https://github.com/szechyjs/mbelib>) is decode-only and its
+  COPYRIGHT file warns that the algorithm is patented and that using it may
+  require a licence;
+- the OEM firmware blobs are proprietary;
+- upstream OpenRTX declined AMBE code in the past
+  (<https://github.com/OpenRTX/OpenRTX/issues/33>) and a GPL-3.0-or-later
+  tree cannot carry a patent-encumbered implementation of any origin.
+
+So **no AMBE or AMBE+2 code, table or blob is in this tree, and none will
+be accepted.** What the tree has is the seam and two backends that are not
+codecs:
+
+| Backend | File | What it does |
+|---|---|---|
+| `null` | `openrtx/src/core/dmr_vocoder_null.c` | `decode()` fills 60 ms of silence, or a 1 kHz sine at -12 dBFS (phase continuous from one burst to the next) when `Settings > DMR > Test tone` is on; `encode()` fills the AMBE+2 silence pattern. Built for every target with `CONFIG_DMR` |
+| `loopback` | `openrtx/src/core/dmr_vocoder_loopback.c` | `encode()` packs a coarse descriptor of the 480 samples into the 27 bytes (signature `LB`, RMS level, dominant frequency from the zero crossings, a 20-point peak envelope, XOR check); `decode()` plays a sine back from it, shaped by the envelope and scaled to the level. A payload without the signature (real AMBE, the silence pattern, zeros) decodes to silence. Built for the Linux emulator, so that the RX/TX plumbing is testable end to end and audible through SDL; interoperates with nothing |
+
+The silence pattern itself (`openrtx/src/protocols/DMR/Silence.c`,
+`dmr_ambeSilence`, also reachable as `DMR::AMBE_SILENCE`) is the one
+constant table taken from a third party, MMDVMHost `DMRDefines.h`
+(GPL-2.0-or-later, attributed in the file): 27 bytes of already encoded
+silence, not codec code.
+
+### The interface
+
+`openrtx/include/core/dmr_vocoder.h` is a C ABI so that a backend can be
+written in C or C++ and linked from outside the tree:
+
+```c
+struct dmrVocoder {
+    const char *name;
+    int  (*init)(void);
+    void (*terminate)(void);
+    bool (*decode)(const uint8_t ambe[27], int16_t pcm[480]);
+    bool (*encode)(const int16_t pcm[480], uint8_t ambe[27]);
+};
+
+const struct dmrVocoder *dmrVocoder_get(void);
+```
+
+One payload of 27 bytes is three AMBE+2 frames, 60 ms, 480 samples at
+8 kHz. `decode()` and `encode()` always fill their output buffer: the return
+value says whether it holds audio (`decode()`) or encoded voice (`encode()`),
+`false` meaning the buffer holds silence, respectively the AMBE+2 silence
+pattern, because the backend had nothing better (test tone off, bad
+signature, corrupted frame, no encoder). The caller may then substitute its
+own silence or skip the playback. `init()` runs once before the first
+frame and `terminate()` once after the last; the two codec functions are
+called from the DMR audio thread only and are not reentrant.
+
+### Selecting a backend: the `dmr_vocoder` Meson option
+
+```
+meson setup -Ddmr_vocoder=<auto|null|loopback|external> <build dir>
+```
+
+| Value | Radios | Linux emulator |
+|---|---|---|
+| `auto` (default) | `null` | `loopback`: an injected call (`--dmr-call`) is audible as a tone |
+| `null` | `null` | `null` |
+| `loopback` | `null` compiled, `loopback` selected (a bench test of the V_SPI transfers between two OpenRTX radios, nothing else) | `loopback` |
+| `external` | neither backend compiled | neither backend compiled |
+
+The selection is a link-time one: `dmrVocoder_get()` is defined by
+`dmr_vocoder_null.c`, or by `dmr_vocoder_loopback.c` when
+`CONFIG_DMR_VOCODER_LOOPBACK` is defined, and by nobody with `external`. The
+null backend is still compiled next to the loopback one (the loopback
+`decode()` has no use for silence frames, the audio layer does) and both
+structs, `dmrVocoder_null` and `dmrVocoder_loopback`, are reachable by name
+for the tests whatever the option. The T-TWR Plus (Zephyr, `CMakeLists.txt`)
+compiles `dmr_vocoder_null.c`, which is empty there because the board has no
+`CONFIG_DMR`.
+
+### Linking an external backend
+
+With `-Ddmr_vocoder=external` the firmware references `dmrVocoder_get()` and
+nothing defines it: the link fails until an object providing it is added,
+which is the point. Whoever holds a licence for a real vocoder (DVSI's
+library, a hardware vocoder on a serial port, an implementation covered by
+a licence in their jurisdiction) writes, out of tree:
+
+```c
+#include "core/dmr_vocoder.h"
+
+static const struct dmrVocoder myBackend = {
+    .name = "my vocoder", .init = myInit, .terminate = myTerminate,
+    .decode = myDecode, .encode = myEncode,
+};
+
+const struct dmrVocoder *dmrVocoder_get(void)
+{
+    return &myBackend;
+}
+```
+
+and links it, for instance with a Meson wrap or an `-l` in the cross file's
+`link_args`. The backend runs on the DMR audio thread of the radio, with
+its stack; a backend needing more stack, a large heap or a coprocessor is
+expected to document it and to fail `init()` (negative errno) when it cannot
+run, in which case the audio layer behaves as with the null backend. Such an
+object must never be committed to this repository, offered in an OpenRTX
+release or distributed with the firmware, since the combination would not
+be distributable under the GPL.
+
+### The test tone
+
+`Settings > DMR > Test tone` (`settings.dmr_testTone`, off by default and
+not meant to stay on) makes the null backend play a 1 kHz sine at -12 dBFS
+for every received voice burst instead of silence. It exists for the
+hardware bring-up of the audio path: with a call being received, the tone
+must come out of the speaker for the 60 ms of every burst of the call, which
+proves the OpenMusic DAC path, the amplifier and mute sequencing and the
+slot timing of the pushes without any codec (`docs/dmr_bringup.md`). The
+setting is read at every burst, so the tone starts and stops as it is
+toggled; a transmission is not affected, the null encoder always sends the
+silence pattern.
+
+### Tests
+
+`dmr_vocoder_test` (`tests/unit/dmr_vocoder.cpp`): the silence pattern is
+one array shared by C and C++; `dmrVocoder_get()` returns the backend the
+build selected; the null backend encodes to the silence pattern and decodes
+to zeros with the tone off and to a 1 kHz, -12 dBFS sine with the tone on,
+continuous across two calls (zero crossings, peak, RMS, DFT bin, largest
+sample-to-sample step); the loopback backend round-trips a 1 kHz and a
+433 Hz tone with the RMS within 5 % and the same dominant DFT bin, keeps an
+envelope and the phase across payloads, plays silence for the silence
+pattern, for zeros and for a corrupted payload of its own; every buffer
+handed to the backends sits between guard zones that must come back intact
+(and the sanitizer build catches what the guards do not). The test builds
+both backends whatever the `dmr_vocoder` option.
 
 ## Hardware validation policy
 
