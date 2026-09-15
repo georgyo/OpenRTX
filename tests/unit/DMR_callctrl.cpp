@@ -167,6 +167,8 @@ public:
     CallController::Config cfg;
     uint32_t now = 1000;
     uint8_t timecode = 0; /* timecode of the slot that starts at the TS */
+    uint32_t tsCount = 0; /* ISR counter of the fake driver             */
+    uint32_t tsTick = 0;  /* tick latched by the fake ISR               */
 
     Bench()
     {
@@ -204,10 +206,28 @@ public:
     void ts(bool agree = true)
     {
         now += BURST_MS;
+        tsCount++;
+        tsTick += BURST_MS;
         dmrbbSnapshot s = blank();
         uint8_t rxTc = agree ? timecode : (timecode ^ 1);
         s.r52 = (uint8_t)((cfg.colorCode << 4) | (rxTc ? R52_TC : 0));
+        s.tsCount = tsCount;
+        s.tsTick = tsTick;
         ctrl.onTimeslot(s, now);
+        timecode ^= 1;
+    }
+
+    /*
+     * A timeslot interrupt the thread never saw: the slot went by, the ISR
+     * counted it (unless the interrupt line itself lost the edge) and the
+     * next event carries the gap.
+     */
+    void skipTs(bool counted = true)
+    {
+        now += BURST_MS;
+        tsTick += BURST_MS;
+        if (counted)
+            tsCount++;
         timecode ^= 1;
     }
 
@@ -279,10 +299,14 @@ public:
         sys(s);
     }
 
-    void terminator(uint8_t sync, uint8_t slot, uint8_t cc)
+    /* Terminator with LC; without an LC the chip RAM reads all zero */
+    void terminator(uint8_t sync, uint8_t slot, uint8_t cc,
+                    const FullLC *lc = nullptr)
     {
         dmrbbSnapshot s = burst(sync, slot, cc);
         s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_HEADER);
+        if (lc != nullptr)
+            lc->toChipLc(s.lc);
         sys(s);
     }
 
@@ -510,17 +534,33 @@ TEST_CASE("DMR RX group call: header, voice, terminator, hang",
     REQUIRE(r.lcOk == true);
     REQUIRE(r.rxSrc == 1234567);
 
-    /* Repeater hang terminators keep the call shown */
+    /* Repeater hang terminators of the call keep it shown */
     for (unsigned i = 0; i < 90; i++) {
+        b.ts();
+        b.ts();
+        b.terminator(R5F_SYNC_BS, 2, 1, &lc);
+    }
+    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+
+    /*
+     * Terminators of another call, of another colour code or without the
+     * call's LC do not (TS 102 361-1 §5.2.1.4): T_CallHt after the last
+     * hang terminator of the call, idle.
+     */
+    FullLC other = b.groupCall(7654321, 91);
+    for (unsigned i = 0; i < 15; i++) { /* 15 x 192 ms = 2880 ms */
+        b.ts();
+        b.ts();
+        b.terminator(R5F_SYNC_BS, 2, 1, &other);
+        b.ts();
+        b.ts();
+        b.terminator(R5F_SYNC_BS, 2, 7, &lc);
         b.ts();
         b.ts();
         b.terminator(R5F_SYNC_BS, 2, 1);
     }
-    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
-
-    /* T_CallHt after the last one: idle */
-    for (unsigned i = 0; i < 99; i++)
-        b.ts();
+    b.ts();
+    b.ts();
     REQUIRE(b.ctrl.state() == CallController::RX_HANG);
     b.ts();
     b.ts();
@@ -1030,9 +1070,16 @@ TEST_CASE("DMR TX: PTT released before the header sends nothing",
     REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
 }
 
-TEST_CASE("DMR TX: released right after the headers sends a terminator",
+TEST_CASE("DMR TX: released during the headers sends one superframe then "
+          "the terminator",
           "[dmr][callctrl]")
 {
+    /*
+     * TS 102 361-2 §5.2.1.1: the EOT is the entire last voice superframe
+     * through burst F, then the Terminator with LC; TS 102 361-1 §5.1.2.2:
+     * the header is followed by voice superframes. So three headers, A..F
+     * of silence, terminator, on the own slot with the other slot idle.
+     */
     Bench b;
     b.settle();
     b.ctrl.setPtt(true, b.now);
@@ -1042,11 +1089,92 @@ TEST_CASE("DMR TX: released right after the headers sends a terminator",
     unsigned n = 0;
     while (b.ctrl.state() != CallController::TX_TERM) {
         b.ts();
-        REQUIRE(++n < 12);
+        REQUIRE(++n < 24);
     }
-    REQUIRE(b.port.count(W_R50, R50_VOICE_LC_HEADER) == 3);
-    REQUIRE(b.port.count(W_R50, R50_VOICE) == 0);
-    REQUIRE(b.port.count(W_R50, R50_TERMINATOR) == 1);
+    REQUIRE(b.port.values(W_R50)
+            == std::vector<uint8_t>{
+                R50_VOICE_LC_HEADER, R50_VOICE_LC_HEADER, R50_VOICE_LC_HEADER,
+                r50Voice(0), r50Voice(1), r50Voice(2), r50Voice(3), r50Voice(4),
+                r50Voice(5), R50_TERMINATOR });
+    REQUIRE(b.port.count(W_VOICE) == 7);
+    for (const Write &w : b.port.writes)
+        if (w.kind == W_VOICE)
+            REQUIRE(memcmp(w.data, AMBE_SILENCE, VOICE_PAYLOAD_BYTES) == 0);
+
+    std::vector<uint8_t> r41 = b.port.values(W_R41);
+    REQUIRE(b.port.count(W_R41, R41_TX) == 10);
+    for (size_t i = 0; i < r41.size(); i++) {
+        if (r41[i] != R41_TX)
+            REQUIRE(r41[i] == R41_IDLE);
+        if (i > 0)
+            REQUIRE(r41[i] != r41[i - 1]);
+    }
+
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+}
+
+TEST_CASE("DMR TX: a missed timeslot interrupt keeps the own slot",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+    b.ctrl.setPtt(true, b.now);
+    unsigned n = 0;
+    while (b.ctrl.state() != CallController::TX_VOICE) {
+        b.ts();
+        REQUIRE(++n < 10);
+    }
+
+    /*
+     * The own slot (timeslot 2) starts at the TS with timecode 1, so its
+     * programming happens at the TS starting the slot with timecode 0.
+     */
+    auto txOnOwnSlot = [&](unsigned slots) {
+        for (unsigned i = 0; i < slots; i++) {
+            bool own = (b.timecode == 0);
+            b.port.clear();
+            b.ts();
+            REQUIRE(b.port.count(W_R41, R41_TX) == (own ? 1 : 0));
+            REQUIRE(b.port.count(W_R41, R41_IDLE) == (own ? 0 : 1));
+        }
+    };
+
+    txOnOwnSlot(4);
+
+    SECTION("counted by the ISR: one slot merged into the next event")
+    {
+        b.skipTs();
+        txOnOwnSlot(13);
+        b.skipTs();
+        b.skipTs();
+        b.skipTs();
+        txOnOwnSlot(12);
+    }
+
+    SECTION("lost by the interrupt line: only the timestamp shows the gap")
+    {
+        b.skipTs(false);
+        txOnOwnSlot(13);
+    }
+
+    SECTION("two merged slots leave the parity alone")
+    {
+        b.skipTs();
+        b.skipTs();
+        txOnOwnSlot(12);
+    }
+
+    REQUIRE(b.ctrl.state() == CallController::TX_VOICE);
+    b.ctrl.setPtt(false, b.now);
+    n = 0;
+    while (b.ctrl.state() != CallController::TX_TERM) {
+        bool own = (b.timecode == 0);
+        b.port.clear();
+        b.ts();
+        REQUIRE(b.port.count(W_R41, R41_TX) == (own ? 1 : 0));
+        REQUIRE(++n < 14);
+    }
 }
 
 TEST_CASE("DMR TX: private and all calls, impolite access", "[dmr][callctrl]")
@@ -1369,6 +1497,80 @@ TEST_CASE("DMR timeslot watchdog", "[dmr][callctrl]")
     b.port.clear();
     b.timeout(210);
     REQUIRE(b.port.count(W_R40) == 1);
+}
+
+TEST_CASE("DMR timeslot watchdog leaves a silent channel alone",
+          "[dmr][callctrl]")
+{
+    /*
+     * The chip gives timeslot interrupts only once a time axis exists
+     * (manual §5.4.4): a silent channel in RX_SEARCH produces none and is
+     * not a fault. The markers raised meanwhile stay up.
+     */
+    Bench b;
+    b.cfg.ownId = 0;
+    b.start();
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    b.port.clear();
+
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.report().noId == true);
+    b.ctrl.setPtt(false, b.now);
+
+    for (unsigned i = 0; i < 5000 / 30; i++)
+        b.timeout(30);
+    REQUIRE(b.port.writes.empty());
+    REQUIRE(b.ctrl.report().needsReconfigure == false);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(b.ctrl.report().noId == true);
+
+    /* A restart by the owner keeps the markers too */
+    b.ctrl.enable(b.now);
+    REQUIRE(b.ctrl.report().noId == true);
+    b.ctrl.clearMarkers();
+    REQUIRE(b.ctrl.report().noId == false);
+
+    /* Once slots have been seen, silence is watched again */
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    b.port.clear();
+    b.timeout(210);
+    REQUIRE(b.port.count(W_R40) == 1);
+}
+
+TEST_CASE("DMR timeslot watchdog: a transmission is watched from its start",
+          "[dmr][callctrl]")
+{
+    /* PTT on a silent channel: the modem's own axis is due 200 ms later */
+    Bench b;
+    b.start();
+    for (unsigned i = 0; i < 60; i++)
+        b.timeout(30);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    b.port.clear();
+    b.timeout(150);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    REQUIRE(b.port.writes.empty());
+
+    /* The axis arrives: headers */
+    b.ts();
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::TX_HEADER);
+
+    /* No axis within 200 ms of the request: aborted, PTT latched */
+    Bench c;
+    c.start();
+    c.ctrl.setPtt(true, c.now);
+    c.timeout(150);
+    REQUIRE(c.ctrl.state() == CallController::TX_ARM);
+    c.timeout(60);
+    REQUIRE(c.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(c.port.last(W_R40)->value == R40_RX);
+    c.ts();
+    REQUIRE(c.ctrl.state() == CallController::RX_IDLE);
 }
 
 TEST_CASE("DMR timeslot watchdog during TX aborts the call", "[dmr][callctrl]")

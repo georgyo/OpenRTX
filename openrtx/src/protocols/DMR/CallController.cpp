@@ -46,6 +46,8 @@ CallController::CallController() : port(nullptr), sink(nullptr), st(OFF)
     slotLock = 0;
     lastSync = R5F_SYNC_MS;
     lastTsMs = 0;
+    lastTsCount = 0;
+    lastTsTick = 0;
     lastBsSyncMs = 0;
     wdRestarted = false;
     skipLc = false;
@@ -61,6 +63,7 @@ CallController::CallController() : port(nullptr), sink(nullptr), st(OFF)
     txTimedOut = false;
     headers = 0;
     seq = 0;
+    superframes = 0;
     wakeups = 0;
     wakeupPhase = WU_SEND;
     armStartMs = 0;
@@ -93,12 +96,20 @@ void CallController::enable(uint32_t nowMs)
     if (port == nullptr)
         return;
 
+    /* The markers outlive a restart: the owner clears them */
+    bool noId = rep.noId;
+    bool busy = rep.busy;
+    bool wakeupFailed = rep.wakeupFailed;
+
     memset(&rep, 0x00, sizeof(rep));
+    rep.noId = noId;
+    rep.busy = busy;
+    rep.wakeupFailed = wakeupFailed;
+
     ptt = false;
     pttLatched = false;
     lastBsSyncMs = nowMs - CARRIER_TIMEOUT_MS;
     lastSync = R5F_SYNC_MS;
-    lastTsMs = nowMs;
     wdRestarted = false;
     callSlot = 0;
     callDmo = false;
@@ -151,6 +162,44 @@ void CallController::resetTiming()
     agree = 0;
     disagree = 0;
     slotLock = 0;
+}
+
+void CallController::requestAxis(uint32_t nowMs)
+{
+    /*
+     * A new time axis was asked to the modem (startRx, startTx): the
+     * watchdog deadline is measured from the request, not from the last
+     * interrupt of the previous axis.
+     */
+    lastTsMs = nowMs;
+}
+
+uint32_t CallController::missedSlots(const struct dmrbbSnapshot &s) const
+{
+    /*
+     * Timeslot interrupts that arrived before the thread woke up are merged
+     * into one event by the driver's mailbox (one pending bit), but the
+     * local timecode must toggle once per slot. The ISR counter tells how
+     * many interrupts were merged; the interrupt timestamp covers the case
+     * of edges lost by the interrupt line itself, where the counter moves
+     * by one while more than one slot went by. A driver that fills neither
+     * (both left at zero) is trusted to deliver every interrupt.
+     */
+    uint32_t missed = 0;
+
+    if (s.tsCount != lastTsCount) {
+        uint32_t delta = s.tsCount - lastTsCount;
+        missed = delta - 1;
+    }
+
+    if (s.tsTick != lastTsTick) {
+        uint32_t gap = s.tsTick - lastTsTick;
+        uint32_t slots = (gap + TS_TICK_TOLERANCE_MS) / BURST_MS;
+        if ((slots > 1) && ((slots - 1) > missed))
+            missed = slots - 1;
+    }
+
+    return missed;
 }
 
 void CallController::trackTimecode(uint8_t rxTc)
@@ -290,12 +339,28 @@ bool CallController::slotAccepted(uint8_t slot) const
     return (cfg.monitor >= 2) || (slot == 0) || (slot == cfg.timeslot);
 }
 
+bool CallController::terminatorOfCall(const struct dmrbbSnapshot &s) const
+{
+    /*
+     * TS 102 361-1 §5.2.1.4: the hang time terminators carry the source and
+     * destination of the voice call in progress. After an own transmission
+     * the call in progress is the one of the LC left in the TX RAM.
+     */
+    FullLC lc;
+    if (!lc.fromChipLc(s.lc))
+        return false;
+
+    if (rep.lcOk)
+        return (lc.src == rep.rxSrc) && (lc.dst == rep.rxDst);
+
+    return memcmp(&s.lc[3], &txLc[3], 6) == 0;
+}
+
 void CallController::goRx(uint32_t nowMs, State next)
 {
-    (void)nowMs;
-
     port->startRx();
     resetTiming();
+    requestAxis(nowMs);
 
     /*
      * UNVERIFIED on hardware: the RX RAM may still hold the LC of the
@@ -388,6 +453,13 @@ void CallController::processControlFrame(const struct dmrbbSnapshot &s,
 
     uint8_t type = s.r51 >> 4;
 
+    /*
+     * A burst of another colour code is co-channel interference from
+     * another site (TS 102 361-1 §5.2.1.4 note): it neither ends the call
+     * nor extends its hang time.
+     */
+    bool onCall = burstIsCall(s) && colorCodeAccepted(s.r52 >> 4);
+
     switch (type) {
         case DT_VOICE_LC_HEADER:
             if ((st == RX_CALL) && burstIsCall(s)) {
@@ -400,17 +472,17 @@ void CallController::processControlFrame(const struct dmrbbSnapshot &s,
             break;
 
         case DT_TERMINATOR_LC:
-            if (!burstIsCall(s))
+            if (!onCall)
                 break;
             if (st == RX_CALL)
                 enterHang(nowMs);
-            else if (st == RX_HANG)
-                hangStartMs = nowMs; /* repeater hang: keep it shown */
+            else if ((st == RX_HANG) && terminatorOfCall(s))
+                hangStartMs = nowMs; /* hang time terminator: keep shown */
             break;
 
         default:
             /* Any other data burst on the call's slot ends the call */
-            if ((st == RX_CALL) && burstIsCall(s))
+            if ((st == RX_CALL) && onCall)
                 enterHang(nowMs);
             break;
     }
@@ -450,13 +522,19 @@ void CallController::buildTxLc()
     lc.toChipLc(txLc);
 }
 
-void CallController::armTx(bool active)
+void CallController::armTx(uint32_t nowMs, bool active)
 {
     activeTiming = active;
     port->setAccess(cfg.polite ? R21_POLITE : R21_IMPOLITE);
     port->startTx(active);
     armed = true;
     buildTxLc();
+
+    /* Active timing: the modem provides a fresh axis from now on */
+    if (active) {
+        requestAxis(nowMs);
+        wdRestarted = false;
+    }
 }
 
 void CallController::enterTxArm(uint32_t nowMs)
@@ -466,6 +544,7 @@ void CallController::enterTxArm(uint32_t nowMs)
     txTimedOut = false;
     headers = 0;
     seq = 0;
+    superframes = 0;
     wakeups = 0;
     st = TX_ARM;
 
@@ -479,13 +558,13 @@ void CallController::enterTxArm(uint32_t nowMs)
     bool rmo = cfg.repeater || (carrierPresent(nowMs) && (slotLock == 2));
 
     if (!rmo) {
-        armTx(true);
+        armTx(nowMs, true);
         return;
     }
 
     if (carrierPresent(nowMs)) {
         if (slotLock == 2)
-            armTx(false);
+            armTx(nowMs, false);
         /* else: wait for the timecode lock in TX_ARM */
         return;
     }
@@ -495,8 +574,6 @@ void CallController::enterTxArm(uint32_t nowMs)
 
 void CallController::enterWakeup(uint32_t nowMs)
 {
-    (void)nowMs;
-
     if (wakeups >= cfg.wakeupAttempts) {
         /* TS 102 361-1 Annex F.2: give up after N_Wakeup attempts */
         rep.wakeupFailed = true;
@@ -524,6 +601,8 @@ void CallController::enterWakeup(uint32_t nowMs)
     activeTiming = true;
     port->setAccess(cfg.polite ? R21_POLITE : R21_IMPOLITE);
     port->startTx(true);
+    requestAxis(nowMs);
+    wdRestarted = false;
 }
 
 void CallController::abortTx(uint32_t nowMs, bool busy)
@@ -554,6 +633,8 @@ void CallController::programVoice()
     port->setTxFrameType(r50Voice(seq));
     port->setNextSlot(R41_TX);
     seq = (seq + 1) % SUPERFRAME_BURST;
+    if ((seq == 0) && (superframes < UINT8_MAX))
+        superframes++;
 }
 
 void CallController::programTerminator()
@@ -571,7 +652,7 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
         case TX_ARM:
             if (!armed) {
                 if (carrierPresent(nowMs) && (slotLock == 2)) {
-                    armTx(false);
+                    armTx(nowMs, false);
                 } else if (elapsed(nowMs, armStartMs) >= cfg.syncWuMs) {
                     /* Carrier seen but never locked: wake the repeater */
                     enterWakeup(nowMs);
@@ -620,7 +701,7 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
                 default:
                     if (carrierPresent(nowMs) && (slotLock == 2)) {
                         st = TX_ARM;
-                        armTx(false);
+                        armTx(nowMs, false);
                         txSlot(nowMs, ownSlot);
                     } else if (elapsed(nowMs, wakeupSentMs) >= cfg.syncWuMs) {
                         enterWakeup(nowMs);
@@ -644,6 +725,7 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
             if (headers >= HEADER_REPEAT) {
                 st = TX_VOICE;
                 seq = 0;
+                superframes = 0;
             }
             break;
 
@@ -657,8 +739,17 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
                 && (elapsed(nowMs, txStartMs) >= cfg.txTimeoutMs))
                 txTimedOut = true;
 
-            /* Release or timeout: finish the superframe, then terminate */
-            if ((!ptt || txTimedOut) && (seq == 0)) {
+            /*
+             * Release or timeout: the transmission ends with a complete
+             * voice superframe followed by the terminator, TS 102 361-2
+             * §5.2.1.1 and §5.2.2.1 ("EOT shall be accomplished by
+             * transmitting the entire last voice superframe (through voice
+             * burst F), and then sending the ... Terminator with LC"), the
+             * header being followed by voice superframes (TS 102 361-1
+             * §5.1.2.2). A PTT released during the headers therefore sends
+             * one superframe of silence before the terminator.
+             */
+            if ((!ptt || txTimedOut) && (seq == 0) && (superframes > 0)) {
                 programTerminator();
                 st = TX_TERM;
                 if (txTimedOut)
@@ -728,6 +819,21 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
     lastTsMs = nowMs;
     wdRestarted = false;
     rep.needsReconfigure = false;
+
+    /*
+     * Interrupts merged into this event: the timecode toggles once per
+     * missed slot before the regular tracking, so that the parity of an
+     * ongoing call or transmission survives a late wake-up of the thread.
+     * UNVERIFIED on hardware: register 0x42[7:5] reports whether the slot
+     * that just started is the working one (manual §5.4.4, "001" working
+     * slot with the transceiver closed, "101" sending, "011" receiving,
+     * "xx0" non-working); once its meaning is confirmed on the radio it can
+     * cross-check the own-slot parity during a transmission.
+     */
+    if (tcValid && (missedSlots(s) & 1))
+        timecode ^= 1;
+    lastTsCount = s.tsCount;
+    lastTsTick = s.tsTick;
 
     trackTimecode((s.r52 & R52_TC) ? 1 : 0);
     runTimers(nowMs);
@@ -813,8 +919,17 @@ void CallController::onTimeout(uint32_t nowMs)
     /*
      * Timeslot watchdog: the interrupts stop when the chip loses its time
      * axis. Re-run the RX sequence after TS_WATCHDOG_MS (OpenGD77 practice),
-     * ask for a full reconfiguration after TS_RECONFIGURE_MS.
+     * ask for a full reconfiguration after TS_RECONFIGURE_MS. The chip
+     * provides the interrupts only once a time axis exists (manual §5.4.4),
+     * so while searching for a signal there is nothing to watch: a silent
+     * channel in RX_SEARCH is left alone. A transmission requests its own
+     * axis and is watched from that request.
      */
+    if (st == RX_SEARCH) {
+        publish();
+        return;
+    }
+
     uint32_t silent = elapsed(nowMs, lastTsMs);
 
     if ((silent >= TS_RECONFIGURE_MS) && !rep.needsReconfigure) {
