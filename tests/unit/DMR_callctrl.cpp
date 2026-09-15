@@ -1437,6 +1437,92 @@ TEST_CASE("DMR TX repeater wake-up fails after N_Wakeup attempts",
     REQUIRE(b.ctrl.report().wakeupFailed == false);
 }
 
+TEST_CASE("DMR TX repeater wake-up on a channel without timeslot interrupts",
+          "[dmr][callctrl]")
+{
+    /*
+     * Silent channel: after the CSBK the modem is back in passive reception
+     * and gives no timeslot interrupt at all. T_SyncWu, not the timeslot
+     * watchdog, bounds each attempt; the second CSBK is sent at T_SyncWu
+     * and the wake-up fails after the second T_SyncWu, never before.
+     */
+    Bench b;
+    b.cfg.repeater = true;
+    b.settle();
+    b.tsN(20);
+    b.tsN(2);
+    b.port.clear();
+
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+
+    /* First CSBK on the own slot, then back to RX: no more interrupts */
+    unsigned n = 0;
+    while (b.port.count(W_R50, R50_CSBK) == 0) {
+        b.ts();
+        REQUIRE(++n < 4);
+    }
+    b.ts();
+    REQUIRE(b.port.last(W_R40)->value == R40_RX);
+    uint32_t sent = b.now;
+    b.port.clear();
+
+    /* Silence up to T_SyncWu: nothing happens, no watchdog restart */
+    while (b.now + 30 < sent + b.cfg.syncWuMs) {
+        b.timeout(30);
+        REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_TX_WAKEUP);
+        REQUIRE(b.ctrl.report().wakeupFailed == false);
+        REQUIRE(b.port.writes.empty());
+    }
+
+    /* T_SyncWu: second attempt, active timing requested again */
+    b.timeout(30);
+    REQUIRE(b.now >= sent + b.cfg.syncWuMs);
+    REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+    REQUIRE(b.ctrl.report().wakeupFailed == false);
+    REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_TX_DMO });
+    REQUIRE(b.port.count(W_R50, R50_CSBK) == 0);
+
+    /* The own timing gives slots: the second CSBK goes out, then RX */
+    n = 0;
+    while (b.port.count(W_R50, R50_CSBK) == 0) {
+        b.ts();
+        REQUIRE(++n < 4);
+    }
+    b.ts();
+    REQUIRE(b.port.last(W_R40)->value == R40_RX);
+    REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+    sent = b.now;
+    b.port.clear();
+
+    /* Second silent wait: still not failed until T_SyncWu */
+    while (b.now + 30 < sent + b.cfg.syncWuMs) {
+        b.timeout(30);
+        REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+        REQUIRE(b.ctrl.report().wakeupFailed == false);
+        REQUIRE(b.port.writes.empty());
+    }
+
+    /* N_Wakeup = 2 attempts done: give up, keep searching, PTT latched */
+    b.timeout(30);
+    REQUIRE(b.ctrl.report().wakeupFailed == true);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
+    REQUIRE(b.port.writes.empty());
+
+    /* The silent channel is left alone afterwards, the marker stays */
+    for (unsigned i = 0; i < 100; i++)
+        b.timeout(30);
+    REQUIRE(b.port.writes.empty());
+    REQUIRE(b.ctrl.report().wakeupFailed == true);
+    REQUIRE(b.ctrl.report().needsReconfigure == false);
+
+    b.ctrl.setPtt(false, b.now);
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+}
+
 TEST_CASE("DMR TX repeater wake-up aborted by the PTT release",
           "[dmr][callctrl]")
 {

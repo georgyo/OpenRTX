@@ -210,7 +210,9 @@ reconfiguration after 2 s. It runs once timeslots have been seen, or from
 the moment a transmission asks the modem for its own timing: the chip gives
 timeslot interrupts only after a time axis is established (HR_C6000 manual
 §5.4.4), so a silent channel in `RX_SEARCH` is left alone and the markers
-survive. Timeslot interrupts merged into one event by a late wake-up of the
+survive; likewise while waiting for a repeater's answer to a wake-up, where
+T_SyncWu bounds the wait on its own (evaluated on timeouts as well, since
+the silent channel gives no timeslot interrupt). Timeslot interrupts merged into one event by a late wake-up of the
 rtx thread are recovered from the ISR counter and timestamp carried by the
 snapshot, so the slot parity of a call or transmission does not flip.
 
