@@ -1476,6 +1476,25 @@ if meson.get_compiler('cpp').get_id() == 'gcc'
     test('STM32 DMA Stream Test (' + mcu + ')', stm32_dma_stream_test)
   endforeach
 endif
+
+# Compiles the STM32 gpio interrupt driver for both families against fake
+# registers: the H7 build takes them from tests/unit/stubs/stm32h7xx (listed
+# first, so that its stm32h7xx.h wins over the shared fake) and only the Miosix
+# fake from tests/unit/fake_stm32; the F4 build takes everything from the
+# shared fake. The openrtx include directories provide peripherals/gpio_irq.h
+# and drivers/GPIO/gpio-native.h.
+foreach family : [['STM32H743xx', ['tests/unit/stubs/stm32h7xx', 'tests/unit/fake_stm32']],
+                  ['STM32F405xx', ['tests/unit/fake_stm32']]]
+  gpio_irq_stm32_test = executable('gpio_irq_stm32_test_' + family[0].to_lower(),
+                                   sources : ['tests/unit/gpio_irq_stm32.cpp',
+                                              'platform/drivers/GPIO/gpio_irq_stm32.cpp'],
+                                   cpp_args : linux_cpp_args + ['-D' + family[0]],
+                                   link_args : linux_l_args,
+                                   include_directories : family[1] + openrtx_inc,
+                                   dependencies : [catch2_dep])
+
+  test('STM32 GPIO IRQ Test (' + family[0] + ')', gpio_irq_stm32_test)
+endforeach
 test('STM32H7 Clock Tree Test', stm32h7_clock_tree_test)
 test('SKY72310 Lock Detect Test', sky72310_lock_test)
 test('AK2365A Driver Test',   ak2365a_test)
