@@ -214,6 +214,24 @@ public:
         return ready;
     }
 
+    /**
+     * @return ID of the speaker audio path, -1 when not requested; for the
+     * tests.
+     */
+    pathId rxAudioPathId() const
+    {
+        return rxAudioPath;
+    }
+
+    /**
+     * @return ID of the microphone audio path, -1 when not requested; for
+     * the tests.
+     */
+    pathId txAudioPathId() const
+    {
+        return txAudioPath;
+    }
+
 private:
     enum RfState : uint8_t { RF_OFF = 0, RF_RX, RF_TX };
 

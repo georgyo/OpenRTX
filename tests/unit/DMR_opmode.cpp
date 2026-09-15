@@ -7,6 +7,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstdio>
 #include <cstring>
+#include "core/audio_path.h"
 #include "emulator.h"
 #include "interfaces/delays.h"
 #include "protocols/DMR/CallController.hpp"
@@ -470,6 +471,171 @@ TEST_CASE("DMR OpMode: a modem parameter change reprograms the modem once",
     dmr.update(&b.status, true);
     REQUIRE(dmr.controller().config().repeater == true);
     REQUIRE(b.rec->configureCount == 2);
+}
+
+TEST_CASE("DMR OpMode: a modem parameter change during TX waits for the end",
+          "[dmr][rtx]")
+{
+    Bench b;
+    b.start();
+    b.ticks(6);
+    REQUIRE(b.rec->configureCount == 1);
+
+    emulator_state.PTTstatus = true;
+    unsigned n = 0;
+    while (b.ctrlState() != CallController::TX_VOICE) {
+        b.tick();
+        REQUIRE(++n < 12);
+    }
+    uint32_t bursts = b.rec->voiceBursts;
+
+    /* Colour code changed mid-call: the modem is left alone, voice goes on */
+    b.status.dmr_rxColorCode = 3;
+    b.status.dmr_txColorCode = 3;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 1);
+    REQUIRE(b.ctrlState() == CallController::TX_VOICE);
+    b.ticks(4);
+    REQUIRE(b.ctrlState() == CallController::TX_VOICE);
+    REQUIRE(b.rec->voiceBursts == bursts + 2);
+    REQUIRE(b.status.opStatus == TX);
+
+    /* A modem-neutral change on top of it does not lose the pending one */
+    b.status.dmr_dstId = 9;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 1);
+    REQUIRE(b.ctrlState() == CallController::TX_VOICE);
+
+    /* Release: superframe, terminator, then the deferred reprogramming */
+    emulator_state.PTTstatus = false;
+    n = 0;
+    while (b.ctrlState() != CallController::TX_TERM) {
+        b.tick();
+        REQUIRE(++n < 14);
+    }
+    REQUIRE(b.rec->configureCount == 1);
+    uint32_t startRx = b.rec->startRxCount;
+
+    b.tick();
+    REQUIRE(b.rec->terminators == 1);
+    REQUIRE(b.rec->configureCount == 2);
+    REQUIRE(b.rec->config.colorCode == 3);
+    REQUIRE(b.rec->startRxCount > startRx);
+    REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
+    REQUIRE(b.status.opStatus == RX);
+    REQUIRE(dmr.controller().config().colorCode == 3);
+    REQUIRE(dmr.controller().config().dstId == 9);
+
+    b.ticks(2);
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.rec->configureCount == 2);
+}
+
+TEST_CASE("DMR OpMode: audio paths follow the call", "[dmr][rtx]")
+{
+    Bench b;
+    state.settings.dmr_hangTime = 1;
+    b.start();
+    b.ticks(6);
+    REQUIRE(dmr.rxAudioPathId() < 0);
+    REQUIRE(dmr.txAudioPathId() < 0);
+
+    /* Speaker path for the received call and its hang time */
+    dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 12);
+    REQUIRE(b.runUntil(CallController::RX_CALL));
+    pathId spk = dmr.rxAudioPathId();
+    REQUIRE(spk >= 0);
+    REQUIRE(audioPath_getStatus(spk) == PATH_OPEN);
+    REQUIRE(audioPath_getInfo(spk).source == SOURCE_MCU);
+    REQUIRE(audioPath_getInfo(spk).sink == SINK_SPK);
+    REQUIRE(audioPath_getInfo(spk).prio == PRIO_RX);
+    REQUIRE(dmr.txAudioPathId() < 0);
+
+    REQUIRE(b.runUntil(CallController::RX_HANG));
+    b.drain();
+    REQUIRE(dmr.rxAudioPathId() == spk);
+    REQUIRE(audioPath_getStatus(spk) == PATH_OPEN);
+
+    sleepFor(0, 1100);
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(dmr.rxAudioPathId() < 0);
+    REQUIRE(audioPath_getStatus(spk) == PATH_CLOSED);
+
+    /* Microphone path for the whole transmission */
+    emulator_state.PTTstatus = true;
+    b.tick();
+    REQUIRE(b.ctrlState() >= CallController::TX_ARM);
+    pathId mic = dmr.txAudioPathId();
+    REQUIRE(mic >= 0);
+    REQUIRE(audioPath_getStatus(mic) == PATH_OPEN);
+    REQUIRE(audioPath_getInfo(mic).source == SOURCE_MIC);
+    REQUIRE(audioPath_getInfo(mic).sink == SINK_MCU);
+    REQUIRE(audioPath_getInfo(mic).prio == PRIO_TX);
+    REQUIRE(dmr.rxAudioPathId() < 0);
+
+    unsigned n = 0;
+    while (b.ctrlState() != CallController::TX_VOICE) {
+        b.tick();
+        REQUIRE(++n < 12);
+    }
+    REQUIRE(audioPath_getStatus(mic) == PATH_OPEN);
+
+    /* Released at burst A: one superframe of silence, then the terminator */
+    emulator_state.PTTstatus = false;
+    n = 0;
+    while (b.ctrlState() != CallController::TX_TERM) {
+        b.tick();
+        REQUIRE(++n < 16);
+    }
+    REQUIRE(b.rec->voiceBursts == 6);
+    REQUIRE(dmr.txAudioPathId() == mic);
+
+    /* Terminator out: the microphone is released at once */
+    b.tick();
+    REQUIRE(b.ctrlState() < CallController::TX_ARM);
+    REQUIRE(dmr.txAudioPathId() < 0);
+    REQUIRE(audioPath_getStatus(mic) == PATH_CLOSED);
+    REQUIRE(dmr.rxAudioPathId() < 0);
+}
+
+TEST_CASE("DMR OpMode: disable releases the audio paths mid-call", "[dmr][rtx]")
+{
+    Bench b;
+    state.settings.dmr_hangTime = 1;
+    b.start();
+    b.ticks(6);
+
+    dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 12);
+    REQUIRE(b.runUntil(CallController::RX_CALL));
+    pathId spk = dmr.rxAudioPathId();
+    REQUIRE(audioPath_getStatus(spk) == PATH_OPEN);
+
+    dmr.disable();
+    REQUIRE(b.ctrlState() == CallController::OFF);
+    REQUIRE(dmr.rxAudioPathId() < 0);
+    REQUIRE(dmr.txAudioPathId() < 0);
+    REQUIRE(audioPath_getStatus(spk) == PATH_CLOSED);
+    REQUIRE(b.rec->idleCount == 1);
+
+    /* Same while transmitting */
+    dmrEmu_reset();
+    b.start();
+    b.ticks(6);
+    emulator_state.PTTstatus = true;
+    b.ticks(2);
+    REQUIRE(b.ctrlState() >= CallController::TX_ARM);
+    pathId mic = dmr.txAudioPathId();
+    REQUIRE(audioPath_getStatus(mic) == PATH_OPEN);
+
+    dmr.disable();
+    REQUIRE(dmr.txAudioPathId() < 0);
+    REQUIRE(audioPath_getStatus(mic) == PATH_CLOSED);
+
+    /* Nothing leaks: the same paths can be requested again */
+    pathId again = audioPath_request(SOURCE_MIC, SINK_MCU, PRIO_TX);
+    REQUIRE(again >= 0);
+    audioPath_release(again);
 }
 
 TEST_CASE("DMR OpMode: a radio without a DMR modem stays off with a marker",
