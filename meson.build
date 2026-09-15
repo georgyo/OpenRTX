@@ -1319,6 +1319,20 @@ dmr_opmode_test = executable('dmr_opmode_test',
                              sources : unit_test_src + ['tests/unit/DMR_opmode.cpp'],
                              kwargs  : unit_test_opts)
 
+# Both in-tree vocoder backends are under test whatever the dmr_vocoder option
+# selected for the emulator: the one(s) the option left out are added here.
+dmr_vocoder_test_src = unit_test_src + ['tests/unit/dmr_vocoder.cpp']
+if dmr_vocoder == 'external'
+  dmr_vocoder_test_src += dmr_vocoder_null_src
+endif
+if dmr_vocoder == 'null' or dmr_vocoder == 'external'
+  dmr_vocoder_test_src += dmr_vocoder_loopback_src
+endif
+
+dmr_vocoder_test = executable('dmr_vocoder_test',
+                              sources : dmr_vocoder_test_src,
+                              kwargs  : unit_test_opts)
+
 m17_packet_test = executable('m17_packet_test',
                               sources : unit_test_src + ['tests/unit/M17_packet.cpp'],
                               kwargs  : unit_test_opts)
@@ -1487,6 +1501,7 @@ test('DMR Codeplug Test',     dmr_cps_test)
 test('UI DMR Test',           ui_dmr_test)
 test('DMR Call Control Test', dmr_callctrl_test)
 test('DMR OpMode Test',       dmr_opmode_test)
+test('DMR Vocoder Test',      dmr_vocoder_test)
 test('M17 Packet Frame Test', m17_packet_test)
 test('DSP Oversampling Test', dsp_oversampling_test)
 test('GFX Text Test',        gfx_text_test)
