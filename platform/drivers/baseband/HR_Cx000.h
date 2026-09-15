@@ -193,7 +193,73 @@ public:
         spi_send(uSpi, audio, 64);
     }
 
-private:
+    /**
+     * Write a contiguous block of bytes into the TX data RAM, "user" SPI
+     * opcode DATA (write TX RAM / read RX RAM). The address auto-increments
+     * while the chip select is held low, so the whole block goes out in a
+     * single transfer (HR_C6000 manual §5.2 and Table 5.2).
+     *
+     * @param addr: start address inside the TX RAM.
+     * @param buf: pointer to the data to be written.
+     * @param len: number of bytes to write.
+     */
+    inline void writeDataRam(const uint8_t addr, const uint8_t *buf,
+                             const size_t len)
+    {
+        uint8_t cmd[2];
+
+        cmd[0] = static_cast< uint8_t >(M::DATA);
+        cmd[1] = addr;
+
+        ScopedChipSelect cs(uSpi, uCs);
+        spi_send(uSpi, cmd, 2);
+        spi_send(uSpi, buf, len);
+    }
+
+    /**
+     * Read a contiguous block of bytes from the RX data RAM, "user" SPI
+     * opcode DATA with the read flag (0x82). Single transfer with the chip
+     * select held low, see writeDataRam().
+     *
+     * @param addr: start address inside the RX RAM.
+     * @param buf: pointer to the destination buffer.
+     * @param len: number of bytes to read.
+     */
+    inline void readDataRam(const uint8_t addr, uint8_t *buf, const size_t len)
+    {
+        uint8_t cmd[2];
+
+        cmd[0] = SPI_FLAGS_READ | static_cast< uint8_t >(M::DATA);
+        cmd[1] = addr;
+
+        ScopedChipSelect cs(uSpi, uCs);
+        spi_send(uSpi, cmd, 2);
+        spi_receive(uSpi, buf, len);
+    }
+
+    /**
+     * Set the value of an auxiliary configuration register (opcode AUX).
+     *
+     * @param reg: register number.
+     * @param value: new register value.
+     */
+    inline void writeAuxRegister(const uint8_t reg, const uint8_t value)
+    {
+        writeReg(M::AUX, reg, value);
+    }
+
+    /**
+     * Get the current value of an auxiliary configuration register.
+     *
+     * @param reg: register number.
+     * \return current value of the register.
+     */
+    inline uint8_t readAuxRegister(const uint8_t reg)
+    {
+        return readReg(M::AUX, reg);
+    }
+
+protected:
 
     /**
      * Helper function for register writing.
@@ -248,8 +314,6 @@ private:
         ScopedChipSelect cs(uSpi, uCs);
         spi_send(uSpi, seq, len);
     }
-
-protected:
 
     enum SpiFlags
     {
