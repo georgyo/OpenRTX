@@ -16,6 +16,40 @@
 extern "C" {
 #endif
 
+/**
+ * DMR bring-up counters and register readback, published by the DMR opMode
+ * handler on every pass from the modem driver's snapshot and shown by the
+ * DMR monitor screen (Settings > DMR > DMR monitor). Owned by the opMode
+ * handler like the DMR receive report: rtx_task() keeps it across the copy
+ * of a new configuration. Register numbers are those of the HR_C6000, see
+ * interfaces/dmr_baseband.h.
+ */
+typedef struct
+{
+    uint32_t tsCount;      /**< TIME_SLOT_INTER interrupts                  */
+    uint32_t sysCount;     /**< SYS_INTER interrupts                        */
+    uint32_t rftxCount;    /**< RF_TX_INTER interrupts                      */
+    uint32_t lineCount[4]; /**< EXTI pulses on PC0..PC3 during bring-up     */
+    uint32_t lcSrc;        /**< Source address decoded from lc[]            */
+    uint32_t lcDst;        /**< Destination address decoded from lc[]       */
+    uint16_t rssi;         /**< Registers 0x43:0x44                         */
+    uint8_t  irq82;        /**< 0x82 flags of the last SYS event            */
+    uint8_t  sub84;        /**< 0x84 TX start sub-status of the last SYS    */
+    uint8_t  sub86;        /**< 0x86 TX end sub-status of the last SYS      */
+    uint8_t  r51;          /**< 0x51 data type/sequence, CRC, sync class    */
+    uint8_t  r52;          /**< 0x52 colour code, CACH AT/TC, LCSS          */
+    uint8_t  r5f;          /**< 0x5F sync type in [1:0]                     */
+    uint8_t  r42;          /**< 0x42 slot status of the last TS event       */
+    uint8_t  fskErr;       /**< Register 0x0F                               */
+    uint8_t  timecode;     /**< Local timecode of the current slot          */
+    uint8_t  lc[12];       /**< LC RAM of the last control frame            */
+    uint8_t  lcFlco;       /**< FLCO decoded from lc[]                      */
+    uint8_t  lcFid;        /**< FID decoded from lc[]                       */
+    uint8_t  lcValid;      /**< bit0: chip CRC good (0x51 bit2 clear),
+                                bit1: lc[] parsed as a standard Full LC     */
+}
+dmrMonitor_t;
+
 typedef struct
 {
     uint8_t opMode;         /**< Operating mode (FM, DMR, ...) */
@@ -65,6 +99,8 @@ typedef struct
                                     1 own CC any TG, 2 any CC/TS           */
     uint8_t  dmr_polite;       /**< DMR channel access: 1 polite to own CC,
                                     0 impolite                             */
+    uint8_t  dmr_modeReg;      /**< DMR modem mode register 0x10 override
+                                    from the monitor screen, 0 = default   */
 
     /* DMR receive report, written by the DMR opMode handler */
     bool     dmr_lcOk;         /**< DMR Full LC with valid CRC is held     */
@@ -79,6 +115,7 @@ typedef struct
     uint8_t  dmr_slotLock;     /**< DMR timing: 0 none, 1 synced,
                                     2 timecode locked                      */
     uint8_t  dmr_markers;      /**< DMR top-bar markers, enum dmrMarker    */
+    dmrMonitor_t dmr_mon;      /**< DMR bring-up counters, monitor screen  */
 }
 rtxStatus_t;
 

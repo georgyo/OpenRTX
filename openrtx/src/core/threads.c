@@ -106,6 +106,7 @@ void *ui_threadFunc(void *arg)
             rtx_cfg.dmr_timeslot    = state.channel.dmr.dmr_timeslot;
             rtx_cfg.dmr_monitor     = state.settings.dmr_monitor;
             rtx_cfg.dmr_polite      = state.settings.dmr_polite;
+            rtx_cfg.dmr_modeReg     = state.dmr_modeReg;
             #endif
 
             pthread_mutex_unlock(&rtx_mutex);
