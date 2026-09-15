@@ -89,6 +89,7 @@ public:
     static constexpr uint8_t TIMECODE_LOCK_COUNT = 5;   /* agreeing TS    */
     static constexpr uint8_t TIMECODE_DROP_COUNT = 4;   /* disagreeing TS */
     static constexpr uint8_t HEADER_REPEAT = 3;
+    static constexpr uint32_t TS_TICK_TOLERANCE_MS = 5; /* TS jitter      */
 
     struct Config {
         uint32_t ownId;         /* own DMR ID, 0 = TX refused          */
@@ -163,7 +164,9 @@ public:
     }
 
     /**
-     * Start: reset all the state, start reception (OFF -> RX_SEARCH).
+     * Start: reset all the state, start reception (OFF -> RX_SEARCH). The
+     * top-bar markers (noId, busy, wakeupFailed) survive a restart, the
+     * owner clears them with clearMarkers().
      *
      * @param nowMs: current time.
      */
@@ -187,9 +190,10 @@ public:
 
     /**
      * Timeslot interrupt: track the timecode from register 0x52 and program
-     * the next slot.
+     * the next slot. Interrupts merged into one event by the driver are
+     * recovered from the ISR counter and timestamp of the snapshot.
      *
-     * @param s: snapshot with r52 valid.
+     * @param s: snapshot with r52, tsCount and tsTick valid.
      * @param nowMs: current time.
      */
     void onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs);
@@ -205,6 +209,8 @@ public:
 
     /**
      * No event within the wait: run the timers and the timeslot watchdog.
+     * The watchdog is idle in RX_SEARCH, where a silent channel legitimately
+     * produces no timeslot interrupt.
      *
      * @param nowMs: current time.
      */
@@ -244,8 +250,11 @@ private:
     bool burstIsCall(const struct dmrbbSnapshot &s) const;
     bool colorCodeAccepted(uint8_t cc) const;
     bool slotAccepted(uint8_t slot) const;
+    bool terminatorOfCall(const struct dmrbbSnapshot &s) const;
 
     void resetTiming();
+    void requestAxis(uint32_t nowMs);
+    uint32_t missedSlots(const struct dmrbbSnapshot &s) const;
     void trackTimecode(uint8_t rxTc);
     void runTimers(uint32_t nowMs);
     void publish();
@@ -256,7 +265,7 @@ private:
     void processControlFrame(const struct dmrbbSnapshot &s, uint32_t nowMs);
 
     void enterTxArm(uint32_t nowMs);
-    void armTx(bool activeTiming);
+    void armTx(uint32_t nowMs, bool activeTiming);
     void enterWakeup(uint32_t nowMs);
     void abortTx(uint32_t nowMs, bool busy);
     void buildTxLc();
@@ -272,33 +281,36 @@ private:
     State st;
 
     /* Timing */
-    uint8_t timecode;  /* local timecode of the slot that just started  */
-    bool tcValid;      /* timecode initialised from the first TS        */
-    uint8_t agree;     /* consecutive agreeing TS                       */
-    uint8_t disagree;  /* consecutive disagreeing TS                    */
-    uint8_t slotLock;  /* 0 none, 1 slots ticking, 2 timecode locked    */
-    uint8_t lastSync;  /* last received sync type, R5F_SYNC_*           */
-    uint32_t lastTsMs; /* time of the last TS interrupt                 */
+    uint8_t timecode;     /* local timecode of the slot that just started     */
+    bool tcValid;         /* timecode initialised from the first TS           */
+    uint8_t agree;        /* consecutive agreeing TS                          */
+    uint8_t disagree;     /* consecutive disagreeing TS                       */
+    uint8_t slotLock;     /* 0 none, 1 slots ticking, 2 timecode locked       */
+    uint8_t lastSync;     /* last received sync type, R5F_SYNC_*              */
+    uint32_t lastTsMs;    /* last TS interrupt or time axis request           */
+    uint32_t lastTsCount; /* snapshot tsCount of the last TS event            */
+    uint32_t lastTsTick;  /* snapshot tsTick of the last TS event             */
     uint32_t lastBsSyncMs;
-    bool wdRestarted;  /* startRx re-run by the watchdog since last TS  */
-    bool skipLc;       /* ignore the first LC read after a mode switch  */
+    bool wdRestarted;     /* startRx re-run by the watchdog since last TS     */
+    bool skipLc;          /* ignore the first LC read after a mode switch     */
 
     /* Reception */
-    uint8_t callSlot;     /* 1, 2 or 0 when unknown (MS sync)           */
-    uint8_t callTimecode; /* local timecode of the call's slot          */
-    bool callDmo;         /* call has no BS sync: gate the other slot   */
+    uint8_t callSlot;     /* 1, 2 or 0 when unknown (MS sync)                 */
+    uint8_t callTimecode; /* local timecode of the call's slot                */
+    bool callDmo;         /* call has no BS sync: gate the other slot         */
     uint32_t lastVoiceMs;
     uint32_t hangStartMs;
 
     /* Transmission */
     bool ptt;
-    bool pttLatched;   /* ignore PTT until released                    */
-    bool activeTiming; /* DMO (true) or RMO (false)                    */
-    bool armed;        /* 0x21/0x40 written, waiting for the own slot  */
-    bool txTimedOut;   /* T_TO expired, finish the superframe          */
-    uint8_t headers;   /* headers programmed so far                    */
-    uint8_t seq;       /* next voice burst, 0 = A .. 5 = F             */
-    uint8_t wakeups;   /* wake-up attempts done                        */
+    bool pttLatched;     /* ignore PTT until released                         */
+    bool activeTiming;   /* DMO (true) or RMO (false)                         */
+    bool armed;          /* 0x21/0x40 written, waiting for the own slot       */
+    bool txTimedOut;     /* T_TO expired, finish the superframe               */
+    uint8_t headers;     /* headers programmed so far                         */
+    uint8_t seq;         /* next voice burst, 0 = A .. 5 = F                  */
+    uint8_t superframes; /* complete voice superframes programmed             */
+    uint8_t wakeups;     /* wake-up attempts done                             */
     uint8_t wakeupPhase;
     uint32_t armStartMs;
     uint32_t txStartMs;
