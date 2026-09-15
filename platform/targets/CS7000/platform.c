@@ -42,6 +42,19 @@ void platform_init()
     gpio_setMode(GPIOEXT_CLK, OUTPUT);
     gpio_setMode(GPIOEXT_DAT, OUTPUT);
 
+    /*
+     * HR_C6000 interrupt lines PC0..PC3, floating inputs: the C6000 drives
+     * them with active-low pulses (manual §4.4, push-pull as far as the
+     * manual says: no pull-up is documented) and the DMR modem driver attaches
+     * falling-edge interrupts to all four during bring-up. No pull resistor on
+     * purpose: on the CS7000-M17 Plus schematic PC1 is the 2T/5T analogue
+     * tone detector output, a pull-up would load it.
+     */
+    gpio_setMode(DMR_TS_INT,      INPUT);
+    gpio_setMode(DMR_SYS_INT,     INPUT);
+    gpio_setMode(DMR_TX_INT,      INPUT);
+    gpio_setMode(DMR_SYS_INT_ALT, INPUT);
+
     spi_init((const struct spiDevice *) &spiSr);
     gpioShiftReg_init(&extGpio);
     adcStm32_init(&adc1);
