@@ -790,37 +790,38 @@ TEST_CASE("Reset to defaults restores the DMR settings", "[ui][dmr]")
 
 TEST_CASE("The DMR top-bar marker follows the RTX marker flags", "[ui][dmr]")
 {
-    rtxStatus_t status;
-    memset(&status, 0, sizeof(status));
-    status.opMode = OPMODE_DMR;
-
     /* No flag, no marker */
-    REQUIRE(_ui_dmrMarkerText(&status) == NULL);
+    REQUIRE(_ui_dmrMarkerText(0) == NULL);
 
     /* One flag at a time */
-    status.dmr_markers = DMR_MARK_NO_ID;
-    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrNoId) == 0);
-    status.dmr_markers = DMR_MARK_BUSY;
-    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrBusy) == 0);
-    status.dmr_markers = DMR_MARK_WAKEUP_FAILED;
-    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrWakeupFailed)
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_NO_ID), currentLanguage->dmrNoId)
             == 0);
-    status.dmr_markers = DMR_MARK_NOT_SUPPORTED;
-    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrNotSupported)
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_BUSY), currentLanguage->dmrBusy)
             == 0);
-
-    /* Precedence: not supported, then no ID, busy, wake-up failed */
-    status.dmr_markers = DMR_MARK_BUSY | DMR_MARK_WAKEUP_FAILED;
-    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrBusy) == 0);
-    status.dmr_markers |= DMR_MARK_NO_ID;
-    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrNoId) == 0);
-    status.dmr_markers |= DMR_MARK_NOT_SUPPORTED;
-    REQUIRE(strcmp(_ui_dmrMarkerText(&status), currentLanguage->dmrNotSupported)
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_WAKEUP_FAILED),
+                   currentLanguage->dmrWakeupFailed)
+            == 0);
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_NOT_SUPPORTED),
+                   currentLanguage->dmrNotSupported)
             == 0);
 
-    /* Only while the RTX stage is in DMR */
-    status.opMode = OPMODE_FM;
-    REQUIRE(_ui_dmrMarkerText(&status) == NULL);
+    /* Precedence: not supported, no ID, busy, wake-up failed */
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_NOT_SUPPORTED | DMR_MARK_NO_ID
+                                     | DMR_MARK_BUSY),
+                   currentLanguage->dmrNotSupported)
+            == 0);
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_NO_ID | DMR_MARK_BUSY
+                                     | DMR_MARK_WAKEUP_FAILED),
+                   currentLanguage->dmrNoId)
+            == 0);
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_BUSY | DMR_MARK_WAKEUP_FAILED),
+                   currentLanguage->dmrBusy)
+            == 0);
+
+    /* The RTX driver hands the byte out only while in DMR */
+    rtxStatus_t cur = rtx_getCurrentStatus();
+    uint8_t expected = (cur.opMode == OPMODE_DMR) ? cur.dmr_markers : 0;
+    REQUIRE(rtx_getDmrMarkers() == expected);
 
     /* Every language carries the four strings */
     for (const stringsTable_t *lang = languages;

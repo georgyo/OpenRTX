@@ -296,3 +296,11 @@ bool rtx_rxSquelchOpen()
 {
     return currMode->rxSquelchOpen();
 }
+
+uint8_t rtx_getDmrMarkers()
+{
+    if(rtxStatus.opMode != OPMODE_DMR)
+        return 0;
+
+    return rtxStatus.dmr_markers;
+}
