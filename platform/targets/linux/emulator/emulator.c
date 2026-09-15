@@ -366,7 +366,8 @@ static _climenu_option _options[] = {
     {"screenshot", "[screenshot.bmp] Save screenshot to first arg or screenshot.bmp if none given",
                                 NULL,   screenshot
     },
-    {"dmrcall", "[src dst] Replay a DMR group call from src to talkgroup dst, no args to stop",
+    {"dmrcall", "[src dst] Replay a DMR group call from src to talkgroup "
+                "dst, no args to stop",
                                 NULL,   dmrCall },
     {"sleep",   "Wait some number of ms",           NULL,   shell_sleep },
     {"help",    "Print this help",                  NULL,   shell_help },
