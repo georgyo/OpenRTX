@@ -186,6 +186,13 @@ rssi_t rtx_getRssi();
  */
 bool rtx_rxSquelchOpen();
 
+/**
+ * Get the DMR top-bar markers raised by the DMR operating mode, without
+ * copying the whole status. Reading one byte is safe from any thread.
+ * @return dmr_markers of the current status, 0 when not in DMR mode.
+ */
+uint8_t rtx_getDmrMarkers();
+
 #ifdef __cplusplus
 }
 #endif
