@@ -195,18 +195,24 @@ hardware, driven by `onTimeslot()`, `onSysEvent()`, `onTimeout()` and
 | `RX_SEARCH` | Reception started, no timeslot interrupt yet |
 | `RX_IDLE` | Slots ticking, no call; the timecode is tracked from the CACH (locked after 5 agreeing slots, re-aligned after 4 disagreeing ones) |
 | `RX_CALL` | A call passed the colour code, timeslot and address filters (monitor level 0: all three; 1: own colour code and slot, any talkgroup; 2: anything): voice bursts are forwarded, the caller is published |
-| `RX_HANG` | The call ended (terminator, data burst, two silent superframes or an abnormal exit): kept on screen for the hang time, reopened by a new header |
+| `RX_HANG` | The call ended (terminator or data burst of the call's colour code, two silent superframes or an abnormal exit): kept on screen for the hang time, extended only by the hang time terminators of that call (same colour code, same source and destination, TS 102 361-1 §5.2.1.4), reopened by a new header |
 | `TX_ARM` | PTT accepted: direct mode with the chip's own timing on a simplex channel without a base station carrier, repeater mode aligned to the received sync otherwise (waiting for the timecode lock) |
 | `TX_WAKEUP` | Repeater channel without carrier: a `BS_Dwn_Act` CSBK is sent and the repeater's sync awaited for T_SyncWu, at most N_Wakeup = 2 times |
 | `TX_HEADER` | Three voice LC headers on the own slot, the other slot idle |
-| `TX_VOICE` | Voice bursts A to F, the payload asked from the audio layer (silence in this stage); PTT release or T_TO completes the superframe |
+| `TX_VOICE` | Voice bursts A to F, the payload asked from the audio layer (silence in this stage); PTT release or T_TO completes the superframe, and at least one superframe is sent even when the PTT is released during the headers (TS 102 361-2 §5.2.1.1: the EOT is the entire last superframe through F, then the terminator) |
 | `TX_TERM` | Terminator with LC, then back to reception with the hang timer running |
 
 PTT is refused, with a marker, without a DMR ID; a rejected (channel busy),
 timed out or failed transmission needs the PTT released before a new press
 is accepted. A timeslot watchdog re-runs the reception sequence after 200 ms
 without timeslot interrupts and asks `OpMode_DMR` for a full modem
-reconfiguration after 2 s.
+reconfiguration after 2 s. It runs once timeslots have been seen, or from
+the moment a transmission asks the modem for its own timing: the chip gives
+timeslot interrupts only after a time axis is established (HR_C6000 manual
+§5.4.4), so a silent channel in `RX_SEARCH` is left alone and the markers
+survive. Timeslot interrupts merged into one event by a late wake-up of the
+rtx thread are recovered from the ISR counter and timestamp carried by the
+snapshot, so the slot parity of a call or transmission does not flip.
 
 `OpMode_DMR` owns the controller, an adapter from `ModemPort` to
 `dmr_baseband.h` and an audio placeholder (`DmrAudioStub`, silence on TX,
@@ -263,7 +269,8 @@ openrtx_linux --dmr-call 2345678,31665        # or OPENRTX_DMR_CALL=2345678,3166
 then switch the VFO to DMR (MONI + 5): about two seconds later the main
 screen shows the caller `2345678` calling `TG 31665` on the configured
 colour code and timeslot, for three seconds of voice bursts, then the hang
-time; the call repeats every nine seconds. From the emulator shell,
+time; the next call starts nine seconds after the previous one ended (about
+twelve seconds between call starts). From the emulator shell,
 `dmrcall 2345678 31665` starts the replay and `dmrcall` stops it. Pressing
 `p` (or `ptt` in the shell) transmits: the console prints the modem calls
 (`dmr_linux: startTx(active timing) called`, ...).
@@ -280,18 +287,37 @@ counts of headers, voice bursts, terminators and driver calls);
 ### Tests
 
 - `dmr_callctrl_test` (`tests/unit/DMR_callctrl.cpp`): the controller
-  against a recording mock port, register value by register value.
+  against a recording mock port, register value by register value,
+  including the hang time refresh filter, the early PTT release (one
+  superframe of silence before the terminator), a missed timeslot
+  interrupt during a transmission, and the watchdog on a silent channel.
 - `dmr_opmode_test` (`tests/unit/DMR_opmode.cpp`): `OpMode_DMR` on the
   fake modem: enable to `RX_IDLE`, PTT with `txDisable`, PTT without an ID
   (marker), a transmission (three headers, twelve voice bursts of silence,
   terminator, back to RX), an injected group call (published in
   `rtxStatus_t`, `rxSquelchOpen()`, hang time), colour code filtering and
-  the monitor level, modem reconfiguration on a parameter change, and the
-  "not supported" path. It prints the sizes: `OpMode_DMR` is 336 bytes as
-  a static object, `DMR::CallController` 168, `struct dmrbbSnapshot` 72;
-  nothing of it lives on the 512 byte rtx thread stack, whose usage by
-  `update()` is a few scalars plus the locals of the controller (a 9 byte
-  link control at most), so `RTX_THREAD_STKSIZE` is unchanged.
+  the monitor level, modem reconfiguration on a parameter change and its
+  deferral during a transmission, the speaker and microphone audio paths
+  (requested for a call and its hang time / for a transmission, released
+  after, and by `disable()` mid-call), and the "not supported" path. It
+  prints the sizes: `OpMode_DMR` is 344 bytes as a static object,
+  `DMR::CallController` 176, `struct dmrbbSnapshot` 72.
+- Stack: the handler is a static object, so only the frames of `update()`
+  and what it calls sit on the 512 byte rtx thread stack. Measured with
+  `-fstack-usage` on the Cortex-M7 build (`arm-miosix-eabi-g++ -Os`,
+  target `openrtx_cs7000p`): `rtx_task()` 48 bytes, `update()` 32,
+  `applyConfig()` 64 (a `CallController::Config` and a `dmrbbConfig`),
+  `onSysEvent()` 24, `processControlFrame()` 24, `tryOpenCall()` 56 and
+  `terminatorOfCall()` 40 (a `DMR::FullLC`, 20 bytes, plus the call),
+  `buildTxLc()` 32, `onTimeslot()` 16, `txSlot()` 24. The deepest chain,
+  `rtx_task -> update -> onSysEvent -> processControlFrame -> tryOpenCall`,
+  is about 184 bytes; the configuration chain `update -> applyConfig ->
+  enable` about 120. The stub `dmrbb_waitEvent()` of the radios adds
+  nothing today; the HR_C6000 driver of stage 3 will add its SPI buffers
+  there and must be re-measured. A runtime audit with `memory_profiling`
+  (`getAbsoluteFreeStack()` of the rtx thread with DMR active) is still
+  pending: the emulator cannot provide it (the functions return 0 outside
+  Miosix), it is part of the stage 3 hardware bring-up.
 - `ui_dmr_test`: also the marker text selection.
 
 ## Licensing
