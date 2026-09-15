@@ -267,6 +267,19 @@ void CallController::runTimers(uint32_t nowMs)
             }
             break;
 
+        case TX_WAKEUP:
+            /*
+             * Waiting for the repeater's answer: on a silent channel there
+             * is no timeslot interrupt to drive this, so T_SyncWu is kept
+             * here (TS 102 361-1 Annex F.2). A carrier that has just been
+             * locked wins over the expiry.
+             */
+            if ((wakeupPhase == WU_WAIT)
+                && !(carrierPresent(nowMs) && (slotLock == 2))
+                && (elapsed(nowMs, wakeupSentMs) >= cfg.syncWuMs))
+                enterWakeup(nowMs);
+            break;
+
         default:
             break;
     }
@@ -579,7 +592,8 @@ void CallController::enterWakeup(uint32_t nowMs)
         rep.wakeupFailed = true;
         pttLatched = true;
         if (st == TX_WAKEUP && wakeupPhase == WU_WAIT) {
-            st = RX_IDLE; /* already receiving */
+            /* Already receiving: idle if slots ticked, else searching */
+            st = (slotLock != 0) ? RX_IDLE : RX_SEARCH;
         } else {
             goRx(nowMs, RX_IDLE);
         }
@@ -699,16 +713,11 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
 
                 case WU_WAIT:
                 default:
+                    /* T_SyncWu itself is kept by runTimers() */
                     if (carrierPresent(nowMs) && (slotLock == 2)) {
                         st = TX_ARM;
                         armTx(nowMs, false);
                         txSlot(nowMs, ownSlot);
-                    } else if (elapsed(nowMs, wakeupSentMs) >= cfg.syncWuMs) {
-                        enterWakeup(nowMs);
-                        if (st == TX_WAKEUP)
-                            txSlot(nowMs, ownSlot);
-                        else
-                            port->setNextSlot(R41_RX);
                     } else {
                         port->setNextSlot(R41_RX);
                     }
@@ -923,9 +932,11 @@ void CallController::onTimeout(uint32_t nowMs)
      * provides the interrupts only once a time axis exists (manual §5.4.4),
      * so while searching for a signal there is nothing to watch: a silent
      * channel in RX_SEARCH is left alone. A transmission requests its own
-     * axis and is watched from that request.
+     * axis and is watched from that request, except while waiting for the
+     * repeater's answer to a wake-up: the channel is silent by definition
+     * and T_SyncWu, run by runTimers(), bounds the wait.
      */
-    if (st == RX_SEARCH) {
+    if ((st == RX_SEARCH) || ((st == TX_WAKEUP) && (wakeupPhase == WU_WAIT))) {
         publish();
         return;
     }
