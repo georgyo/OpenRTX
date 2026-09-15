@@ -43,6 +43,24 @@ static const struct spiConfig spiPllCfg =
     .flags     = SPI_HALF_DUPLEX
 };
 
+/*
+ * HR_C6000 vocoder SPI port (V_SPI), bit-banged SPI master, mode 0 (clock
+ * idle low, data sampled on the rising edge), about 500kHz with the 1us
+ * half-period of the bitbang driver: the manual (§4.6.1) allows up to 4MHz.
+ * UNVERIFIED on hardware: the clock phase. The manual's timing figure is
+ * missing from the translation; the "user" SPI of the same chip is driven
+ * with SPI_FLAG_CPHA (see audio_CS7000.cpp), so flipping the flag here is the
+ * first thing to try if the 27-byte voice reads come back as zeros.
+ */
+static const struct spiConfig spiVocCfg =
+{
+    .clk       = { VOC_SCK },
+    .mosi      = { VOC_SDI_C6K },
+    .miso      = { VOC_SDO_C6K },
+    .clkPeriod = SCK_PERIOD_FROM_FREQ(1000000),
+    .flags     = 0
+};
+
 /**
  * SPI bitbang function for SN74HC595 gpio extender.
  *
@@ -87,6 +105,7 @@ SPI_CUSTOM_DEVICE_DEFINE(spiSr,      spiSr_func,    NULL, NULL)
 SPI_BITBANG_DEVICE_DEFINE(flash_spi, spiFlashCfg,   NULL)
 SPI_BITBANG_DEVICE_DEFINE(det_spi,   spiDetCfg,     NULL)
 SPI_BITBANG_DEVICE_DEFINE(pll_spi,   spiPllCfg,     NULL)
+SPI_BITBANG_DEVICE_DEFINE(voc_spi,   spiVocCfg,     NULL)
 SPI_STM32_DEVICE_DEFINE(c6000_spi,   SPI2,          &c6000_mutex)
 GPIO_SHIFTREG_DEVICE_DEFINE(extGpio, (const struct spiDevice *) &spiSr, shiftRegStrobe, 24)
 ADC_STM32_DEVICE_DEFINE(adc1, ADC1, &adc1Mutex, ADC_COUNTS_TO_UV(3300000, 12))
