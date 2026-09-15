@@ -72,6 +72,28 @@ static inline void swapBuffer(stream_sample_t *buf, const size_t len)
 }
 
 /*
+ * Set or clear the "OpenMusic" bit, bit 1 of register 0x06, leaving the other
+ * bits as they are: the rest of the register selects the vocoder interface
+ * (0x21 in DMR mode: V_SPI vocoder, MCU controlled) and a beep must not switch
+ * it off. Read-modify-write, the two SPI transactions being separately
+ * serialised on the bus: a concurrent write of 0x06 by the mode switch of the
+ * rtx thread could be lost, but the DMR driver reprograms the register at
+ * every reconfiguration. UNVERIFIED on hardware: OpenMusic playback with the
+ * vocoder bits set (0x23).
+ */
+static inline void setOpenMusic(const bool enable)
+{
+    uint8_t reg = c6000->readCfgRegister(0x06);
+
+    if(enable)
+        reg |= 0x02;
+    else
+        reg &= ~0x02;
+
+    c6000->writeCfgRegister(0x06, reg);
+}
+
+/*
  * Stop the current stream, to be called with the mutex locked.
  */
 static inline void stopStream()
@@ -80,7 +102,7 @@ static inline void stopStream()
     stream->running = 0;
 
     // Clear the "OpenMusic" bit
-    c6000->writeCfgRegister(0x06, 0x20);
+    setOpenMusic(false);
 }
 
 void Cx000dac_init(HR_C6000 *device)
@@ -208,7 +230,7 @@ int Cx000dac_startBeep(const uint16_t freq)
     funcMode = DAC_BEEP;
 
     // Set the "OpenMusic" bit
-    c6000->writeCfgRegister(0x06, 0x22);
+    setOpenMusic(true);
 
     pthread_mutex_unlock(&mutex);
 
@@ -225,7 +247,7 @@ void Cx000dac_stopBeep()
     if(funcMode == DAC_BEEP)
     {
         funcMode = DAC_OFF;
-        c6000->writeCfgRegister(0x06, 0x20);
+        setOpenMusic(false);
     }
 
     pthread_mutex_unlock(&mutex);
@@ -277,7 +299,7 @@ static int Cx000dac_start(const uint8_t instance, const void *config,
     funcMode  = DAC_STREAM;
 
     // Set the "OpenMusic" bit
-    c6000->writeCfgRegister(0x06, 0x22);
+    setOpenMusic(true);
 
     pthread_mutex_unlock(&mutex);
 
