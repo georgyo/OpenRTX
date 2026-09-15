@@ -78,7 +78,9 @@ openrtx_src = ['openrtx/src/core/state.c',
                'openrtx/src/protocols/DMR/FEC/EmbeddedLc.cpp',
                'openrtx/src/protocols/DMR/FEC/SlotType.cpp',
                'openrtx/src/protocols/DMR/FEC/Emb.cpp',
-               'openrtx/src/protocols/DMR/LinkControl.cpp']
+               'openrtx/src/protocols/DMR/LinkControl.cpp',
+               'openrtx/src/protocols/DMR/CallController.cpp',
+               'openrtx/src/rtx/OpMode_DMR.cpp']
 
 openrtx_inc = ['openrtx/include', 'platform']
 
@@ -377,6 +379,7 @@ linux_src = ['platform/targets/linux/emulator/emulator.c',
              'platform/mcu/x86_64/drivers/delays.c',
              'platform/mcu/x86_64/drivers/rng.cpp',
              'platform/drivers/baseband/radio_linux.cpp',
+             'platform/drivers/baseband/dmr_linux.cpp',
              'platform/drivers/audio/audio_linux.c',
              'platform/drivers/audio/file_source.c',
              'platform/drivers/audio/audio_sdl.cpp',
@@ -447,6 +450,7 @@ md3x0_src = ['platform/drivers/CPS/cps_io_native_MD3x0.c',
              'platform/drivers/baseband/SKY72310.c',
              'platform/drivers/baseband/radio_MD3x0.cpp',
              'platform/drivers/baseband/HR_C5000_MDx.cpp',
+             'platform/drivers/stubs/dmr_baseband_stub.c',
              'platform/drivers/keyboard/keyboard_MD3x.c',
              'platform/drivers/display/HX8353_MD3x.cpp',
              'platform/drivers/backlight/backlight_MDx.c',
@@ -564,6 +568,7 @@ cs7000_src = ['platform/drivers/NVM/nvmem_CS7000.c',
              'platform/drivers/baseband/HR_Cx000.cpp',
              'platform/drivers/baseband/HR_C6000_CS7000.cpp',
              'platform/drivers/baseband/radio_CS7000.cpp',
+             'platform/drivers/stubs/dmr_baseband_stub.c',
              'platform/drivers/keyboard/keyboard_CS7000.c',
              'platform/drivers/display/ST7735R_CS7000.c',
              'platform/drivers/backlight/backlight_CS7000.c',
@@ -594,6 +599,7 @@ cs7000p_src = ['platform/drivers/NVM/nvmem_CS7000.c',
                'platform/drivers/baseband/HR_Cx000.cpp',
                'platform/drivers/baseband/HR_C6000_CS7000.cpp',
                'platform/drivers/baseband/radio_CS7000.cpp',
+               'platform/drivers/stubs/dmr_baseband_stub.c',
                'platform/drivers/baseband/AK2365A.c',
                'platform/drivers/baseband/SKY72310.c',
                'platform/drivers/audio/Cx000_dac.cpp',
@@ -1270,6 +1276,14 @@ ui_dmr_test = executable('ui_dmr_test',
                          sources : unit_test_src + ['tests/unit/ui_dmr.cpp'],
                          kwargs  : unit_test_opts)
 
+dmr_callctrl_test = executable('dmr_callctrl_test',
+                               sources : unit_test_src + ['tests/unit/DMR_callctrl.cpp'],
+                               kwargs  : unit_test_opts)
+
+dmr_opmode_test = executable('dmr_opmode_test',
+                             sources : unit_test_src + ['tests/unit/DMR_opmode.cpp'],
+                             kwargs  : unit_test_opts)
+
 m17_packet_test = executable('m17_packet_test',
                               sources : unit_test_src + ['tests/unit/M17_packet.cpp'],
                               kwargs  : unit_test_opts)
@@ -1388,6 +1402,8 @@ test('UI FRS Test',           ui_frs_test)
 test('DMR Link Control Test', dmr_lc_test)
 test('DMR Codeplug Test',     dmr_cps_test)
 test('UI DMR Test',           ui_dmr_test)
+test('DMR Call Control Test', dmr_callctrl_test)
+test('DMR OpMode Test',       dmr_opmode_test)
 test('M17 Packet Frame Test', m17_packet_test)
 test('DSP Oversampling Test', dsp_oversampling_test)
 test('GFX Text Test',        gfx_text_test)

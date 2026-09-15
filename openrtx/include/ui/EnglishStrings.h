@@ -115,5 +115,9 @@ const stringsTable_t englishStrings =
     .privateCall       = "Private",
     .polite            = "Polite",
     .impolite          = "Impolite",
+    .dmrNoId           = "No DMR ID",
+    .dmrBusy           = "Busy",
+    .dmrWakeupFailed   = "Wake-up failed",
+    .dmrNotSupported   = "DMR not supported",
 };
 #endif  // ENGLISHSTRINGS_H

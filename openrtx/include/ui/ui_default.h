@@ -16,6 +16,7 @@
 #include "hwconfig.h"
 #include "core/ui.h"
 #include "rtx/rtx.h"
+#include "ui/ui_strings.h"
 
 // Maximum menu entry length
 #define MAX_ENTRY_LEN 21
@@ -294,6 +295,31 @@ static inline bool _ui_frsRefuseMarkerVisible(long long now)
     return (frs_refuse_tick != 0) &&
            ((now - frs_refuse_tick) < FRS_REFUSE_MARKER_TIME);
 }
+
+#ifdef CONFIG_DMR
+/**
+ * Text of the DMR top-bar marker for the given RTX status, from the marker
+ * flags the DMR opMode handler raises. When several are set the one the user
+ * can act upon first wins: a radio without a DMR modem, a missing ID, a busy
+ * channel, a repeater that did not wake up.
+ *
+ * @param status: current RTX status.
+ * @return marker text, or NULL when no marker is to be shown.
+ */
+static inline const char *_ui_dmrMarkerText(uint8_t markers)
+{
+    if(markers & DMR_MARK_NOT_SUPPORTED)
+        return currentLanguage->dmrNotSupported;
+    if(markers & DMR_MARK_NO_ID)
+        return currentLanguage->dmrNoId;
+    if(markers & DMR_MARK_BUSY)
+        return currentLanguage->dmrBusy;
+    if(markers & DMR_MARK_WAKEUP_FAILED)
+        return currentLanguage->dmrWakeupFailed;
+
+    return NULL;
+}
+#endif
 extern const char *menu_items[];
 extern const char *settings_items[];
 extern const char *display_items[];
