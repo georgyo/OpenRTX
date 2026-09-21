@@ -131,6 +131,7 @@ typedef struct
     const char* twoPointTest;
     const char* lcssMode;
     const char* rfAdvance;
+    const char* dmrRfFailed;
 }
 stringsTable_t;
 

@@ -214,9 +214,17 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
         gfx_print(layout.line2_pos, layout.message_font, TEXT_ALIGN_RIGHT,
                   color_white, "%s", slot);
     #else
-    gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
-              color_white, "%s%s %s",
-              _ui_dmrTxPrefix(status->dmr_callState, true), dst, slot);
+    // Centred on the 128 pixel line: "PC 16777215 C15T2 M" fits at 6 pt,
+    // with the "TX->" / "WAKE:" prefix it does not, so the channel string
+    // is dropped while transmitting or typing, as on the large layout. Width
+    // guard in tests/unit/ui_dmr.cpp for both forms.
+    if(tx || ui_state->edit_mode)
+        gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
+                  color_white, "%s%s",
+                  _ui_dmrTxPrefix(status->dmr_callState, true), dst);
+    else
+        gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
+                  color_white, "%s %s", dst, slot);
     #endif
 }
 

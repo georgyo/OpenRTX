@@ -126,5 +126,6 @@ const stringsTable_t spanishStrings =
     .twoPointTest      = "Dos puntos",
     .lcssMode          = "Modo LCSS",
     .rfAdvance         = "Avance RF",
+    .dmrRfFailed       = "Fallo RF",
 };
 #endif  // SPANISHSTRINGS_H

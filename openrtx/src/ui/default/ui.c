@@ -1433,7 +1433,8 @@ static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
         case DMRMON_ACT_TWOPOINT:
             // UNVERIFIED on hardware: 0x12 bit6 puts a 40 Hz square wave on
             // MOD1/MOD2 to balance the two-point modulation, toggled
-            value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12) ^ 0x40;
+            value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12)
+                  ^ DMRMON_R12_TWOPOINT;
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, value);
             break;
 
@@ -1454,12 +1455,15 @@ static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
         case DMRMON_ACT_RFADV:
             // UNVERIFIED on hardware: register 0x12, RF_TX_INTER advance in
             // [5:0] x 100 us with bit7 the RF ramp smoothing: the OEM init
-            // word 0x98 (2.4 ms, smoothing) or OpenGD77's 0x15 (2.1 ms),
-            // whichever is not in the register now. Written at once and
-            // undone by the next modem reconfiguration, like 0x06
+            // word 0x98 (2.4 ms, smoothing) when the register holds
+            // anything else, OpenGD77's 0x15 (2.1 ms) when it holds 0x98.
+            // Bit6, the two-point test tone of the action above, is left
+            // as it is. Written at once and undone by the next modem
+            // reconfiguration, like 0x06
             value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12);
-            value = (value == DMRMON_R12_OEM) ? DMRMON_R12_GD77
-                                              : DMRMON_R12_OEM;
+            value = (value & DMRMON_R12_TWOPOINT)
+                  | (((value & ~DMRMON_R12_TWOPOINT) == DMRMON_R12_OEM)
+                     ? DMRMON_R12_GD77 : DMRMON_R12_OEM);
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, value);
             break;
 

@@ -967,11 +967,14 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
             }
             else if(index == DMRMON_ACT_RFADV)
             {
-                // The 0x12 word the next ENTER writes, the other one of
-                // the pair than what is read back now
+                // The 0x12 word the next ENTER writes: the other one of
+                // the pair than what is read back now, the two-point bit
+                // kept as it is (same rule as the action in ui.c)
+                uint8_t r12 = dmrMonReadback[2];
+                uint8_t adv = ((r12 & ~DMRMON_R12_TWOPOINT) == DMRMON_R12_OEM)
+                            ? DMRMON_R12_GD77 : DMRMON_R12_OEM;
                 sniprintf(buf, max_len, "12<-%02X",
-                          (dmrMonReadback[2] == DMRMON_R12_OEM)
-                          ? DMRMON_R12_GD77 : DMRMON_R12_OEM);
+                          (r12 & DMRMON_R12_TWOPOINT) | adv);
             }
             else
             {
