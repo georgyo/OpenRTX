@@ -81,6 +81,18 @@ void OpMode_DMR::disable()
     bool wasEnabled = enabled;
 
     /*
+     * A mode switch in the middle of a transmission: the PA is dropped
+     * before anything else, the teardown below (encoder thread join, modem
+     * terminate, path releases) would otherwise leave an unmodulated
+     * carrier on the air for its whole duration. rtx_task() has already
+     * put the chip in the new mode by now, so the modem side of
+     * radio_disableRtx() is a no-op on the CS7000 radios and only the
+     * TX_PWR_EN line matters.
+     */
+    if (rfState == RF_TX)
+        radio_disableRtx();
+
+    /*
      * The audio thread goes first: its output stream is the Cx000 DAC of
      * the same chip the modem driver reprograms at terminate. Note that
      * rtx_task() calls radio_setOpmode() before disable() on a mode switch,
@@ -179,9 +191,13 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
 
     /*
      * Reprogramming the modem restarts the controller: while transmitting it
-     * is deferred until the transmission is over.
+     * is deferred until the transmission is over, that is until the last
+     * burst has gone out and the RF is released, not only until the
+     * controller has left its TX states (the terminator or the wake-up
+     * CSBK is still on the air during the slot after).
      */
-    if (modemChange && (ctrl.state() >= CallController::TX_ARM)) {
+    if (modemChange
+        && ((ctrl.state() >= CallController::TX_ARM) || ctrl.report().rfKey)) {
         cfgPending = true;
         return;
     }
@@ -195,6 +211,15 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
 
 void OpMode_DMR::reprogramModem(uint32_t nowMs)
 {
+    /*
+     * The RF stage is never left keyed through a reprogramming (the
+     * watchdog asks for one from a transmission that lost its timeslot
+     * interrupts): the PA goes off before the modem is reset, so that no
+     * unmodulated carrier goes out while the table is written.
+     */
+    if (rfState == RF_TX)
+        keyRf(false, nowMs);
+
     /*
      * Reprogramming the modem restarts the controller, which drops the call
      * being received: the playback thread is stopped first, before the
@@ -258,10 +283,26 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
     status->opStatus = (rfState == RF_TX) ? TX : RX;
 }
 
-void OpMode_DMR::keyRf(bool key)
+void OpMode_DMR::keyRf(bool key, uint32_t nowMs)
 {
     if (key && (rfState != RF_TX)) {
         radio_enableTx();
+
+        /*
+         * The driver refuses to key the PA when the synthesizer does not
+         * lock (radio_CS7000.cpp, issue #436) and reports OFF: nothing
+         * would go out, so the transmission is aborted at once with the
+         * "RF failed" marker instead of running headers, voice and
+         * terminator into a parked VCO while the display says TX. The
+         * receiver is put back on, the PTT stays latched until released.
+         */
+        if (radio_getStatus() != TX) {
+            ctrl.rfFailed(nowMs);
+            radio_enableRx();
+            rfState = RF_RX;
+            return;
+        }
+
         rfState = RF_TX;
         if (mon.rfKeyed < UINT16_MAX)
             mon.rfKeyed++;
@@ -282,15 +323,59 @@ void OpMode_DMR::keyRf(bool key)
 void OpMode_DMR::followState(uint32_t nowMs)
 {
     const CallController::Report &r = ctrl.report();
-    bool tx = (ctrl.state() >= CallController::TX_ARM);
 
     /*
      * RF stage: keyed from the moment the modem is armed, before the first
      * header slot is programmed, until the terminator (or the wake-up CSBK)
      * has gone out; released at once by a rejected or aborted transmission.
-     * The controller tracks that in its report.
+     * The controller tracks that in its report. An RF stage that refuses
+     * to key aborts the transmission here, hence the state is read after.
      */
-    keyRf(r.rfKey);
+    keyRf(r.rfKey, nowMs);
+    bool tx = (ctrl.state() >= CallController::TX_ARM);
+
+    /*
+     * Microphone path: for the whole transmission, wake-up included, so
+     * that the microphone is up before it is needed. The encoder thread
+     * only from the headers on: its payloads go out from the first voice
+     * burst, and a queue filled through a repeater wake-up would have its
+     * oldest payloads dropped as overruns for nothing. What the three
+     * headers leave in the queue is flushed down to the newest payload when
+     * the voice bursts begin, so that the first one carries the audio of
+     * the last 60 ms, not of the headers (once per transmission, before
+     * the first burst is programmed: the controller enters TX_VOICE on the
+     * last header, the first voice burst comes at the next own slot).
+     *
+     * The encoder is stopped, and the path released, only once the RF is
+     * released: stopping it joins the thread, which may be blocked on the
+     * microphone stream for up to one 60 ms block, and that stall must not
+     * sit between the programming of the terminator and the idling of the
+     * slot after it, nor delay the RF release. No payload is requested in
+     * TX_TERM, so a running encoder is harmless there. A call opening
+     * while the RF is still keyed takes the microphone down first, so
+     * that the playback can take over the audio thread.
+     */
+    bool voice = (ctrl.state() == CallController::TX_VOICE);
+    if (tx && (ctrl.state() != CallController::TX_TERM)) {
+        if (audioPath_getStatus(txAudioPath) == PATH_CLOSED) {
+            txAudioPath = audioPath_request(SOURCE_MIC, SINK_MCU, PRIO_TX);
+            txAudioFailed = false;
+        }
+
+        if ((ctrl.state() >= CallController::TX_HEADER)
+            && (audioPath_getStatus(txAudioPath) == PATH_OPEN) && !txAudioFailed
+            && (dmrAudio_running() == false))
+            txAudioFailed = !dmrAudio_startTx(txAudioPath);
+
+        if (voice && !txVoiceStarted)
+            audioLink.startVoice();
+    } else if (!tx && (txAudioPath >= 0)
+               && (!r.rfKey || (r.callState == DMR_CALL_RX))) {
+        dmrAudio_stop();
+        audioPath_release(txAudioPath);
+        txAudioPath = -1;
+    }
+    txVoiceStarted = voice;
 
     /*
      * Speaker path: opened when a call is received, kept through the hang
@@ -322,42 +407,6 @@ void OpMode_DMR::followState(uint32_t nowMs)
     }
 
     /*
-     * Microphone path: for the whole transmission, wake-up included, so
-     * that the microphone is up before it is needed. The encoder thread
-     * only from the headers on: its payloads go out from the first voice
-     * burst, and a queue filled through a repeater wake-up would have its
-     * oldest payloads dropped as overruns for nothing. What the three
-     * headers leave in the queue is flushed down to the newest payload when
-     * the voice bursts begin, so that the first one carries the audio of
-     * the last 60 ms, not of the headers (once per transmission, before
-     * the first burst is programmed: the controller enters TX_VOICE on the
-     * last header, the first voice burst comes at the next own slot).
-     */
-    bool voice = (ctrl.state() == CallController::TX_VOICE);
-    if (tx && (ctrl.state() != CallController::TX_TERM)) {
-        if (audioPath_getStatus(txAudioPath) == PATH_CLOSED) {
-            txAudioPath = audioPath_request(SOURCE_MIC, SINK_MCU, PRIO_TX);
-            txAudioFailed = false;
-        }
-
-        if ((ctrl.state() >= CallController::TX_HEADER)
-            && (audioPath_getStatus(txAudioPath) == PATH_OPEN) && !txAudioFailed
-            && (dmrAudio_running() == false))
-            txAudioFailed = !dmrAudio_startTx(txAudioPath);
-
-        if (voice && !txVoiceStarted)
-            audioLink.startVoice();
-    } else if (tx) {
-        if (dmrAudio_running())
-            dmrAudio_stop();
-    } else if (txAudioPath >= 0) {
-        dmrAudio_stop();
-        audioPath_release(txAudioPath);
-        txAudioPath = -1;
-    }
-    txVoiceStarted = voice;
-
-    /*
      * Markers: the controller keeps them until the next PTT press, the UI
      * shows them for MARKER_TIME_MS at most.
      */
@@ -368,6 +417,8 @@ void OpMode_DMR::followState(uint32_t nowMs)
         m |= DMR_MARK_BUSY;
     if (r.wakeupFailed)
         m |= DMR_MARK_WAKEUP_FAILED;
+    if (r.rfFailed)
+        m |= DMR_MARK_RF_FAILED;
 
     if (m != 0) {
         if (!markerRaised) {
