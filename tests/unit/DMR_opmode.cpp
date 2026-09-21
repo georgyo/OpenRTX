@@ -691,7 +691,8 @@ TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
     REQUIRE(mon->sysCount == 0);
     REQUIRE(mon->rftxCount == 0);
     REQUIRE(mon->r52 == 0x14);
-    REQUIRE(mon->timecode <= 1);
+    /* The fake's TC starts at 0 and toggles per slot: the sixth carries 1 */
+    REQUIRE(mon->timecode == 1);
     REQUIRE(b.status.dmr_slotLock == 2);
 
     /* A header burst: flags, registers, line counters and the decoded LC */
@@ -706,8 +707,11 @@ TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
     s.r42 = 0x60;
     s.rssi = 4321;
     s.fskErr = 3;
-    s.lineCount[0] = 7;
-    s.lineCount[3] = 1;
+
+    /* EXTI pulses counted by the "ISR": seven on PC0, one on PC3 */
+    for (unsigned i = 0; i < 7; i++)
+        dmrEmu_pulseLine(0);
+    dmrEmu_pulseLine(3);
 
     FullLC lc;
     lc.clear();
@@ -763,7 +767,27 @@ TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
     b.run(3);
     REQUIRE(mon->tsCount == 6);
     REQUIRE(mon->sysCount == 3);
+    REQUIRE(mon->lineCount[0] == 7);
+    REQUIRE(mon->lineCount[3] == 1);
     REQUIRE(mon->lcValid == 0x00);
+
+    /*
+     * A line pulsing without an event (SYS_INTER on PC3 while the pinmap
+     * expects it on PC1, no sync so no slot ticks): the counters reach the
+     * block through the timeout passes, the register fields stay
+     */
+    dmrEmu_pulseLine(3);
+    dmrEmu_pulseLine(3);
+    uint32_t timeouts = b.rec->timeouts;
+    b.run(1);
+    REQUIRE(b.rec->timeouts == timeouts + 1);
+    REQUIRE(mon->lineCount[3] == 3);
+    REQUIRE(mon->lineCount[0] == 7);
+    REQUIRE(mon->tsCount == 6);
+    REQUIRE(mon->sysCount == 3);
+    REQUIRE(mon->irq82 == R82_CTRL_FRAME);
+    REQUIRE(mon->rssi == 4321);
+    REQUIRE(mon->r51 == s.r51);
 
     /* A new enable() starts from zero */
     dmr.disable();

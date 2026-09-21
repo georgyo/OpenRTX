@@ -151,13 +151,23 @@ void dmrEmu_pushTs(void);
 
 /**
  * Queue one system event with the given snapshot (irq82, r51, r52, r5f, lc
- * and voice fields are what the state machine reads; rssi, fskErr, the
- * sub-status registers and lineCount are passed through verbatim for the
- * monitor screen, the fake modem having no interrupt lines of its own).
+ * and voice fields are what the state machine reads; rssi, fskErr and the
+ * sub-status registers are passed through verbatim for the monitor screen).
+ * The interrupt counters tsCount, sysCount and lineCount are the fake's own,
+ * as on the radio: see dmrEmu_pulseLine().
  *
  * @param s: snapshot returned by dmrbb_waitEvent() with DMRBB_EV_SYS.
  */
 void dmrEmu_pushSys(const struct dmrbbSnapshot *s);
+
+/**
+ * Count one pulse on a fake EXTI line, as the ISR of the CS7000 driver does
+ * for a line that carries no event bit: lineCount[line] of every following
+ * snapshot, events and timeouts alike, is incremented.
+ *
+ * @param line: line number 0..3 (PC0..PC3).
+ */
+void dmrEmu_pulseLine(uint8_t line);
 
 /**
  * Script a base-station sourced group voice call: three voice LC headers,
