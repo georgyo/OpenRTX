@@ -1211,8 +1211,9 @@ static void _ui_dmr_lastHeardCall(bool *sync_rtx, enum vpQueueFlags queueFlags)
 
 /*
  * Favourites: Settings > DMR > Favourites. ENTER on a slot makes it the
- * destination and comes back to the main screen, '*' stores the current
- * destination into the slot, '#' empties it, ESC goes back to the
+ * destination (named after the contact with that ID and type, when the
+ * codeplug has one) and comes back to the main screen, '*' stores the
+ * current destination into the slot, '#' empties it, ESC goes back to the
  * settings.
  */
 static void _ui_dmr_favouritesOpen()
@@ -1241,7 +1242,16 @@ static void _ui_dmr_favouriteSelect(bool *sync_rtx,
         return;
     }
 
-    _ui_dmr_setDestination(DMR_FAV_ID(fav), DMR_FAV_TYPE(fav), NULL, sync_rtx);
+    char name[DMR_DEST_NAME_LEN];
+    if(_ui_dmrContactName(DMR_FAV_ID(fav), DMR_FAV_TYPE(fav), name) == false)
+        name[0] = '\0';
+
+    _ui_dmr_setDestination(DMR_FAV_ID(fav), DMR_FAV_TYPE(fav), name, sync_rtx);
+
+    // The slot is left from inside Settings > DMR, whose edits (colour
+    // code, timeslot, ...) reach the RTX stage on the way out: the ESC
+    // branch of that screen raises the sync, so does this exit
+    *sync_rtx = true;
     ui_state.menu_selected = 0;
     state.ui_screen = ui_state.last_main_state;
     _ui_dmr_announceDestination(queueFlags);
@@ -1477,8 +1487,10 @@ static void _ui_dmr_toggleCallType(bool *sync_rtx, enum vpQueueFlags queueFlags)
  * The DMR opMode handler reprograms the modem (dmrbb_configure) on a
  * configuration change or after 2 s without timeslot interrupts, which
  * undoes the 0x06, BER and two-point writes: they are meant to be observed
- * right after being made. The mode word is pushed to the RTX stage as well
- * (state.dmr_modeReg), so that the reprogramming keeps it.
+ * right after being made. The mode word and the RF advance word are pushed
+ * to the RTX stage as well (state.dmr_modeReg, state.dmr_rfAdvance), so
+ * that the reprogramming keeps them; the SYS line knob is driver state and
+ * survives on its own.
  */
 static const uint8_t dmr_mon_r06Values[DMRMON_R06_VARIANTS] =
 {
@@ -1635,13 +1647,31 @@ static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
             // word 0x98 (2.4 ms, smoothing) when the register holds
             // anything else, OpenGD77's 0x15 (2.1 ms) when it holds 0x98.
             // Bit6, the two-point test tone of the action above, is left
-            // as it is. Written at once and undone by the next modem
-            // reconfiguration, like 0x06
+            // as it is in the immediate write. The advance word (without
+            // the tone bit) is pushed to the RTX stage like the mode word,
+            // so that the modem reprogramming that follows, and every
+            // later one, rewrites it after the driver's table
             value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12);
             value = (value & DMRMON_R12_TWOPOINT)
                   | (((value & ~DMRMON_R12_TWOPOINT) == DMRMON_R12_OEM)
                      ? DMRMON_R12_GD77 : DMRMON_R12_OEM);
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, value);
+            state.dmr_rfAdvance = value & ~DMRMON_R12_TWOPOINT;
+            *sync_rtx = true;
+            break;
+
+        case DMRMON_ACT_SYSLINE:
+            // UNVERIFIED on hardware: which EXTI line carries SYS_INTER,
+            // PC1 (the pinmap) or PC3 (the schematic). Not a chip register
+            // but a knob of the CS7000 driver on its pseudo page, toggled
+            // between the two lines it accepts; it survives the modem
+            // reconfigurations on its own (no RTX push) and is forgotten
+            // at power off. The emulator and the stub accept the write
+            // and do nothing with it
+            value = dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE);
+            value = (value == DMRBB_SYS_LINE_SCHEMATIC)
+                  ? DMRBB_SYS_LINE_PINMAP : DMRBB_SYS_LINE_SCHEMATIC;
+            dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE, value);
             break;
 
         default:
