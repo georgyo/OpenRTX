@@ -497,9 +497,12 @@ void radio_enableTx()
     if(SKY73210_waitLock(&pll, PLL_LOCK_TIMEOUT_US) == false)
     {
         /*
-         * DMR: no analog transmission to stop, the modem keeps following
-         * the call controller (its bursts drive the two-point outputs into
-         * a parked VCO with the PA off), the OFF status tells the rest.
+         * DMR: no analog transmission to stop. The modem is left as the
+         * call controller armed it; the DMR opMode handler reads the OFF
+         * status back right after this call (OpMode_DMR::keyRf()) and
+         * aborts the transmission, putting the modem back into reception
+         * and raising the "RF failed" marker, so that no burst is shaped
+         * into the parked VCO while the display says TX.
          */
         if((radioStatus == TX) && (config->opMode != OPMODE_DMR))
             C6000.stopAnalogTx();

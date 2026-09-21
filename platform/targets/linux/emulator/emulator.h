@@ -112,6 +112,8 @@ struct dmrEmuRecord {
     uint32_t initCount;
     uint32_t terminateCount;
     uint32_t configureCount;
+    bool keyedAtConfigure; /* RF stage keyed at the last dmrbb_configure() */
+    bool keyedAtTerminate; /* RF stage keyed at the last dmrbb_terminate() */
     uint32_t startRxCount;
     uint32_t startTxCount;
     uint32_t idleCount;
@@ -224,10 +226,10 @@ void dmrEmu_requestCall(uint32_t src, uint32_t dst);
  * Record of the RF stage calls.
  */
 struct radioEmuRecord {
-    uint32_t enableRx;   /* radio_enableRx() calls   */
-    uint32_t enableTx;   /* radio_enableTx() calls   */
-    uint32_t disableRtx; /* radio_disableRtx() calls */
-    bool keyed;          /* last call was enableTx   */
+    uint32_t enableRx;   /* radio_enableRx() calls                    */
+    uint32_t enableTx;   /* radio_enableTx() calls                    */
+    uint32_t disableRtx; /* radio_disableRtx() calls                  */
+    bool keyed;          /* last call was a successful enableTx       */
 };
 
 /**
@@ -236,9 +238,19 @@ struct radioEmuRecord {
 const struct radioEmuRecord *radioEmu_record(void);
 
 /**
- * Clear the record of the RF stage calls.
+ * Clear the record of the RF stage calls, radio_getStatus() back to OFF,
+ * radio_enableTx() succeeding again.
  */
 void radioEmu_reset(void);
+
+/**
+ * Make radio_enableTx() fail as the CS7000 driver does when the synthesizer
+ * does not lock: the call is counted but the stage is not keyed and
+ * radio_getStatus() reports OFF afterwards.
+ *
+ * @param fail: true to refuse the next radio_enableTx() calls.
+ */
+void radioEmu_setTxFails(bool fail);
 
 #ifdef __cplusplus
 }
