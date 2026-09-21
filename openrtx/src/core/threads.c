@@ -108,6 +108,7 @@ void *ui_threadFunc(void *arg)
             rtx_cfg.dmr_polite      = state.settings.dmr_polite;
             rtx_cfg.dmr_modeReg     = state.dmr_modeReg;
             rtx_cfg.dmr_lcssMode    = state.dmr_lcssMode;
+            rtx_cfg.dmr_rfAdvance   = state.dmr_rfAdvance;
             #endif
 
             pthread_mutex_unlock(&rtx_mutex);
