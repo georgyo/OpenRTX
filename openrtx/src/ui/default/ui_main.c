@@ -93,8 +93,7 @@ const char* _ui_getToneEnabledString(bool tone_tx_enable, bool tone_rx_enable,
  * "PC 2345678" for a private call, "ALL" for a broadcast. The small screens
  * use the compact form without the space.
  */
-static void _ui_dmrDestString(char *buf, size_t len, uint8_t callType,
-                              uint32_t id)
+void _ui_dmrDestString(char *buf, size_t len, uint8_t callType, uint32_t id)
 {
     #if CONFIG_SCREEN_HEIGHT > 127
     static const char *sep = " ";
@@ -141,7 +140,7 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
 {
     const channel_t *ch = &last_state.channel;
     char dst[16] = { 0 };
-    char slot[16] = { 0 };
+    char slot[24] = { 0 };
 
     if(_ui_dmrCallReceived(status))
     {
@@ -153,17 +152,32 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
         else if(status->dmr_rxDstId == DMR_ID_MAX)
             callType = ALL;
 
+        // The caller by name when the contacts know the ID, by ID otherwise
+        char who[DMR_DEST_NAME_LEN];
+        if(_ui_dmrContactName(status->dmr_rxSrcId, PRIVATE, who) == false)
+            sniprintf(who, sizeof(who), "%lu",
+                      (unsigned long) status->dmr_rxSrcId);
+
         _ui_dmrDestString(dst, sizeof(dst), callType, status->dmr_rxDstId);
         sniprintf(slot, sizeof(slot), "CC%d TS%d",
                   status->dmr_rxColorCodeSeen, status->dmr_rxTimeslot);
 
         #if CONFIG_SCREEN_HEIGHT > 127
-        // Caller on line 1, destination on line 2, channel on line 3: the
-        // frequency is not drawn during a received call
+        // Caller on line 1, destination on line 2, channel on line 3 with
+        // the FSK error count of the last burst (register 0x0F, a burst
+        // error indicator) while voice is coming in: the frequency is not
+        // drawn during a received call
+        if(status->dmr_callState == DMR_CALL_RX)
+        {
+            size_t used = strlen(slot);
+            sniprintf(slot + used, sizeof(slot) - used, "  BER %u",
+                      status->dmr_mon.fskErr);
+        }
+
         gfx_drawSymbol(layout.line1_pos, layout.line1_symbol_size,
                        TEXT_ALIGN_LEFT, color_white, SYMBOL_CALL_RECEIVED);
         gfx_print(layout.line1_pos, layout.line1_font, TEXT_ALIGN_CENTER,
-                  color_white, "%lu", (unsigned long) status->dmr_rxSrcId);
+                  color_white, "%s", who);
         gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
                   color_white, "-> %s", dst);
         gfx_print(layout.line3_pos, layout.line3_font, TEXT_ALIGN_CENTER,
@@ -173,7 +187,7 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
         gfx_drawSymbol(layout.line2_pos, layout.line2_symbol_size,
                        TEXT_ALIGN_LEFT, color_white, SYMBOL_CALL_RECEIVED);
         gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
-                  color_white, "%lu", (unsigned long) status->dmr_rxSrcId);
+                  color_white, "%s", who);
         gfx_print(layout.line3_pos, layout.line3_font, TEXT_ALIGN_CENTER,
                   color_white, "-> %s", dst);
         #endif
@@ -192,6 +206,8 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
     else if(tx)
         _ui_dmrDestString(dst, sizeof(dst), status->dmr_callType,
                           status->dmr_dstId);
+    else if(last_state.dmr_destName[0] != '\0')
+        sniprintf(dst, sizeof(dst), "%s", last_state.dmr_destName);
     else
         _ui_dmrDestString(dst, sizeof(dst), last_state.settings.dmr_callType,
                           last_state.settings.dmr_talkgroup);
@@ -201,16 +217,36 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
               ch->dmr.dmr_timeslot,
               (last_state.settings.dmr_monitor != 0) ? " M" : "");
 
+    // The slots a repeater reports busy in its Activity Update Short LC,
+    // "TS1*" / "TS2*" at the right of line 1, which the idle and transmit
+    // screens leave free (the frequency sits below the destination line)
+    if(status->dmr_tsBusy != 0)
+        gfx_print(layout.line1_pos, layout.message_font, TEXT_ALIGN_RIGHT,
+                  yellow_fab413, "%s%s%s",
+                  (status->dmr_tsBusy & 0x01) ? "TS1*" : "",
+                  (status->dmr_tsBusy == 0x03) ? " " : "",
+                  (status->dmr_tsBusy & 0x02) ? "TS2*" : "");
+
     #if CONFIG_SCREEN_HEIGHT > 127
     // Destination on the left, channel on the right in the small font: at
     // 8 pt "PC 16777215" and "C15T2 M" do not fit side by side in the 152
     // pixels of a 160 wide screen. While transmitting or typing the
     // destination takes the whole line, see the width guard in
-    // tests/unit/ui_dmr.cpp.
+    // tests/unit/ui_dmr.cpp; a contact name too long to share the line
+    // with the channel string takes it alone as well.
+    bool alone = tx || ui_state->edit_mode;
+    if((alone == false) && (last_state.dmr_destName[0] != '\0'))
+    {
+        uint16_t usable = CONFIG_SCREEN_WIDTH - 2 * layout.horizontal_pad;
+        uint16_t width = gfx_getTextWidth(layout.line2_font, dst) + 4
+                       + gfx_getTextWidth(layout.message_font, slot);
+        alone = (width > usable);
+    }
+
     gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_LEFT,
               color_white, "%s%s",
               _ui_dmrTxPrefix(status->dmr_callState, false), dst);
-    if((tx == false) && (ui_state->edit_mode == false))
+    if(alone == false)
         gfx_print(layout.line2_pos, layout.message_font, TEXT_ALIGN_RIGHT,
                   color_white, "%s", slot);
     #else

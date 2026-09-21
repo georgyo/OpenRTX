@@ -132,6 +132,9 @@ typedef struct
     const char* lcssMode;
     const char* rfAdvance;
     const char* dmrRfFailed;
+    const char* lastHeard;
+    const char* favourites;
+    const char* empty;
 }
 stringsTable_t;
 

@@ -127,5 +127,8 @@ const stringsTable_t englishStrings =
     .lcssMode          = "LCSS mode",
     .rfAdvance         = "RF advance",
     .dmrRfFailed       = "RF failed",
+    .lastHeard         = "Last heard",
+    .favourites        = "Favourites",
+    .empty             = "Empty",
 };
 #endif  // ENGLISHSTRINGS_H
