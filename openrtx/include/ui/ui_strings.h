@@ -129,6 +129,8 @@ typedef struct
     const char* resync;
     const char* berTest;
     const char* twoPointTest;
+    const char* lcssMode;
+    const char* rfAdvance;
 }
 stringsTable_t;
 

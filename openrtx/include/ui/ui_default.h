@@ -237,12 +237,19 @@ enum dmrMonitorRows
     DMRMON_AUD_TX,        // payloads encoded from the microphone
     DMRMON_AUD_UNDER,     // silent blocks inserted inside a call
     DMRMON_AUD_OVER,      // payloads dropped from a full queue
+    DMRMON_AUD_TXBURSTS,  // own voice bursts sent
+    DMRMON_AUD_TXSILENT,  // of which carrying the silence pattern
+    DMRMON_AUD_TXUNDER,   // silence sent while the encoder ran
+    DMRMON_RFKEYED,       // times the RF stage was keyed for TX
     DMRMON_ACT_RESYNC,    // 0x81 = 0xFE, 0x41 = 0x20
     DMRMON_ACT_MODE,      // 0x10 = 0x6E / 0x6A
     DMRMON_ACT_R06,       // 0x06 = next variant
     DMRMON_ACT_BER,       // 0x83 = 0xFF, 0x81 = 0xFF, 0x10 = 0x02,
                           // 0x40 = 0x40, 0x41 = 0x41
     DMRMON_ACT_TWOPOINT,  // 0x12 bit6 toggle
+    DMRMON_ACT_LCSS,      // 0x50 LCSS convention of the voice bursts,
+                          // chip-filled / manual, through the RTX status
+    DMRMON_ACT_RFADV,     // 0x12 = 0x98 / 0x15 (RF_TX_INTER advance)
     DMRMON_ROWS_NUM
 };
 
@@ -256,6 +263,12 @@ enum dmrMonitorRows
 
 // Values register 0x06 cycles through with the "0x06 variant" action
 #define DMRMON_R06_VARIANTS  5
+
+// Values of register 0x12 the "RF advance" action alternates between: the
+// OEM init word (bit7 RF ramp smoothing + RF_TX_INTER 2.4 ms in advance) and
+// the OpenGD77 one (2.1 ms, no smoothing). UNVERIFIED on hardware.
+#define DMRMON_R12_OEM       0x98
+#define DMRMON_R12_GD77      0x15
 #endif
 
 // FRS channel number entry: auto-accept timeout after the first digit, in ms
@@ -350,6 +363,7 @@ typedef struct ui_state_t
     uint8_t dmr_mon_page;
     uint8_t dmr_mon_modeReg;
     uint8_t dmr_mon_r06;
+    uint8_t dmr_mon_lcss;
 #endif
     freq_t new_offset;
     // Which state to return to when we exit menu
@@ -398,10 +412,35 @@ static inline const char *_ui_dmrMarkerText(uint8_t markers)
         return currentLanguage->dmrBusy;
     if(markers & DMR_MARK_WAKEUP_FAILED)
         return currentLanguage->dmrWakeupFailed;
-
     return NULL;
 }
+
 #endif
+
+/**
+ * Prefix of the destination line of the main screen while transmitting:
+ * "TX -> " during a transmission, "WAKE " while a repeater is being woken
+ * up (the wake-up CSBK is on the air and the repeater's answer awaited; no
+ * arrow, "WAKE -> PC 16777215" would not fit the 160 pixel line), an empty
+ * string otherwise. The small screens use the compact form.
+ *
+ * @param callState: rtxStatus_t::dmr_callState.
+ * @param compact: true for the 128x64 layout.
+ * @return prefix, never NULL.
+ */
+static inline const char *_ui_dmrTxPrefix(uint8_t callState, bool compact)
+{
+    switch(callState)
+    {
+        case DMR_CALL_TX:
+            return compact ? "TX->" : "TX -> ";
+        case DMR_CALL_TX_WAKEUP:
+            return "WAKE ";
+        default:
+            return "";
+    }
+}
+
 extern const char *menu_items[];
 extern const char *settings_items[];
 extern const char *display_items[];

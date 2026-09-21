@@ -208,13 +208,15 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
     // destination takes the whole line, see the width guard in
     // tests/unit/ui_dmr.cpp.
     gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_LEFT,
-              color_white, "%s%s", tx ? "TX -> " : "", dst);
+              color_white, "%s%s",
+              _ui_dmrTxPrefix(status->dmr_callState, false), dst);
     if((tx == false) && (ui_state->edit_mode == false))
         gfx_print(layout.line2_pos, layout.message_font, TEXT_ALIGN_RIGHT,
                   color_white, "%s", slot);
     #else
     gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
-              color_white, "%s%s %s", tx ? "TX->" : "", dst, slot);
+              color_white, "%s%s %s",
+              _ui_dmrTxPrefix(status->dmr_callState, true), dst, slot);
     #endif
 }
 
