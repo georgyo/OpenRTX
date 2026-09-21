@@ -66,9 +66,10 @@ fault.
 - Check: the counters of check 1.1 tell which line pulses every 60 ms, see
   3.1.
 - If wrong: switch the driver to the other line at runtime with the
-  `DMRBB_DRV_SYS_LINE` knob (section 6.3) and carry on with the checks;
-  then fix `DMR_SYS_INT` per target. The EXTI shim attaches PC0..PC3 all
-  four, so no rebuild is needed to see the answer nor to act on it.
+  `SYS line` action of the monitor screen (the `DMRBB_DRV_SYS_LINE` knob,
+  section 6.3) and carry on with the checks; then fix `DMR_SYS_INT` per
+  target. The EXTI shim attaches PC0..PC3 all four, so no rebuild is
+  needed to see the answer nor to act on it.
 
 ### 1.3 NVIC priority 14 for the EXTI lines
 
@@ -123,7 +124,7 @@ rebuild. Nothing on it is needed for normal operation.
 Pages are flipped with LEFT and RIGHT (UP, DOWN and ENTER flip them too,
 except on the action page, where UP and DOWN select the action and ENTER runs
 it); ESC returns to `Settings > DMR`. The rows come in five sections of 12,
-15, 7, 11 and 7 rows (`enum dmrMonitorRows` in `ui_default.h`), each value
+15, 7, 11 and 8 rows (`enum dmrMonitorRows` in `ui_default.h`), each value
 section starting on a new page and spanning as many pages as the screen
 height needs, the action section always one page whose rows scroll behind
 the selection: six rows per page on the 160x128 displays, hence
@@ -137,7 +138,7 @@ title reads `DMR monitor n/N`):
 | 2. Registers | last `0x51`, `0x52`, `0x5F`, `0x42`; `CC` (0x52[7:4]); `TC` (0x52 bit2); `Sync` (0x5F[1:0]: MS, BS, TDMA1, TDMA2); `RSSI` (0x43:0x44); `FSK err` (0x0F); `rd 0x10`, `rd 0x06`, `rd 0x12`, `rd 0x14-16` read back over U_SPI at every redraw | registers read in the TS/SYS passes; `dmrbb_readRegister()` |
 | 3. Link control | `LC 0-5`, `LC 6-11` (the 12 LC RAM octets in hex), `Src`, `Dst`, `FLCO`, `FID` decoded from them, `CRC` (`ok`/`bad` from 0x51 bit2, `*` appended when the 9 octets do not parse as a standard Full LC) | RX RAM of the last header, terminator or late entry |
 | 4. Audio (stages 4 and 5) | `Vocoder` (backend name), `Aud RX` (payloads pushed to playback), `Aud vary` (of which differing from the previous one), `Aud out` (480-sample blocks written to the speaker), `Aud TX` (payloads encoded from the microphone), `Underrun` (silent blocks between two payloads of a call), `Overrun` (payloads dropped from a full queue); since stage 5 `TX bursts` (own voice bursts sent), `TX silent` (of which carrying the AMBE silence pattern: all of them with the null backend), `TX under` (silence sent while the encoder thread ran, the microphone stream fell behind), `RF keyed` (times the RF stage was keyed for a transmission, one per accepted PTT press) | `rtxStatus_t::dmr_audio`, `dmrAudio_getStats()` of `core/dmr_audio.c`; `dmrMonitor_t` for the TX rows |
-| 5. Actions | `Resync`, `Mode 0x10`, `Reg 0x06`, `BER test`, `Two-point`, `LCSS mode`, `RF advance`, the value column showing the register and the value the next ENTER writes (`LCSS mode`: the convention it selects) | `dmrbb_writeRegister()` on the CONFIG page (U_SPI opmode 4); `LCSS mode` writes `state.dmr_lcssMode` instead |
+| 5. Actions | `Resync`, `Mode 0x10`, `Reg 0x06`, `BER test`, `Two-point`, `LCSS mode`, `RF advance`, `SYS line`, the value column showing the register and the value the next ENTER writes (`LCSS mode`: the convention it selects; `SYS line`: the line in force and the one it selects) | `dmrbb_writeRegister()` on the CONFIG page (U_SPI opmode 4); `LCSS mode` writes `state.dmr_lcssMode` instead; `SYS line` writes the driver pseudo page 0xFF |
 
 The actions, all `UNVERIFIED on hardware` (`openrtx/src/ui/default/ui.c`,
 `_ui_dmr_monitorAction()`), are only run while the RTX stage is in DMR on a
@@ -154,21 +155,19 @@ on a radio without a DMR modem the value column of the action page reads
 | BER test | 0x83 = 0xFF, 0x81 = 0xFF, 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41 | PHY-layer BER test of manual 5.4.6: 36 raw bytes per frame in RX RAM 0x30, 0x82 bit0 per frame. Bit0 is the "PHY-only" interrupt `dmrMode()` masks with 0x81 = 0xFE, so the stale flags are cleared and the mask opened first; `Resync` or the next modem reconfiguration put 0xFE back |
 | Two-point | 0x12 bit6 toggled (read-modify-write) | 40 Hz square wave on MOD1/MOD2 to balance the two-point modulation |
 | LCSS mode | no register write: `state.dmr_lcssMode` toggled, pushed to the RTX stage as `rtxStatus_t::dmr_lcssMode` | Convention of the LCSS bits of register 0x50 in voice bursts, applied by the call controller to the next transmission without reprogramming the modem: `50 chip` = 0x08 \| seq << 4 with LCSS 00, the chip filling the embedded LC fragments (OpenGD77, default); `50 manual` = the manual's 5.4.5 sequence 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58. The value column names the convention the next ENTER selects; forgotten at power off |
-| RF advance | 0x12[5:0] and bit7 = 0x98 or 0x15, alternately (read-modify-write, bit6 preserved) | RF_TX_INTER advance: the OEM init word 0x98 (2.4 ms, RF ramp smoothing) or OpenGD77's 0x15 (2.1 ms, no smoothing); the OEM word when the register holds neither. The `Two-point` bit is left as it is, so the two can be combined |
-
-The driver has one more knob on the pseudo page with no action row yet:
-`DMRBB_DRV_SYS_LINE` (0x02, `platform/drivers/baseband/dmr_CS7000.h`),
-which moves the SYS_INTER dispatch between PC1 and PC3, see 6.3.
+| RF advance | 0x12[5:0] and bit7 = 0x98 or 0x15, alternately (read-modify-write, bit6 preserved); the word without bit6 is also pushed to the RTX stage as `rtxStatus_t::dmr_rfAdvance` | RF_TX_INTER advance: the OEM init word 0x98 (2.4 ms, RF ramp smoothing) or OpenGD77's 0x15 (2.1 ms, no smoothing); the OEM word when the register holds neither. The `Two-point` bit is left as it is in the immediate write, so the two can be combined until the next reconfiguration; the opMode handler reprograms the modem with the chosen word (`dmrbbConfig::rfAdvance`, 6.4) and keeps it through the watchdog reconfigurations until power off |
+| SYS line | driver pseudo page 0xFF, `DMRBB_DRV_SYS_LINE` (0x02) = 3 (PC3) or 1 (PC1), alternately; the value column reads `PC1->PC3` / `PC3->PC1` | Which EXTI line the CS7000 driver dispatches as SYS_INTER: PC1 (the pinmap, default) or PC3_C (the schematic), see 1.2, 3.1 and 6.3. Not a chip register: the choice survives the modem reconfigurations on its own and is forgotten at power off; the emulator and the stub accept the write and ignore it |
 
 Two things to keep in mind:
 
 - The modem is reprogrammed from scratch (`dmrbb_configure()`, table 4.1 of
   the design note) whenever the colour code, timeslot, ID, access policy or
-  mode word changes, and after 2 s without timeslot interrupts. `Reg 0x06`,
-  `BER test`, `Two-point` and `RF advance` are therefore overwritten within
-  2 s while no signal is being received; read `rd 0x06` / `rd 0x12` right
-  after the action, or run the check with a signal present. `Mode 0x10` and
-  `LCSS mode` survive, see above.
+  mode word or RF advance word changes, and after 2 s without timeslot
+  interrupts. `Reg 0x06`, `BER test` and `Two-point` are therefore
+  overwritten within 2 s while no signal is being received; read `rd 0x06`
+  / `rd 0x12` right after the action, or run the check with a signal
+  present. `Mode 0x10`, `LCSS mode`, `RF advance` (the advance word, not
+  the two-point bit) and `SYS line` survive, see above.
 - PTT is disabled on every menu screen. For the checks that need
   transmission, run the action, press ESC back to the main screen, key the
   radio (a DMR transmission with silence frames), release, and come back to
@@ -197,8 +196,8 @@ where if it fails. Record the outcome in the table of section 7.
   the transmission. `0x82` shows `08` (control frame) or `10` (late entry)
   during the call.
 - If wrong: `PC3` counts and `PC1` stays at 0 on the Plus: switch the
-  driver to PC3 with the `DMRBB_DRV_SYS_LINE` knob (6.3) and check that
-  `SYS` now counts with `PC3`; then set `DMR_SYS_INT` to PC3 in the
+  driver to PC3 with the `SYS line` action of the monitor screen (6.3) and
+  check that `SYS` now counts with `PC3`; then set `DMR_SYS_INT` to PC3 in the
   CS7000-PLUS pinmap (the schematic). `PC1` counts: the pinmap is right
   for that board. Neither counts while `PC0`
   does: SYS interrupts are masked, see 3.5. `PC0` never counts: no sync, see
@@ -561,7 +560,8 @@ radio) to see what actually goes out. The two knobs of this stage are
 actions of the monitor screen (section 2): `LCSS mode` (the convention of
 the LCSS bits of 0x50 in voice bursts, `state.dmr_lcssMode`: `50 chip` =
 OpenGD77's 0x08 | seq << 4, `50 manual` = the manual's 0x08 / 0x19 / 0x2B /
-0x3B / 0x4A / 0x58) and `RF advance` (0x12 = 0x98 or 0x15). Two read-only
+0x3B / 0x4A / 0x58) and `RF advance` (0x12 = 0x98 or 0x15, since stage 6
+kept through the reconfigurations, see 6.4). Two read-only
 counters of the CS7000 driver have no monitor row yet and are read with a
 debugger or `dmrbb_readRegister(DMRBB_PAGE_DRIVER, addr)`
 (`platform/drivers/baseband/dmr_CS7000.h`): `DMRBB_DRV_RFTX_TICK`
@@ -778,33 +778,42 @@ on hardware`.
 - Where: `readSysEvent()` in `platform/drivers/baseband/dmr_CS7000.cpp`,
   `HR_C6000::SUB86_SHORT_LC`, the `shortLc[5]` field of
   `openrtx/include/interfaces/dmr_baseband.h`.
-- Assumption: the manual (register 0x82 bit 5 description) lists "Short LC
-  receive interrupt" as bit 2 of the end-of-transmission sub-status
-  register 0x86, and its RAM map (Table 5.2) puts the Short LC at RX RAM
-  0x24-0x28: 0x24-0x26 plus bits 7:4 of 0x27 are the 28 control bits (SLCO
-  and 24 payload bits), 0x28 the 8 check bits (CRC-8, Annex B.3.7). The
-  driver reads the five bytes, in one chip select, when 0x82 bit 5 and
-  0x86 bit 2 are both set, right after 0x86 and before the status
-  registers; the snapshot keeps the previous bytes otherwise. The map is
-  partial in the manual and nothing says whether 0x28 holds the CRC as
-  received or the chip's own verdict, nor whether the flag fires on a
-  radio that is only receiving (it sits among the TX end bits).
+- Assumption: the manual (register 0x82 bit 5 description, §5.1.1) lists
+  "Short LC receive interrupt" as bit 2 of the end-of-transmission
+  sub-status register 0x86. The RAM address is taken from the TX-side
+  allocation (Table 5.2, "Short LC 0x24~0x28", the RAM the MCU fills for
+  the chip to transmit a CACH): 0x24-0x26 plus bits 7:4 of 0x27 are the 28
+  control bits (SLCO and 24 payload bits), 0x28 the 8 check bits (CRC-8,
+  Annex B.3.7). The RX-side allocation (Table 5.3) is omitted in the
+  translated manual, so the driver assumes the RX RAM mirrors the TX map,
+  as the LC read at 0x00 already assumes (the voice at 0x30 is confirmed
+  by the manual's prose). The driver reads the five bytes, in one chip
+  select, when 0x82 bit 5 and 0x86 bit 2 are both set, right after 0x86
+  and before the status registers; the snapshot keeps the previous bytes
+  otherwise. Nothing says whether 0x28 holds the CRC as received or the
+  chip's own verdict, nor whether the flag fires on a radio that is only
+  receiving (it sits among the TX end bits).
 - Do: near a repeater with traffic on the other slot (or both), section 1
   of the monitor screen: `0x82` and `0x86`. Then the main screen: the
-  TS1 / TS2 busy hint, if the UI shows one, against what the repeater's
-  dashboard says about the other slot.
+  `1*` / `2*` busy tags at the left of the top bar, against what the
+  repeater's dashboard says about the other slot.
 - Expect: `0x82` showing `20` (or `28`, `30` with a control frame) now and
   then during the repeater's activity with `0x86` = `04`; the busy hint
   following the other slot's activity within a second of the dashboard.
-- If wrong: `0x82` bit 5 never set while receiving: the chip does not
-  report Short LCs on the RX side, or 0x87 masks it (3.4; 0x87 = 0xFF is
-  already written by `dmrMode()`); failing that, read RX RAM 0x24-0x28 on
-  every SYS event in a debug build and compare with the repeater's CACH.
-  Bytes that never change or fail the CRC-8: the RAM address (try the
-  neighbouring words of Table 5.2, 0x18-0x23 is the Idle message) or the
-  bit packing of 0x27; the CRC of the host-side decoder is checked against
-  dmr_utils3 vectors, so a systematic failure on the radio points at the
-  layout.
+- If wrong: bytes that never change or fail the CRC-8: first, the RX-side
+  RAM does not mirror the TX map of Table 5.2 (the address is an
+  assumption, see above): dump the RX RAM on every SYS event in a debug
+  build and look for the five bytes changing every 120 ms with a CRC-8
+  that checks, starting from the neighbouring words (0x18-0x23 is the
+  Idle message on the TX side, 0x29-0x2C the EMB); then the bit packing of
+  0x27. The CRC-8 of the host-side decoder is checked against the standard
+  poly 0x07 check value and the figure B.6 bit placement
+  (`tests/unit/DMR_fec.cpp`), so a systematic failure on the radio points
+  at the layout, not at the decoder. `0x82` bit 5 never set while
+  receiving: the chip does not report Short LCs on the RX side, or 0x87
+  masks it (3.4; 0x87 = 0xFF is already written by `dmrMode()`); failing
+  that, the same RX RAM dump, compared with the repeater's CACH, tells
+  whether the chip decodes the Short LC at all.
 
 ### 6.2 Last heard on a busy repeater and the call back
 
@@ -830,13 +839,13 @@ on hardware`.
 
 ### 6.3 The SYS line knob (`DMRBB_DRV_SYS_LINE`)
 
-- Where: `platform/drivers/baseband/dmr_CS7000.h` (`DMRBB_DRV_SYS_LINE` =
-  0x02 on the driver pseudo page 0xFF, values `DMRBB_SYS_LINE_PINMAP` = 1
-  and `DMRBB_SYS_LINE_SCHEMATIC` = 3), the ISR of `dmr_CS7000.cpp`. The
-  knob is reachable with `dmrbb_writeRegister(0xFF, 0x02, 1 or 3)`; the
-  monitor screen has no action row for it yet (a `SYS line` action next to
-  `LCSS mode`, writing the driver page, is the UI side of it; in the
-  meantime the host test `tests/unit/hr_c6000_dmr.cpp` exercises it).
+- Where: `openrtx/include/interfaces/dmr_baseband.h` (`DMRBB_DRV_SYS_LINE`
+  = 0x02 on the driver pseudo page 0xFF, values `DMRBB_SYS_LINE_PINMAP` =
+  1 and `DMRBB_SYS_LINE_SCHEMATIC` = 3), the ISR of `dmr_CS7000.cpp`, the
+  `SYS line` action of the monitor screen (section 2), which toggles the
+  knob between the two lines and shows the line in force (`PC1->PC3`: PC1
+  now, ENTER selects PC3). The host tests `tests/unit/hr_c6000_dmr.cpp`
+  (driver) and `tests/unit/ui_dmr.cpp` (action) exercise it.
 - Assumption: PC0..PC3 are all attached and counted whatever the choice;
   only the line that raises `DMRBB_EV_SYS` (and the 0x82 reads behind it)
   moves. The default is the pinmap constant `DMR_SYS_INT` (PC1); the
@@ -844,11 +853,11 @@ on hardware`.
   is ignored. The knob survives a reconfiguration and is forgotten at
   power off.
 - Do: check 3.1 first. If `PC3` counts while `SYS` stays at 0 (the
-  pinmap is wrong for that board), write 3 to the knob, go back to the
-  monitor screen: `SYS` must now count with `PC3`, `0x82` must show the
-  flags of the call (`08` / `10`), the caller must appear on the main
-  screen within 360 ms and the audio counters of section 4 must move.
-  Write 1 to go back.
+  pinmap is wrong for that board), `SYS line` on the action page (the
+  column reads `PC3->PC1` afterwards), then section 1: `SYS` must now
+  count with `PC3`, `0x82` must show the flags of the call (`08` / `10`),
+  the caller must appear on the main screen within 360 ms and the audio
+  counters of section 4 must move. `SYS line` again to go back to PC1.
 - Expect: with the right line selected the whole RX path of stage 3 and
   4 works without a rebuild; with the wrong one `SYS` stays at 0 and no
   caller is ever shown, while `TS` and `PC0` keep counting.
@@ -863,19 +872,24 @@ on hardware`.
 - Where: `dmrbb_configure()` in `dmr_CS7000.cpp`, the `rfAdvance` field of
   `struct dmrbbConfig` (`openrtx/include/interfaces/dmr_baseband.h`,
   `DMRBB_RF_ADVANCE_DEFAULT` = 0x98).
-- Assumption: the `RF advance` action writes 0x12 at once and the next
-  `dmrbb_configure()` (colour code change, watchdog, mode word) puts the
-  table's 0x98 back. With the field set to a value other than 0 and 0x98
-  the driver rewrites 0x12 right after the mode word on every
-  reconfiguration, so the choice holds for the whole session once the
-  opMode handler copies the monitor screen's value into it (the copy from
-  `rtxStatus_t` to `bbCfg.rfAdvance` is the core side of this item).
-- Do: `RF advance` on the monitor screen, then change the colour code and
-  back (a reconfiguration), read `rd 0x12`.
-- Expect: `15` after the action and still `15` after the reconfiguration
-  once the copy is in; `98` after the reconfiguration otherwise.
-- If wrong: `rd 0x12` reads `98` although the copy is in: the value did
-  not reach the RTX stage (`sync_rtx` not raised by the action).
+- Assumption: the `RF advance` action writes 0x12 at once (bit6, the
+  two-point tone, preserved) and pushes the advance word (without bit6)
+  to the RTX stage as `rtxStatus_t::dmr_rfAdvance`; the opMode handler
+  copies it into `bbCfg.rfAdvance` (0 = driver default, mapped to 0x98)
+  and reprograms the modem when it changes, as it does for the mode word.
+  `dmrbb_configure()` writes the table's 0x98 and then, for a value other
+  than 0 and 0x98, rewrites 0x12 right after the mode word, so the choice
+  holds through every later reconfiguration (colour code change,
+  watchdog) until power off. The two-point bit does not survive a
+  reconfiguration (the table clears it), as before.
+- Do: `RF advance` on the monitor screen (`rd 0x12` = `15`), then change
+  the colour code and back (two reconfigurations), read `rd 0x12`.
+- Expect: `15` after the action and still `15` after the reconfigurations;
+  `RF advance` again: `98`, and `98` after another colour code change.
+- If wrong: `rd 0x12` reads `98` after the reconfiguration: the value did
+  not reach the modem, check `dmrbb_configure()` writes 0x12 after the
+  mode table (`tests/unit/hr_c6000_dmr.cpp` checks the order on the host)
+  and that the U_SPI readback of 3.7 works.
 
 ## 7. Results
 
@@ -920,8 +934,8 @@ Fill one column per radio; leave a cell empty until the check was run.
 | 6.2 | Call back from last heard | private call reaches the selected ID | | | |
 | 6.2 | Contacts / favourites survive power cycle | destination and favourites restored, LC sent matches (hotspot log) | | | |
 | 6.2 | Hang-time display | caller kept for the hang time, repeater hang terminators do not clear it | | | |
-| 6.3 | SYS line knob | `SYS` follows the selected line, caller shown after the switch | | | |
-| 6.4 | RF advance kept through reconfiguration | `rd 0x12` = 15 after a colour code change | | | |
+| 6.3 | SYS line action | `SYS` follows the line selected on the monitor screen, caller shown after the switch | | | |
+| 6.4 | RF advance kept through reconfiguration | `rd 0x12` = 15 after a colour code change, 98 after the action is pressed again | | | |
 | 6 | Voice prompts at call start | ID / talkgroup announced, RX audio resumes | | | |
 
 ## 8. Flashing back to the OEM DMR firmware
