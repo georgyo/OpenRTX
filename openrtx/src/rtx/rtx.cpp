@@ -50,6 +50,7 @@ struct DmrReport
     uint8_t  slotLock;
     uint8_t  markers;
     dmrMonitor_t mon;
+    struct dmrAudioStats audio;
 };
 
 static DmrReport dmrReport;
@@ -67,6 +68,7 @@ static void saveDmrReport(DmrReport *report, const rtxStatus_t *status)
     report->slotLock        = status->dmr_slotLock;
     report->markers         = status->dmr_markers;
     report->mon             = status->dmr_mon;
+    report->audio           = status->dmr_audio;
 }
 
 static void restoreDmrReport(rtxStatus_t *status, const DmrReport *report)
@@ -82,6 +84,7 @@ static void restoreDmrReport(rtxStatus_t *status, const DmrReport *report)
     status->dmr_slotLock        = report->slotLock;
     status->dmr_markers         = report->markers;
     status->dmr_mon             = report->mon;
+    status->dmr_audio           = report->audio;
 }
 
 
@@ -133,6 +136,7 @@ void rtx_init(pthread_mutex_t *m)
     rtxStatus.dmr_slotLock  = 0;
     rtxStatus.dmr_markers   = 0;
     memset(&rtxStatus.dmr_mon, 0x00, sizeof(rtxStatus.dmr_mon));
+    memset(&rtxStatus.dmr_audio, 0x00, sizeof(rtxStatus.dmr_audio));
     currMode = &noMode;
 
     /*

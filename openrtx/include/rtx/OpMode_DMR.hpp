@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include "core/audio_path.h"
+#include "core/dmr_audio.h"
 #include "interfaces/dmr_baseband.h"
 #include "protocols/DMR/CallController.hpp"
 #include "protocols/DMR/ModemPort.hpp"
@@ -83,40 +84,49 @@ public:
 };
 
 /**
- * Placeholder for the DMR audio layer of a later stage: received voice
- * payloads are counted and dropped, own voice bursts carry the AMBE silence
- * pattern (the controller transmits it when no payload is provided). No
- * thread, no buffer: the audio paths are requested by OpMode_DMR so that the
- * amplifier and microphone gating already behave as they will with voice.
+ * Voice sink of the call controller: the bridge to the DMR audio layer
+ * (core/dmr_audio.h). Received payloads are pushed to the playback queue,
+ * own voice bursts take their payload from the encoder queue; when the audio
+ * thread is not running (no path yet, path suspended, no microphone on the
+ * emulator) received voice is dropped and the controller transmits the AMBE
+ * silence pattern. The counters are for the tests and the monitor screen.
  */
-class DmrAudioStub : public DMR::VoiceSink
+class DmrAudioLink : public DMR::VoiceSink
 {
 public:
-    DmrAudioStub() : rxFrames(0), txRequests(0)
+    DmrAudioLink() : rxFrames(0), rxQueued(0), txRequests(0), txFrames(0)
     {
     }
 
     void rxVoiceFrame(const uint8_t ambe[DMR::VOICE_PAYLOAD_BYTES]) override
     {
-        (void)ambe;
         rxFrames++;
+        if (dmrAudio_pushFrame(ambe))
+            rxQueued++;
     }
 
     bool txVoiceFrameNeeded(uint8_t ambe[DMR::VOICE_PAYLOAD_BYTES]) override
     {
-        (void)ambe;
         txRequests++;
-        return false;
+        if (dmrAudio_popFrame(ambe) == false)
+            return false;
+
+        txFrames++;
+        return true;
     }
 
     void reset()
     {
         rxFrames = 0;
+        rxQueued = 0;
         txRequests = 0;
+        txFrames = 0;
     }
 
-    uint32_t rxFrames;   /**< Voice bursts received since reset()     */
-    uint32_t txRequests; /**< Voice bursts requested since reset()    */
+    uint32_t rxFrames;   /**< Voice bursts received since reset()          */
+    uint32_t rxQueued;   /**< Of which taken by the audio layer            */
+    uint32_t txRequests; /**< Voice bursts requested since reset()         */
+    uint32_t txFrames;   /**< Of which filled by the audio layer           */
 };
 
 /**
@@ -199,11 +209,11 @@ public:
     }
 
     /**
-     * @return the audio placeholder, for the tests.
+     * @return the voice sink, for the tests.
      */
-    const DmrAudioStub &audio() const
+    const DmrAudioLink &audio() const
     {
-        return audioStub;
+        return audioLink;
     }
 
     /**
@@ -247,8 +257,9 @@ private:
     void applyConfig(const rtxStatus_t *const status, bool force);
 
     /**
-     * Request and release the audio paths, drive the RF stage and the LEDs
-     * according to the controller state.
+     * Request and release the audio paths, start and stop the audio thread
+     * on them, drive the RF stage and the LEDs according to the controller
+     * state.
      *
      * @param nowMs: current time.
      */
@@ -272,7 +283,7 @@ private:
     void publish(rtxStatus_t *const status);
 
     DmrModemAdapter port;            ///< Modem port towards dmr_baseband.h
-    DmrAudioStub audioStub;          ///< Audio placeholder
+    DmrAudioLink audioLink;          ///< Voice sink towards dmr_audio
     DMR::CallController ctrl;        ///< Slot state machine
     DMR::CallController::Config cfg; ///< Controller configuration
     struct dmrbbConfig bbCfg;        ///< Modem configuration
@@ -284,6 +295,8 @@ private:
     bool enabled;                    ///< enable() done, disable() not yet
     bool cfgValid;                   ///< cfg/bbCfg built at least once
     bool cfgPending;                 ///< Modem reconfiguration deferred (TX)
+    bool rxAudioFailed;              ///< dmrAudio_startRx() refused the path
+    bool txAudioFailed;              ///< dmrAudio_startTx() refused the path
     bool markerRaised;               ///< A clearable marker is shown
     uint32_t markerMs;               ///< When the marker was raised
     uint8_t rfState;                 ///< RfState of the RF stage
