@@ -48,6 +48,12 @@ typedef struct
     uint8_t  lcFid;        /**< FID decoded from lc[]                       */
     uint8_t  lcValid;      /**< bit0: chip CRC good (0x51 bit2 clear),
                                 bit1: lc[] parsed as a standard Full LC     */
+    uint32_t txBursts;     /**< Own voice bursts sent since enable()        */
+    uint32_t txSilent;     /**< Of which carrying the AMBE silence pattern
+                                because the audio layer had no payload      */
+    uint16_t txUnderruns;  /**< Silent bursts while the encoder was running:
+                                the microphone stream fell behind          */
+    uint16_t rfKeyed;      /**< Times the RF stage was keyed for TX         */
 }
 dmrMonitor_t;
 
@@ -102,6 +108,10 @@ typedef struct
                                     0 impolite                             */
     uint8_t  dmr_modeReg;      /**< DMR modem mode register 0x10 override
                                     from the monitor screen, 0 = default   */
+    uint8_t  dmr_lcssMode;     /**< DMR LCSS convention of the voice bursts
+                                    (register 0x50): 0 chip-filled, 1 the
+                                    manual's per-burst sequence, from the
+                                    monitor screen                         */
 
     /* DMR receive report, written by the DMR opMode handler */
     bool     dmr_lcOk;         /**< DMR Full LC with valid CRC is held     */

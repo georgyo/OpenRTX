@@ -34,7 +34,9 @@ using namespace DMR;
  * handler is stepped with update() as rtx_task() would do. The speaker is
  * SDL's dummy audio device, so that the DMR audio thread opens a real
  * output stream on the emulator's SINK_SPK; the emulator has no microphone
- * device, so the encoder side is refused and silence is transmitted.
+ * device, so the encoder side is refused and silence is transmitted. The
+ * RF stage is the emulator's radio_linux.cpp, whose keying calls are
+ * counted (radioEmu_record()).
  */
 
 static const uint32_t OWN_ID = 2345678;
@@ -74,6 +76,7 @@ class Bench
 public:
     rtxStatus_t status;
     const struct dmrEmuRecord *rec;
+    const struct radioEmuRecord *rf;
 
     Bench()
     {
@@ -85,10 +88,12 @@ public:
         }
 
         dmrEmu_reset();
+        radioEmu_reset();
         emulator_state.PTTstatus = false;
         state.settings.dmr_hangTime = 0;
         status = initialStatus();
         rec = dmrEmu_record();
+        rf = radioEmu_record();
     }
 
     ~Bench()
@@ -360,18 +365,24 @@ TEST_CASE("DMR OpMode: PTT with a valid ID transmits and returns to RX",
     REQUIRE(b.rec->terminators == 1);
     REQUIRE(b.rec->voiceBursts == 12);
 
-    /* Terminator out: back to RX, hang time zero -> idle at once */
+    /* Terminator out: back to RX, hang time zero -> idle at once; the RF
+     * stays keyed for the slot the terminator occupies */
     b.tick();
     REQUIRE(b.ctrlState() == CallController::RX_IDLE);
     REQUIRE(b.rec->startRxCount == 2);
     REQUIRE(b.rec->r40 == R40_RX);
-    REQUIRE(b.status.opStatus == RX);
+    REQUIRE(b.status.opStatus == TX);
     REQUIRE(b.status.dmr_callState == DMR_CALL_IDLE);
     REQUIRE(b.status.dmr_lcOk == false);
     REQUIRE(b.status.dmr_markers == 0);
     REQUIRE(b.rec->terminators == 1);
 
-    b.ticks(4);
+    /* The slot after: RF released */
+    b.tick();
+    REQUIRE(b.status.opStatus == RX);
+    REQUIRE(dmr.rfKeyed() == false);
+
+    b.ticks(3);
     REQUIRE(b.ctrlState() == CallController::RX_IDLE);
     REQUIRE(b.rec->txSlots == 16);
 }
@@ -532,8 +543,16 @@ TEST_CASE("DMR OpMode: a modem parameter change during TX waits for the end",
     REQUIRE(b.rec->configureCount == 1);
     uint32_t startRx = b.rec->startRxCount;
 
+    /* The terminator slot: still keyed, the reprogramming waits for it */
     b.tick();
     REQUIRE(b.rec->terminators == 1);
+    REQUIRE(b.rec->configureCount == 1);
+    REQUIRE(dmr.rfKeyed() == true);
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+
+    /* RF released: reprogrammed and restarted */
+    b.tick();
+    REQUIRE(dmr.rfKeyed() == false);
     REQUIRE(b.rec->configureCount == 2);
     REQUIRE(b.rec->config.colorCode == 3);
     REQUIRE(b.rec->startRxCount > startRx);
@@ -1026,4 +1045,431 @@ TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
     dmr.update(&b.status, true);
     REQUIRE(b.rec->configureCount == 4);
     REQUIRE(b.rec->config.modeReg == DMRBB_MODE_REG_DEFAULT);
+}
+
+/*
+ * Stage 5: the RF stage around a transmission, the end of transmission
+ * conditions and the LCSS convention, all on the fake modem with the fake RF
+ * stage of radio_linux.cpp.
+ */
+
+TEST_CASE("DMR OpMode TX: the RF stage is keyed once, before the first "
+          "header, and released after the terminator burst",
+          "[dmr][rtx][tx]")
+{
+    Bench b;
+    b.start();
+    b.ticks(6);
+    uint32_t enableRx = b.rf->enableRx;
+    REQUIRE(b.rf->enableTx == 0);
+    REQUIRE(b.rf->disableRtx == 0);
+    REQUIRE(dmr.rfKeyed() == false);
+
+    /* PTT: keyed on the pass that arms the modem, no slot programmed yet */
+    emulator_state.PTTstatus = true;
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::TX_ARM);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(b.rf->keyed == true);
+    REQUIRE(dmr.rfKeyed() == true);
+    REQUIRE(b.rec->txSlots == 0);
+    REQUIRE(b.rec->startTxCount == 1);
+    REQUIRE(b.status.opStatus == TX);
+    REQUIRE(b.status.dmr_mon.rfKeyed == 1);
+
+    /* Exactly three header slots, one every other timeslot */
+    unsigned n = 0;
+    while (b.ctrlState() != CallController::TX_VOICE) {
+        b.tick();
+        REQUIRE(b.rf->enableTx == 1);
+        REQUIRE(++n < 10);
+    }
+    REQUIRE(b.rec->headers == 3);
+    REQUIRE(b.rec->txSlots == 3);
+    REQUIRE(b.rec->voiceBursts == 0);
+    REQUIRE(b.rec->r41 == R41_TX);
+
+    /* Voice: seq 0..5 twice, one 27-byte write per own slot, silence */
+    uint32_t voiceWrites = b.rec->voiceWrites;
+    for (unsigned i = 0; i < 12; i++) {
+        /* The other slot: idle, nothing written */
+        b.tick();
+        REQUIRE(b.rec->r41 == R41_IDLE);
+        REQUIRE(b.rec->voiceWrites == voiceWrites);
+
+        /* The own slot: burst i % 6 */
+        b.tick();
+        REQUIRE(b.rec->r41 == R41_TX);
+        REQUIRE(b.rec->r50 == r50Voice(i % 6));
+        REQUIRE(b.rec->voiceWrites == voiceWrites + 1);
+        REQUIRE(memcmp(b.rec->voice, AMBE_SILENCE, VOICE_PAYLOAD_BYTES) == 0);
+        voiceWrites++;
+        REQUIRE(b.rf->enableTx == 1);
+        REQUIRE(b.rf->disableRtx == 0);
+    }
+    REQUIRE(b.rec->voiceBursts == 12);
+    REQUIRE(dmr.audio().txRequests == 12);
+    REQUIRE(dmr.audio().txFrames == 0);
+    REQUIRE(dmr.audio().txUnderruns == 0);
+    REQUIRE(b.status.dmr_mon.txBursts == 12);
+    REQUIRE(b.status.dmr_mon.txSilent == 12);
+    REQUIRE(b.status.dmr_mon.txUnderruns == 0);
+
+    /* Burst A of the next superframe, then release: B..F, terminator */
+    b.tick();
+    b.tick();
+    REQUIRE(b.rec->r50 == r50Voice(0));
+    emulator_state.PTTstatus = false;
+    for (unsigned seq = 1; seq < 6; seq++) {
+        b.tick();
+        REQUIRE(b.rec->r41 == R41_IDLE);
+        b.tick();
+        REQUIRE(b.rec->r41 == R41_TX);
+        REQUIRE(b.rec->r50 == r50Voice(seq));
+        REQUIRE(b.ctrlState() == CallController::TX_VOICE);
+    }
+    b.tick();
+    REQUIRE(b.rec->r41 == R41_IDLE);
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::TX_TERM);
+    REQUIRE(b.rec->r50 == R50_TERMINATOR);
+    REQUIRE(b.rec->terminators == 1);
+    REQUIRE(b.rec->voiceBursts == 18);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(b.rf->disableRtx == 0);
+
+    /* The terminator slot: the modem is back in RX, the RF still keyed,
+     * the encoder stopped, the microphone path still held */
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.rec->r40 == R40_RX);
+    REQUIRE(b.rf->disableRtx == 0);
+    REQUIRE(b.rf->keyed == true);
+    REQUIRE(dmr.rfKeyed() == true);
+    REQUIRE(b.status.opStatus == TX);
+    REQUIRE(dmr.txAudioPathId() < 0);
+
+    /* The slot after: released once, reception back on */
+    b.tick();
+    REQUIRE(b.rf->disableRtx == 1);
+    REQUIRE(b.rf->enableRx == enableRx + 1);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(b.rf->keyed == false);
+    REQUIRE(dmr.rfKeyed() == false);
+    REQUIRE(b.status.opStatus == RX);
+    REQUIRE(b.status.dmr_mon.rfKeyed == 1);
+
+    b.ticks(6);
+    REQUIRE(b.rf->disableRtx == 1);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(b.rec->txSlots == 22);
+
+    /* A second transmission keys again, and is released once again after
+     * its own terminator */
+    emulator_state.PTTstatus = true;
+    b.tick();
+    REQUIRE(b.rf->enableTx == 2);
+    REQUIRE(b.status.dmr_mon.rfKeyed == 2);
+    emulator_state.PTTstatus = false;
+    n = 0;
+    while (b.ctrlState() >= CallController::TX_ARM) {
+        b.tick();
+        REQUIRE(++n < 40);
+    }
+    REQUIRE(b.rf->disableRtx == 1);
+    b.tick();
+    REQUIRE(b.rf->disableRtx == 2);
+    REQUIRE(b.rec->terminators == 2);
+}
+
+TEST_CASE("DMR OpMode TX: the chip's TX-end report releases the RF before "
+          "the next timeslot",
+          "[dmr][rtx][tx]")
+{
+    Bench b;
+    b.start();
+    b.ticks(6);
+
+    emulator_state.PTTstatus = true;
+    b.ticks(8);
+    REQUIRE(b.ctrlState() == CallController::TX_VOICE);
+    emulator_state.PTTstatus = false;
+    unsigned n = 0;
+    while (b.ctrlState() != CallController::TX_TERM) {
+        b.tick();
+        REQUIRE(++n < 16);
+    }
+    b.tick();
+    REQUIRE(b.ctrlState() < CallController::TX_ARM);
+    REQUIRE(dmr.rfKeyed() == true);
+    REQUIRE(b.rf->disableRtx == 0);
+
+    /* 0x82 bit5 with sub-status 0x86 bit7: service TX finished */
+    struct dmrbbSnapshot s;
+    memset(&s, 0x00, sizeof(s));
+    s.irq82 = R82_TX_END;
+    s.sub86 = 0x80;
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(dmr.rfKeyed() == false);
+    REQUIRE(b.rf->disableRtx == 1);
+    REQUIRE(b.status.dmr_mon.sub86 == 0x80);
+    REQUIRE(b.status.opStatus == RX);
+
+    /* The following timeslot changes nothing */
+    b.tick();
+    REQUIRE(b.rf->disableRtx == 1);
+}
+
+TEST_CASE("DMR OpMode TX: a rejected transmission unkeys at once with the "
+          "busy marker",
+          "[dmr][rtx][tx]")
+{
+    Bench b;
+    b.start();
+    b.ticks(6);
+
+    emulator_state.PTTstatus = true;
+    b.ticks(3);
+    REQUIRE(b.ctrlState() == CallController::TX_HEADER);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(b.rf->disableRtx == 0);
+
+    /* 0x82 bit7: the modem refused to transmit over the busy channel */
+    struct dmrbbSnapshot s;
+    memset(&s, 0x00, sizeof(s));
+    s.irq82 = R82_TX_REJECTED;
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.rf->disableRtx == 1);
+    REQUIRE(b.rf->keyed == false);
+    REQUIRE(dmr.rfKeyed() == false);
+    REQUIRE(b.status.opStatus == RX);
+    REQUIRE(b.status.dmr_callState == DMR_CALL_IDLE);
+    REQUIRE((b.status.dmr_markers & DMR_MARK_BUSY) != 0);
+    REQUIRE(b.rec->r40 == R40_RX);
+    REQUIRE(dmr.txAudioPathId() < 0);
+
+    /* PTT still held: nothing, marker kept */
+    b.ticks(4);
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE((b.status.dmr_markers & DMR_MARK_BUSY) != 0);
+
+    /* Released and pressed again: the marker clears, a new transmission */
+    emulator_state.PTTstatus = false;
+    b.tick();
+    emulator_state.PTTstatus = true;
+    b.tick();
+    REQUIRE(b.ctrlState() >= CallController::TX_ARM);
+    REQUIRE(b.status.dmr_markers == 0);
+    REQUIRE(b.rf->enableTx == 2);
+}
+
+TEST_CASE("DMR OpMode TX: T_TO ends the transmission after the superframe",
+          "[dmr][rtx][tx]")
+{
+    Bench b;
+    dmr.setTxTimeout(1000);
+    b.start();
+    b.ticks(6);
+    REQUIRE(dmr.controller().config().txTimeoutMs == 1000);
+
+    emulator_state.PTTstatus = true;
+    unsigned n = 0;
+    while (b.ctrlState() != CallController::TX_VOICE) {
+        b.tick();
+        REQUIRE(++n < 10);
+    }
+    b.ticks(12);
+    REQUIRE(b.ctrlState() == CallController::TX_VOICE);
+    REQUIRE(b.rec->voiceBursts == 6);
+
+    /* One second in: the transmission ends at the superframe boundary,
+     * the terminator right after burst F */
+    sleepFor(1, 100);
+    n = 0;
+    while (b.ctrlState() != CallController::TX_TERM) {
+        b.tick();
+        REQUIRE(++n < 16);
+    }
+    REQUIRE(b.rec->terminators == 1);
+    REQUIRE(b.rec->voiceBursts == 6);
+    REQUIRE(b.rec->r50 == R50_TERMINATOR);
+
+    /* PTT still held: back to RX, released the slot after, no restart */
+    b.tick();
+    REQUIRE(b.ctrlState() < CallController::TX_ARM);
+    b.tick();
+    REQUIRE(b.rf->disableRtx == 1);
+    REQUIRE(b.status.opStatus == RX);
+    b.ticks(6);
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(b.status.dmr_markers == 0);
+
+    /* Released and pressed again: a new transmission */
+    emulator_state.PTTstatus = false;
+    b.tick();
+    emulator_state.PTTstatus = true;
+    b.tick();
+    REQUIRE(b.ctrlState() >= CallController::TX_ARM);
+    REQUIRE(b.rf->enableTx == 2);
+
+    dmr.setTxTimeout(T_TO_S * 1000);
+}
+
+TEST_CASE("DMR OpMode TX: a silent repeater channel is woken up, the RF "
+          "keyed per attempt, and the failure unkeys with the marker",
+          "[dmr][rtx][tx]")
+{
+    Bench b;
+    b.status.txFrequency = 435000000;
+    b.start();
+    b.ticks(6);
+    REQUIRE(dmr.controller().config().repeater == true);
+
+    /* No base station carrier: wake-up, keyed for the CSBK */
+    emulator_state.PTTstatus = true;
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::TX_WAKEUP);
+    REQUIRE(b.status.dmr_callState == DMR_CALL_TX_WAKEUP);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(b.rec->activeTiming == true);
+    REQUIRE(b.status.opStatus == TX);
+
+    unsigned n = 0;
+    while (b.rec->csbks == 0) {
+        b.tick();
+        REQUIRE(++n < 4);
+    }
+    uint8_t expected[CSBK_DATA_BYTES];
+    buildBsDwnAct(OWN_ID, expected);
+    REQUIRE(memcmp(b.rec->lc, expected, CSBK_DATA_BYTES) == 0);
+    REQUIRE(b.rec->r50 == R50_CSBK);
+    REQUIRE(b.rf->disableRtx == 0);
+
+    /* CSBK slot: modem back in RX, RF still keyed; released the slot after */
+    b.tick();
+    REQUIRE(b.rec->r40 == R40_RX);
+    REQUIRE(dmr.rfKeyed() == true);
+    b.tick();
+    REQUIRE(dmr.rfKeyed() == false);
+    REQUIRE(b.rf->disableRtx == 1);
+    REQUIRE(b.ctrlState() == CallController::TX_WAKEUP);
+    REQUIRE(b.status.dmr_callState == DMR_CALL_TX_WAKEUP);
+    REQUIRE(b.status.opStatus == RX);
+
+    /* T_SyncWu without an answer: second attempt */
+    sleepFor(0, T_SYNCWU_MS + 40);
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::TX_WAKEUP);
+    REQUIRE(b.rf->enableTx == 2);
+    n = 0;
+    while (b.rec->csbks < 2) {
+        b.tick();
+        REQUIRE(++n < 4);
+    }
+    b.ticks(2);
+    REQUIRE(b.rf->disableRtx == 2);
+
+    /* Second T_SyncWu: given up, marker, RX */
+    sleepFor(0, T_SYNCWU_MS + 40);
+    b.tick();
+    REQUIRE(b.ctrlState() < CallController::TX_ARM);
+    REQUIRE((b.status.dmr_markers & DMR_MARK_WAKEUP_FAILED) != 0);
+    REQUIRE(b.status.dmr_callState == DMR_CALL_IDLE);
+    REQUIRE(dmr.rfKeyed() == false);
+    REQUIRE(b.rf->enableTx == 2);
+    REQUIRE(b.rf->disableRtx == 2);
+    REQUIRE(b.rec->headers == 0);
+    REQUIRE(dmr.txAudioPathId() < 0);
+
+    /* PTT held: nothing more */
+    b.ticks(4);
+    REQUIRE(b.rf->enableTx == 2);
+    emulator_state.PTTstatus = false;
+}
+
+TEST_CASE("DMR OpMode TX: a repeater answering the wake-up gets the call "
+          "in passive timing",
+          "[dmr][rtx][tx]")
+{
+    Bench b;
+    b.status.txFrequency = 435000000;
+    b.start();
+    b.ticks(6);
+
+    emulator_state.PTTstatus = true;
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::TX_WAKEUP);
+    unsigned n = 0;
+    while (b.rec->csbks == 0) {
+        b.tick();
+        REQUIRE(++n < 4);
+    }
+    b.ticks(2);
+    REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(b.rf->disableRtx == 1);
+
+    /* The repeater comes up: BS sourced bursts lock the timecode */
+    dmrEmu_injectGroupCall(CALLER, 9, 1, 1, 30);
+    REQUIRE(b.runUntil(CallController::TX_HEADER, 100));
+    REQUIRE(b.rec->startTxCount == 2);
+    REQUIRE(b.rec->activeTiming == false);
+    REQUIRE(b.rec->r40 == R40_TX_RMO);
+    REQUIRE(b.rf->enableTx == 2);
+    REQUIRE(b.status.dmr_callState == DMR_CALL_TX);
+    REQUIRE(b.status.opStatus == TX);
+
+    REQUIRE(b.runUntil(CallController::TX_VOICE, 40));
+    REQUIRE(b.rec->headers == 3);
+    REQUIRE(b.rec->csbks == 1);
+    REQUIRE((b.status.dmr_markers & DMR_MARK_WAKEUP_FAILED) == 0);
+
+    emulator_state.PTTstatus = false;
+    n = 0;
+    while (b.ctrlState() >= CallController::TX_ARM) {
+        b.tick();
+        REQUIRE(++n < 40);
+    }
+    b.ticks(2);
+    REQUIRE(b.rf->disableRtx == 2);
+    b.drain();
+}
+
+TEST_CASE("DMR OpMode TX: the LCSS convention follows the RTX status",
+          "[dmr][rtx][tx]")
+{
+    Bench b;
+    b.status.dmr_lcssMode = 1;
+    b.start();
+    b.ticks(6);
+    REQUIRE(dmr.controller().config().lcssMode == LCSS_MODE_MANUAL);
+    REQUIRE(b.rec->configureCount == 1);
+
+    emulator_state.PTTstatus = true;
+    unsigned n = 0;
+    while (b.ctrlState() != CallController::TX_VOICE) {
+        b.tick();
+        REQUIRE(++n < 10);
+    }
+    for (unsigned i = 0; i < 12; i++) {
+        b.tick();
+        REQUIRE(b.rec->r41 == R41_IDLE);
+        b.tick();
+        REQUIRE(b.rec->r41 == R41_TX);
+        REQUIRE(b.rec->r50 == R50_VOICE_MANUAL[i % 6]);
+    }
+    REQUIRE(b.rec->voiceBursts == 12);
+    emulator_state.PTTstatus = false;
+    b.ticks(16);
+    REQUIRE(b.ctrlState() < CallController::TX_ARM);
+
+    /* Back to the chip-filled convention: no modem reprogramming */
+    b.status.dmr_lcssMode = 0;
+    dmr.update(&b.status, true);
+    REQUIRE(dmr.controller().config().lcssMode == LCSS_MODE_CHIP);
+    REQUIRE(b.rec->configureCount == 1);
 }

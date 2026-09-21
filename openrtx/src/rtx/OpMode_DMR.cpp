@@ -31,6 +31,7 @@ OpMode_DMR::OpMode_DMR()
     , txVoiceStarted(false)
     , markerRaised(false)
     , markerMs(0)
+    , txTimeoutMs(T_TO_S * 1000)
     , rfState(RF_OFF)
     , markers(0)
 {
@@ -136,6 +137,15 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
      */
     c.repeater = (status->rxFrequency != status->txFrequency);
     c.hangTimeMs = (uint16_t)(state.settings.dmr_hangTime * 1000);
+    c.txTimeoutMs = txTimeoutMs;
+
+    /*
+     * LCSS convention of the voice bursts (register 0x50), a runtime choice
+     * of the DMR monitor screen until the on-air test settles it
+     * (UNVERIFIED on hardware, see DMR::r50Voice()).
+     */
+    c.lcssMode = (status->dmr_lcssMode != 0) ? LCSS_MODE_MANUAL :
+                                               LCSS_MODE_CHIP;
 
     struct dmrbbConfig bb;
     bb.colorCode = status->dmr_txColorCode & 0x0F;
@@ -231,7 +241,9 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
     bool ptt = platform_getPttStatus() && (status->txDisable == 0);
     ctrl.setPtt(ptt, now);
 
-    if (cfgPending && (ctrl.state() < CallController::TX_ARM))
+    /* A deferred reconfiguration waits for the last burst to go out too */
+    if (cfgPending && (ctrl.state() < CallController::TX_ARM)
+        && !ctrl.report().rfKey)
         applyConfig(status, true);
 
     /* No timeslot interrupt for two seconds: reprogram the modem */
@@ -242,8 +254,29 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
     monitor(ev);
     publish(status);
 
-    /* Operating status for the RSSI filter and the UI */
-    status->opStatus = (ctrl.state() >= CallController::TX_ARM) ? TX : RX;
+    /* Operating status for the RSSI filter and the UI: TX while keyed */
+    status->opStatus = (rfState == RF_TX) ? TX : RX;
+}
+
+void OpMode_DMR::keyRf(bool key)
+{
+    if (key && (rfState != RF_TX)) {
+        radio_enableTx();
+        rfState = RF_TX;
+        if (mon.rfKeyed < UINT16_MAX)
+            mon.rfKeyed++;
+    } else if (!key && (rfState != RF_RX)) {
+        /*
+         * The RF chain is released as the FM and M17 handlers do: the TX
+         * stage off, then the receiver back on. The modem itself was put
+         * back into reception by the controller when it programmed the
+         * last burst.
+         */
+        if (rfState == RF_TX)
+            radio_disableRtx();
+        radio_enableRx();
+        rfState = RF_RX;
+    }
 }
 
 void OpMode_DMR::followState(uint32_t nowMs)
@@ -251,14 +284,13 @@ void OpMode_DMR::followState(uint32_t nowMs)
     const CallController::Report &r = ctrl.report();
     bool tx = (ctrl.state() >= CallController::TX_ARM);
 
-    /* RF stage: TX while the controller transmits, RX otherwise */
-    if (tx && (rfState != RF_TX)) {
-        radio_enableTx();
-        rfState = RF_TX;
-    } else if (!tx && (rfState != RF_RX)) {
-        radio_enableRx();
-        rfState = RF_RX;
-    }
+    /*
+     * RF stage: keyed from the moment the modem is armed, before the first
+     * header slot is programmed, until the terminator (or the wake-up CSBK)
+     * has gone out; released at once by a rejected or aborted transmission.
+     * The controller tracks that in its report.
+     */
+    keyRf(r.rfKey);
 
     /*
      * Speaker path: opened when a call is received, kept through the hang
@@ -302,7 +334,7 @@ void OpMode_DMR::followState(uint32_t nowMs)
      * last header, the first voice burst comes at the next own slot).
      */
     bool voice = (ctrl.state() == CallController::TX_VOICE);
-    if (tx) {
+    if (tx && (ctrl.state() != CallController::TX_TERM)) {
         if (audioPath_getStatus(txAudioPath) == PATH_CLOSED) {
             txAudioPath = audioPath_request(SOURCE_MIC, SINK_MCU, PRIO_TX);
             txAudioFailed = false;
@@ -315,6 +347,9 @@ void OpMode_DMR::followState(uint32_t nowMs)
 
         if (voice && !txVoiceStarted)
             audioLink.startVoice();
+    } else if (tx) {
+        if (dmrAudio_running())
+            dmrAudio_stop();
     } else if (txAudioPath >= 0) {
         dmrAudio_stop();
         audioPath_release(txAudioPath);
@@ -365,6 +400,13 @@ void OpMode_DMR::followState(uint32_t nowMs)
 void OpMode_DMR::monitor(uint32_t ev)
 {
     mon.timecode = ctrl.report().timecode;
+
+    /* Transmit side of the audio layer, see DmrAudioLink */
+    mon.txBursts = audioLink.txRequests;
+    mon.txSilent = audioLink.txRequests - audioLink.txFrames;
+    mon.txUnderruns = (audioLink.txUnderruns > UINT16_MAX) ?
+                          UINT16_MAX :
+                          (uint16_t)audioLink.txUnderruns;
 
     /*
      * The interrupt counters are refreshed by the driver on every wait,
