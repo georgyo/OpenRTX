@@ -127,6 +127,7 @@ target_sources(app
     openrtx/src/protocols/DMR/FEC/EmbeddedLc.cpp
     openrtx/src/protocols/DMR/FEC/SlotType.cpp
     openrtx/src/protocols/DMR/FEC/Emb.cpp
+    openrtx/src/protocols/DMR/FEC/ShortLc.cpp
     openrtx/src/protocols/DMR/LinkControl.cpp
     openrtx/src/protocols/DMR/CallController.cpp
     openrtx/src/protocols/DMR/Silence.c

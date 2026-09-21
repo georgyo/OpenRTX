@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include "protocols/DMR/LinkControl.hpp"
+#include "protocols/DMR/FEC/Crc.hpp"
 
 extern "C" {
 #include "core/crc.h"
@@ -225,4 +226,62 @@ FullLC DMR::lcFromChannel(const channel_t &channel, const contact_t *contact,
     lc.src = ownId & ADDRESS_MASK;
 
     return lc;
+}
+
+bool ActivityUpdate::unpack(uint32_t shortLc)
+{
+    if (((shortLc >> 24) & 0x0F) != SLCO_ACT_UPDT)
+        return false;
+
+    activity[0] = (shortLc >> 20) & 0x0F;
+    activity[1] = (shortLc >> 16) & 0x0F;
+    hash[0] = (shortLc >> 8) & 0xFF;
+    hash[1] = shortLc & 0xFF;
+
+    return true;
+}
+
+uint32_t ActivityUpdate::pack() const
+{
+    return ((uint32_t)SLCO_ACT_UPDT << 24)
+         | ((uint32_t)(activity[0] & 0x0F) << 20)
+         | ((uint32_t)(activity[1] & 0x0F) << 16) | ((uint32_t)hash[0] << 8)
+         | hash[1];
+}
+
+bool ActivityUpdate::busy(uint8_t timeslot) const
+{
+    if ((timeslot < 1) || (timeslot > 2))
+        return false;
+
+    return activity[timeslot - 1] != ACT_NONE;
+}
+
+bool ActivityUpdate::voice(uint8_t timeslot) const
+{
+    if ((timeslot < 1) || (timeslot > 2))
+        return false;
+
+    switch (activity[timeslot - 1]) {
+        case ACT_GROUP_VOICE:
+        case ACT_INDIVIDUAL_VOICE:
+        case ACT_EMERGENCY_GROUP:
+        case ACT_EMERGENCY_INDIVID:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool ActivityUpdate::matches(uint8_t timeslot, uint32_t dst) const
+{
+    if ((timeslot < 1) || (timeslot > 2))
+        return false;
+
+    return hash[timeslot - 1] == hashAddress(dst);
+}
+
+uint8_t ActivityUpdate::hashAddress(uint32_t dst)
+{
+    return FEC::Crc::crc8Bits(dst & ADDRESS_MASK, 24);
 }
