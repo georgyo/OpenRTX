@@ -1009,6 +1009,7 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
     REQUIRE(sectionStart[DMRMON_TS]);
     REQUIRE(sectionStart[DMRMON_R51]);
     REQUIRE(sectionStart[DMRMON_LC_LO]);
+    REQUIRE(sectionStart[DMRMON_AUD_VOCODER]);
     REQUIRE(sectionStart[DMRMON_ACT_RESYNC]);
     REQUIRE(actionPages == 1);
 
@@ -1054,6 +1055,8 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
     REQUIRE(monitorEntry(DMRMON_R82) == "0x82");
     REQUIRE(monitorEntry(DMRMON_R5F) == "0x5F");
     REQUIRE(monitorEntry(DMRMON_LC_HI) == "LC 6-11");
+    REQUIRE(monitorEntry(DMRMON_AUD_VOCODER) == "Vocoder");
+    REQUIRE(monitorEntry(DMRMON_AUD_OVER) == "Overrun");
     REQUIRE(monitorEntry(DMRMON_ACT_RESYNC) == currentLanguage->resync);
     REQUIRE(monitorEntry(DMRMON_ACT_BER) == currentLanguage->berTest);
     REQUIRE(monitorEntry(DMRMON_ACT_TWOPOINT) == currentLanguage->twoPointTest);
@@ -1141,6 +1144,13 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     REQUIRE(monitorValue(DMRMON_LC_FLCO) == "0");
     REQUIRE(monitorValue(DMRMON_LC_FID) == "00");
     REQUIRE(monitorValue(DMRMON_LC_CRC) == "ok");
+    REQUIRE(monitorValue(DMRMON_AUD_VOCODER) == dmrAudio_backendName());
+    REQUIRE(monitorValue(DMRMON_AUD_RX) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_VARY) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_OUT) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_TX) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_UNDER) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_OVER) == "0");
     REQUIRE(monitorValue(DMRMON_ACT_RESYNC) == "41<-20");
     REQUIRE(monitorValue(DMRMON_ACT_MODE) == "10<-6A");
     REQUIRE(monitorValue(DMRMON_ACT_R06) == "06<-21");

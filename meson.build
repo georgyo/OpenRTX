@@ -1424,6 +1424,24 @@ if build_machine.system() != 'darwin'
                                     link_args           : linux_l_args + ['-Wl,--wrap=pthread_join'])
 endif
 
+# DMR audio thread test: the modules under test with a fake audio driver paced
+# by the test and a fake vocoder backend, both provided by the test itself, and
+# the same pthread_join() wrap as the audio threading test.
+if build_machine.system() != 'darwin'
+  dmr_audio_test = executable('dmr_audio_test',
+                              sources : ['openrtx/src/core/dmr_audio.c',
+                                         'openrtx/src/core/audio_stream.c',
+                                         'openrtx/src/core/audio_path.cpp',
+                                         'openrtx/src/core/dsp.cpp',
+                                         'openrtx/src/protocols/DMR/Silence.c',
+                                         'tests/unit/dmr_audio.cpp'],
+                              c_args              : linux_c_args,
+                              cpp_args            : linux_cpp_args,
+                              include_directories : linux_inc,
+                              dependencies        : [threads_dep, catch2_dep],
+                              link_args           : linux_l_args + ['-Wl,--wrap=pthread_join'])
+endif
+
 # HR_Cx000 DAC driver test, built against the fake HR_C6000 in tests/unit/fake
 # which shadows the real header.
 cx000_dac_test = executable('cx000_dac_test',
@@ -1515,6 +1533,7 @@ test('Knob Direction Test',  knob_direction_test)
 test('M17 OpMode PTT Test',  m17_opmode_ptt_test)
 if build_machine.system() != 'darwin'
   test('Audio Threading Test', audio_threading_test)
+  test('DMR Audio Test',       dmr_audio_test)
 endif
 test('Cx000 DAC Test',       cx000_dac_test)
 test('Cx000 DAC DMR Test',   cx000_dac_dmr_test)
