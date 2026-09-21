@@ -28,6 +28,7 @@ OpMode_DMR::OpMode_DMR()
     , cfgPending(false)
     , rxAudioFailed(false)
     , txAudioFailed(false)
+    , txVoiceStarted(false)
     , markerRaised(false)
     , markerMs(0)
     , rfState(RF_OFF)
@@ -59,6 +60,7 @@ void OpMode_DMR::enable()
     cfgPending = false;
     rxAudioFailed = false;
     txAudioFailed = false;
+    txVoiceStarted = false;
     markerRaised = false;
     rfState = RF_OFF;
     markers = ready ? 0 : DMR_MARK_NOT_SUPPORTED;
@@ -77,6 +79,16 @@ void OpMode_DMR::disable()
 {
     bool wasEnabled = enabled;
 
+    /*
+     * The audio thread goes first: its output stream is the Cx000 DAC of
+     * the same chip the modem driver reprograms at terminate. Note that
+     * rtx_task() calls radio_setOpmode() before disable() on a mode switch,
+     * which on the CS7000 radios already terminates the modem driver and
+     * sets the chip back to FM: the thread's drain then runs on a chip in
+     * FM mode whatever the order here, see docs/dmr_bringup.md 4.4.
+     */
+    dmrAudio_stop();
+
     if (enabled) {
         ctrl.disable();
         if (ready)
@@ -94,8 +106,7 @@ void OpMode_DMR::disable()
     platform_ledOff(GREEN);
     platform_ledOff(RED);
 
-    /* The audio thread goes before its path and its backend */
-    dmrAudio_stop();
+    /* Then its paths and its backend */
     audioPath_release(rxAudioPath);
     audioPath_release(txAudioPath);
     rxAudioPath = -1;
@@ -168,10 +179,22 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
     ctrl.configure(cfg);
     cfgPending = false;
 
-    if (modemChange) {
-        dmrbb_configure(&bbCfg);
-        ctrl.enable((uint32_t)getTick());
-    }
+    if (modemChange)
+        reprogramModem((uint32_t)getTick());
+}
+
+void OpMode_DMR::reprogramModem(uint32_t nowMs)
+{
+    /*
+     * Reprogramming the modem restarts the controller, which drops the call
+     * being received: the playback thread is stopped first, before the
+     * driver rewrites the registers its DAC stream shares (0x06 on the
+     * CS7000 radios). followState() releases the speaker path afterwards,
+     * the report of the restarted controller no longer being in a call.
+     */
+    dmrAudio_stop();
+    dmrbb_configure(&bbCfg);
+    ctrl.enable(nowMs);
 }
 
 void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
@@ -211,11 +234,9 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
     if (cfgPending && (ctrl.state() < CallController::TX_ARM))
         applyConfig(status, true);
 
-    if (ctrl.report().needsReconfigure) {
-        /* No timeslot interrupt for two seconds: reprogram the modem */
-        dmrbb_configure(&bbCfg);
-        ctrl.enable(now);
-    }
+    /* No timeslot interrupt for two seconds: reprogram the modem */
+    if (ctrl.report().needsReconfigure)
+        reprogramModem(now);
 
     followState(now);
     monitor(ev);
@@ -269,24 +290,37 @@ void OpMode_DMR::followState(uint32_t nowMs)
     }
 
     /*
-     * Microphone path: for the whole transmission, wake-up included; the
-     * encoder thread with it (its payloads go out from the first voice
-     * burst, the wake-up and the headers carry no voice).
+     * Microphone path: for the whole transmission, wake-up included, so
+     * that the microphone is up before it is needed. The encoder thread
+     * only from the headers on: its payloads go out from the first voice
+     * burst, and a queue filled through a repeater wake-up would have its
+     * oldest payloads dropped as overruns for nothing. What the three
+     * headers leave in the queue is flushed down to the newest payload when
+     * the voice bursts begin, so that the first one carries the audio of
+     * the last 60 ms, not of the headers (once per transmission, before
+     * the first burst is programmed: the controller enters TX_VOICE on the
+     * last header, the first voice burst comes at the next own slot).
      */
+    bool voice = (ctrl.state() == CallController::TX_VOICE);
     if (tx) {
         if (audioPath_getStatus(txAudioPath) == PATH_CLOSED) {
             txAudioPath = audioPath_request(SOURCE_MIC, SINK_MCU, PRIO_TX);
             txAudioFailed = false;
         }
 
-        if ((audioPath_getStatus(txAudioPath) == PATH_OPEN) && !txAudioFailed
+        if ((ctrl.state() >= CallController::TX_HEADER)
+            && (audioPath_getStatus(txAudioPath) == PATH_OPEN) && !txAudioFailed
             && (dmrAudio_running() == false))
             txAudioFailed = !dmrAudio_startTx(txAudioPath);
+
+        if (voice && !txVoiceStarted)
+            audioLink.startVoice();
     } else if (txAudioPath >= 0) {
         dmrAudio_stop();
         audioPath_release(txAudioPath);
         txAudioPath = -1;
     }
+    txVoiceStarted = voice;
 
     /*
      * Markers: the controller keeps them until the next PTT press, the UI

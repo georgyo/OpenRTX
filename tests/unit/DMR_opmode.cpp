@@ -708,6 +708,57 @@ TEST_CASE("DMR OpMode: no microphone device, the encoder is refused and "
     REQUIRE(dmrAudio_running() == false);
 }
 
+TEST_CASE("DMR OpMode: the encoder queue is flushed once when the voice "
+          "bursts begin, before the first one",
+          "[dmr][rtx]")
+{
+    Bench b;
+    b.start();
+    b.ticks(6);
+    REQUIRE(dmr.audio().txFlushes == 0);
+
+    /* Through the headers: no voice burst requested, no flush yet */
+    emulator_state.PTTstatus = true;
+    unsigned n = 0;
+    while (b.ctrlState() != CallController::TX_VOICE) {
+        b.tick();
+        REQUIRE(++n < 12);
+        if (b.ctrlState() != CallController::TX_VOICE)
+            REQUIRE(dmr.audio().txFlushes == 0);
+    }
+
+    /* The controller entered TX_VOICE on the last header: flushed at once,
+     * the first voice burst is still to come */
+    REQUIRE(dmr.audio().txFlushes == 1);
+    REQUIRE(dmr.audio().txRequests == 0);
+
+    /* Once per transmission */
+    b.ticks(8);
+    REQUIRE(dmr.audio().txRequests == 4);
+    REQUIRE(dmr.audio().txFlushes == 1);
+
+    /* The next transmission flushes again */
+    emulator_state.PTTstatus = false;
+    n = 0;
+    while (b.ctrlState() >= CallController::TX_ARM) {
+        b.tick();
+        REQUIRE(++n < 30);
+    }
+    REQUIRE(dmr.audio().txFlushes == 1);
+
+    b.ticks(6);
+    emulator_state.PTTstatus = true;
+    n = 0;
+    while (b.ctrlState() != CallController::TX_VOICE) {
+        b.tick();
+        REQUIRE(++n < 12);
+    }
+    REQUIRE(dmr.audio().txFlushes == 2);
+    REQUIRE(dmr.audio().txRequests == 6);
+
+    emulator_state.PTTstatus = false;
+}
+
 TEST_CASE("DMR OpMode: a voice prompt suspends the RX path, playback resumes "
           "after it",
           "[dmr][rtx]")

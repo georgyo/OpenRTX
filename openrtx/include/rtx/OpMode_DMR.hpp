@@ -94,7 +94,8 @@ public:
 class DmrAudioLink : public DMR::VoiceSink
 {
 public:
-    DmrAudioLink() : rxFrames(0), rxQueued(0), txRequests(0), txFrames(0)
+    DmrAudioLink()
+        : rxFrames(0), rxQueued(0), txRequests(0), txFrames(0), txFlushes(0)
     {
     }
 
@@ -115,18 +116,30 @@ public:
         return true;
     }
 
+    /**
+     * The voice bursts of a transmission are about to begin: drop the
+     * payloads encoded while the headers went out, but the newest one.
+     */
+    void startVoice()
+    {
+        txFlushes++;
+        dmrAudio_flushTx();
+    }
+
     void reset()
     {
         rxFrames = 0;
         rxQueued = 0;
         txRequests = 0;
         txFrames = 0;
+        txFlushes = 0;
     }
 
     uint32_t rxFrames;   /**< Voice bursts received since reset()          */
     uint32_t rxQueued;   /**< Of which taken by the audio layer            */
     uint32_t txRequests; /**< Voice bursts requested since reset()         */
     uint32_t txFrames;   /**< Of which filled by the audio layer           */
+    uint32_t txFlushes;  /**< Transmissions whose voice bursts began       */
 };
 
 /**
@@ -257,6 +270,14 @@ private:
     void applyConfig(const rtxStatus_t *const status, bool force);
 
     /**
+     * Reprogram the modem with bbCfg and restart the controller, the
+     * playback thread being stopped first.
+     *
+     * @param nowMs: current time.
+     */
+    void reprogramModem(uint32_t nowMs);
+
+    /**
      * Request and release the audio paths, start and stop the audio thread
      * on them, drive the RF stage and the LEDs according to the controller
      * state.
@@ -297,6 +318,7 @@ private:
     bool cfgPending;                 ///< Modem reconfiguration deferred (TX)
     bool rxAudioFailed;              ///< dmrAudio_startRx() refused the path
     bool txAudioFailed;              ///< dmrAudio_startTx() refused the path
+    bool txVoiceStarted;             ///< Controller seen in TX_VOICE
     bool markerRaised;               ///< A clearable marker is shown
     uint32_t markerMs;               ///< When the marker was raised
     uint8_t rfState;                 ///< RfState of the RF stage
