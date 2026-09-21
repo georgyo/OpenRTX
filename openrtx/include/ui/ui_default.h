@@ -189,11 +189,12 @@ enum settingsDMRItems
 #ifdef CONFIG_DMR
 /*
  * Rows of the DMR monitor (bring-up) screen, Settings > DMR > DMR monitor.
- * The rows are grouped in four sections, each starting on a new page and
+ * The rows are grouped in five sections, each starting on a new page and
  * spanning as many pages as the screen height requires: 1. interrupt
  * counters, slot lock and 0x82 flags; 2. status registers; 3. link control;
- * 4. actions, register writes selected with UP/DOWN and run with ENTER.
- * Register numbers are those of the HR_C6000 CONFIG page.
+ * 4. audio layer (vocoder backend and the dmr_audio counters); 5. actions,
+ * register writes selected with UP/DOWN and run with ENTER. Register
+ * numbers are those of the HR_C6000 CONFIG page.
  */
 enum dmrMonitorRows
 {
@@ -229,6 +230,13 @@ enum dmrMonitorRows
     DMRMON_LC_FLCO,       // decoded FLCO
     DMRMON_LC_FID,        // decoded FID
     DMRMON_LC_CRC,        // chip CRC verdict and parse result
+    DMRMON_AUD_VOCODER,   // vocoder backend name
+    DMRMON_AUD_RX,        // payloads pushed to the playback queue
+    DMRMON_AUD_VARY,      // of which differing from the previous one
+    DMRMON_AUD_OUT,       // 480-sample blocks written to the speaker
+    DMRMON_AUD_TX,        // payloads encoded from the microphone
+    DMRMON_AUD_UNDER,     // silent blocks inserted inside a call
+    DMRMON_AUD_OVER,      // payloads dropped from a full queue
     DMRMON_ACT_RESYNC,    // 0x81 = 0xFE, 0x41 = 0x20
     DMRMON_ACT_MODE,      // 0x10 = 0x6E / 0x6A
     DMRMON_ACT_R06,       // 0x06 = next variant
@@ -239,7 +247,7 @@ enum dmrMonitorRows
 };
 
 // First row of each section of the monitor screen, in order
-#define DMRMON_SECTION_NUM   4
+#define DMRMON_SECTION_NUM   5
 #define DMRMON_ACTION_FIRST  DMRMON_ACT_RESYNC
 #define DMRMON_ACTION_NUM    (DMRMON_ROWS_NUM - DMRMON_ACT_RESYNC)
 
