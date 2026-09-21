@@ -139,6 +139,7 @@ public:
         bool noId;               /* marker: PTT refused, no DMR ID     */
         bool busy;               /* marker: TX rejected, channel busy  */
         bool wakeupFailed;       /* marker: repeater did not answer    */
+        bool rfFailed;           /* marker: RF stage refused to key    */
         bool needsReconfigure;   /* no timeslot interrupt for 2 s      */
         bool rfKey;              /* RF stage to be keyed for TX: raised
                                     when the modem is armed, before the
@@ -234,7 +235,17 @@ public:
     void onTimeout(uint32_t nowMs);
 
     /**
-     * Clear the top-bar markers (noId, busy, wakeupFailed).
+     * The RF stage refused to key for the transmission just armed (the
+     * synthesizer did not lock): abort it at once, releasing the RF and
+     * raising the rfFailed marker. The PTT stays latched until released.
+     * Ignored outside the TX states.
+     *
+     * @param nowMs: current time.
+     */
+    void rfFailed(uint32_t nowMs);
+
+    /**
+     * Clear the top-bar markers (noId, busy, wakeupFailed, rfFailed).
      */
     void clearMarkers();
 

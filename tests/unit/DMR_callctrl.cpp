@@ -317,10 +317,11 @@ public:
         sys(s);
     }
 
-    void flags(uint8_t irq)
+    void flags(uint8_t irq, uint8_t sub86 = 0)
     {
         dmrbbSnapshot s = blank();
         s.irq82 = irq;
+        s.sub86 = sub86;
         sys(s);
     }
 
@@ -1821,22 +1822,51 @@ TEST_CASE("DMR TX RF keying: the TX-end report or the timer release it",
         REQUIRE(b.ctrl.report().rfKey == true);
     };
 
-    /* 0x82 bit5 (TX end, sub-status 0x86) before the next timeslot */
+    /* 0x82 bit5 with the 0x86 bit7 "service transmission completely
+     * terminated" sub-status, before the next timeslot */
     {
         Bench b;
         toTerminatorSlot(b);
-        b.flags(R82_TX_END);
+        b.flags(R82_TX_END, R86_TX_COMPLETE);
         REQUIRE(b.ctrl.report().rfKey == false);
         REQUIRE(b.ctrl.state() == CallController::RX_HANG);
         b.ts();
         REQUIRE(b.ctrl.report().rfKey == false);
     }
 
-    /* Other flags do not release it */
+    /* The same bit5 raised by the per-slot Layer 2 deadline interrupt
+     * (0x86 bit4, Rdy_lst_inter) lands while the terminator is still on
+     * the air: it does not release the RF, the next timeslot does */
     {
         Bench b;
         toTerminatorSlot(b);
-        b.flags(R82_TX_START);
+        b.flags(R82_TX_END, R86_RDY_LST);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        b.ts();
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* Nor do the data events or an empty sub-status; bit7 next to them
+     * does, whatever else is set */
+    {
+        Bench b;
+        toTerminatorSlot(b);
+        b.flags(R82_TX_END, 0x40);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.flags(R82_TX_END, 0x00);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.flags(R82_TX_END, 0x08);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.flags(R82_TX_END, R86_TX_COMPLETE | R86_RDY_LST);
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* Other flags do not release it, even with the sub-status set */
+    {
+        Bench b;
+        toTerminatorSlot(b);
+        b.flags(R82_TX_START, R86_TX_COMPLETE);
         REQUIRE(b.ctrl.report().rfKey == true);
         b.ts();
         REQUIRE(b.ctrl.report().rfKey == false);
@@ -1857,10 +1887,59 @@ TEST_CASE("DMR TX RF keying: the TX-end report or the timer release it",
     {
         Bench b;
         b.settle();
-        b.flags(R82_TX_END);
+        b.flags(R82_TX_END, R86_TX_COMPLETE);
         REQUIRE(b.ctrl.report().rfKey == false);
         REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
     }
+}
+
+TEST_CASE("DMR TX RF keying: an RF stage that refuses to key aborts the "
+          "transmission with the rfFailed marker",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+    REQUIRE(b.ctrl.report().rfFailed == false);
+
+    /* Ignored while receiving */
+    b.ctrl.rfFailed(b.now);
+    REQUIRE(b.ctrl.report().rfFailed == false);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+
+    /* Armed, the RF asked for: the owner reports the failure at once */
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    b.ctrl.rfFailed(b.now);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.report().rfKey == false);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    REQUIRE(b.ctrl.report().busy == false);
+    REQUIRE(b.port.last(W_R40)->value == R40_RX);
+
+    /* Nothing goes out, the PTT is latched until released */
+    b.tsN(4);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.port.count(W_R41, R41_TX) == 0);
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+
+    /* The next press clears the marker and tries again */
+    b.ctrl.setPtt(false, b.now);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    REQUIRE(b.ctrl.report().rfFailed == false);
+    REQUIRE(b.ctrl.report().rfKey == true);
+
+    /* The marker survives a restart, clearMarkers() drops it */
+    b.ctrl.rfFailed(b.now);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    b.ctrl.enable(b.now);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    b.ctrl.clearMarkers();
+    REQUIRE(b.ctrl.report().rfFailed == false);
 }
 
 TEST_CASE("DMR TX RF keying: rejected, aborted and failed transmissions "

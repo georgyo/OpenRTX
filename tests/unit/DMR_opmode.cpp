@@ -1204,16 +1204,26 @@ TEST_CASE("DMR OpMode TX: the chip's TX-end report releases the RF before "
     REQUIRE(dmr.rfKeyed() == true);
     REQUIRE(b.rf->disableRtx == 0);
 
-    /* 0x82 bit5 with sub-status 0x86 bit7: service TX finished */
+    /* 0x82 bit5 with the per-slot Layer 2 deadline sub-status (0x86 bit4,
+     * Rdy_lst_inter) while the terminator is on the air: still keyed */
     struct dmrbbSnapshot s;
     memset(&s, 0x00, sizeof(s));
     s.irq82 = R82_TX_END;
-    s.sub86 = 0x80;
+    s.sub86 = R86_RDY_LST;
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(dmr.rfKeyed() == true);
+    REQUIRE(b.rf->disableRtx == 0);
+    REQUIRE(b.status.dmr_mon.sub86 == R86_RDY_LST);
+    REQUIRE(b.status.opStatus == TX);
+
+    /* 0x82 bit5 with sub-status 0x86 bit7: service TX finished */
+    s.sub86 = R86_TX_COMPLETE;
     dmrEmu_pushSys(&s);
     dmr.update(&b.status, false);
     REQUIRE(dmr.rfKeyed() == false);
     REQUIRE(b.rf->disableRtx == 1);
-    REQUIRE(b.status.dmr_mon.sub86 == 0x80);
+    REQUIRE(b.status.dmr_mon.sub86 == R86_TX_COMPLETE);
     REQUIRE(b.status.opStatus == RX);
 
     /* The following timeslot changes nothing */

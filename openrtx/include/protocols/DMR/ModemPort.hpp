@@ -139,6 +139,22 @@ static constexpr uint8_t R82_ABNORMAL_EXIT = 0x02; /* sub-status 0x98    */
 static constexpr uint8_t R82_PHY_RX = 0x01;        /* test mode only     */
 
 /*
+ * Register 0x86, sub-status of the 0x82 bit5 "TX end" interrupt (manual
+ * §5.1.1: "six interrupts that generate the end of the transmission"): bit7
+ * "the service transmission is completely terminated, including voice and
+ * data", bit6 a data fragment length confirmation sent, bit5 voice OACSU
+ * wait timeout, bit4 the Layer 2 "last processing timing" interrupt raised
+ * every slot as the deadline for programming the next one (Rdy_lst_inter,
+ * manual §5.4.4, multiplexed on SYS_INTER), bit3 a data fragment needing
+ * feedback sent, bit2 short LC. Only bit7 marks the end of a transmission:
+ * the others, bit4 in particular, come while the last burst is still on
+ * the air. UNVERIFIED on hardware: which of them the CS7000 driver's
+ * 0x87 = 0xFF mask actually lets through.
+ */
+static constexpr uint8_t R86_TX_COMPLETE = 0x80; /* service TX finished  */
+static constexpr uint8_t R86_RDY_LST = 0x10;     /* per-slot deadline    */
+
+/*
  * Register 0x51 fields (G4EML).
  */
 static constexpr uint8_t R51_CRC_BAD = 0x04;
