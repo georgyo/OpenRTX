@@ -123,10 +123,14 @@
  * the reverse engineering of the CS7000 (STM32F405) OEM firmware and say
  * SYS_INTER = PC1, RF_TX_INTER = PC2. The CS7000-M17 Plus schematic V01 says
  * TIME_SLOT_INTER = PC0, RF_TX_INTER = PC2, SYS_INTER = PC3 and puts the
- * 2T/5T analogue tone detector on PC1. The driver attaches PC0..PC3 all four
- * with a counter each during bring-up and dispatches with the constants
- * below; fix DMR_SYS_INT per target from what the DMR monitor screen shows.
- * RF_RX_INTER is not wired to the MCU.
+ * 2T/5T analogue tone detector on PC1. The driver (dmr_CS7000.cpp) attaches
+ * PC0..PC3 all four with a counter each and dispatches TS and TX with the
+ * constants below; for SYS it starts from DMR_SYS_INT and can be switched
+ * to DMR_SYS_INT_ALT at runtime from the DMR monitor screen (driver knob
+ * DMRBB_DRV_SYS_LINE, dmr_CS7000.h), so the answer can be found on the
+ * radio without reflashing. Once a board has been checked, fix DMR_SYS_INT
+ * for that target (docs/dmr_bringup.md, checks 1.2 and 3.1). RF_RX_INTER
+ * is not wired to the MCU.
  */
 #define DMR_TS_INT      GPIOC,0
 #define DMR_SYS_INT     GPIOC,1

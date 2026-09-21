@@ -23,11 +23,14 @@
  *    falling-edge EXTI shim of gpio_irq_stm32.cpp. The callbacks run in
  *    interrupt context and only latch: an event bit in `pending`, a counter
  *    per line and the tick of the slot interrupt. PC0..PC3 are all four
- *    attached during bring-up, each with its own counter, because the
- *    schematic of the CS7000-M17 Plus (V01) and the pinmap disagree on which
- *    pin carries SYS_INTER (PC3_C versus PC1, see pinmap.h); the dispatch to
- *    the event bits uses the pinmap constants DMR_TS_INT / DMR_SYS_INT /
- *    DMR_TX_INT, the fourth line only counts.
+ *    attached, each with its own counter, because the schematic of the
+ *    CS7000-M17 Plus (V01) and the pinmap disagree on which pin carries
+ *    SYS_INTER (PC3_C versus PC1, see pinmap.h) and nothing has been
+ *    validated yet: the dispatch to the event bits uses the pinmap
+ *    constants DMR_TS_INT / DMR_TX_INT and, for SYS_INTER, a runtime
+ *    choice between DMR_SYS_INT (default) and DMR_SYS_INT_ALT made from
+ *    the monitor screen (DMRBB_DRV_SYS_LINE, dmr_CS7000.h); the line not
+ *    chosen only counts.
  *
  *  - Bus access. All the SPI traffic happens in the thread calling
  *    dmrbb_waitEvent() (the rtx thread): the "user" SPI is shared with the
@@ -109,6 +112,18 @@ static constexpr uint8_t VSPI_ADDR = 0x00;
 static constexpr uint8_t RAM_VOICE_ADDR = 0x30;
 static constexpr uint8_t RAM_LC_ADDR = 0x00;
 
+/*
+ * RX RAM address of the CACH Short LC (manual Table 5.2, "Short LC
+ * 0x24~0x28"): 0x24-0x26 plus bits 7:4 of 0x27 hold the 28 control bits
+ * (SLCO and 24 payload bits, TS 102 361-1 §7.1.4, §9.1.7), 0x28 the 8 check
+ * bits (CRC-8, Annex B.3.7). Five bytes are read as they are, the
+ * decoding is left to the protocol layer. UNVERIFIED on hardware: the RAM
+ * layout (the manual's map is partial) and whether 0x28 is the CRC as
+ * received or the chip's own check byte.
+ */
+static constexpr uint8_t RAM_SHORT_LC_ADDR = 0x24;
+static constexpr uint8_t SHORT_LC_BYTES = 5;
+
 /* Register 0x82 flags, manual §5.1.1, see HR_C6000::Irq82 */
 static constexpr uint8_t IRQ_TX_START = HR_C6000::IRQ_TX_START;
 static constexpr uint8_t IRQ_TX_END = HR_C6000::IRQ_TX_END;
@@ -116,6 +131,9 @@ static constexpr uint8_t IRQ_LATE_ENTRY = HR_C6000::IRQ_LATE_ENTRY;
 static constexpr uint8_t IRQ_RX_DATA = HR_C6000::IRQ_RX_DATA;
 static constexpr uint8_t IRQ_RX_INFO = HR_C6000::IRQ_RX_INFO;
 static constexpr uint8_t IRQ_ABNORMAL_EXIT = HR_C6000::IRQ_ABNORMAL_EXIT;
+
+/* Register 0x86 sub-status, bit 2 "Short LC received" (G4EML table) */
+static constexpr uint8_t SUB86_SHORT_LC = HR_C6000::SUB86_SHORT_LC;
 
 /* Register 0x51 fields, G4EML table */
 static constexpr uint8_t R51_CRC_BAD = 0x04;
@@ -130,8 +148,10 @@ static constexpr uint8_t VOICE_PATH_RAM = 1;
 static constexpr unsigned WAIT_POLL_MS = 1;
 
 /*
- * Interrupt lines. The four EXTI lines PC0..PC3 are attached during
- * bring-up; the mapping of the C6000 pins on them comes from pinmap.h.
+ * Interrupt lines. The four EXTI lines PC0..PC3 are all attached; the
+ * mapping of the C6000 pins on them comes from pinmap.h, with the SYS_INTER
+ * line selectable at runtime between the pinmap constant (SYS_LINE, default)
+ * and the schematic's alternative (ALT_LINE), see DMRBB_DRV_SYS_LINE.
  */
 static constexpr unsigned NUM_LINES = 4;
 static constexpr uint8_t TS_LINE = PIN_NUMBER(DMR_TS_INT);
@@ -143,6 +163,10 @@ static_assert(TS_LINE < NUM_LINES, "DMR_TS_INT must be PC0..PC3");
 static_assert(SYS_LINE < NUM_LINES, "DMR_SYS_INT must be PC0..PC3");
 static_assert(TX_LINE < NUM_LINES, "DMR_TX_INT must be PC0..PC3");
 static_assert(ALT_LINE < NUM_LINES, "DMR_SYS_INT_ALT must be PC0..PC3");
+static_assert(SYS_LINE == DMRBB_SYS_LINE_PINMAP,
+              "DMRBB_SYS_LINE_PINMAP must match DMR_SYS_INT");
+static_assert(ALT_LINE == DMRBB_SYS_LINE_SCHEMATIC,
+              "DMRBB_SYS_LINE_SCHEMATIC must match DMR_SYS_INT_ALT");
 
 static const struct gpioPin irqPins[NUM_LINES] = {
     { &GpioC, 0 },
@@ -170,6 +194,13 @@ static bool active = false;
 static bool attached = false;
 static volatile uint8_t voicePath = VOICE_PATH_VSPI;
 
+/*
+ * Line dispatched as SYS_INTER, read in interrupt context: SYS_LINE (the
+ * pinmap, PC1) unless the monitor screen switched it to ALT_LINE (the
+ * schematic, PC3_C). UNVERIFIED on hardware which one each board needs.
+ */
+static volatile uint8_t sysLine = SYS_LINE;
+
 /**
  * Interrupt callback shared by the four lines, interrupt context: latch and
  * count, nothing else.
@@ -186,7 +217,7 @@ static void lineIsr(void *arg)
         tsCount += 1;
         tsTick = static_cast<uint32_t>(getTick());
         pending |= DMRBB_EV_TS;
-    } else if (line == SYS_LINE) {
+    } else if (line == sysLine) {
         sysCount += 1;
         pending |= DMRBB_EV_SYS;
     } else if (line == TX_LINE) {
@@ -202,8 +233,9 @@ static void lineIsr(void *arg)
     }
 
     /*
-     * Any other line (DMR_SYS_INT_ALT, PC3) only counts: the monitor screen
-     * shows which line pulses every 60ms, then DMR_SYS_INT is fixed per
+     * The line not selected as SYS_INTER (PC3 by default, PC1 after the
+     * switch) only counts: the monitor screen shows which line pulses
+     * every 60ms, the knob follows it, then DMR_SYS_INT is fixed per
      * target in pinmap.h.
      */
 }
@@ -302,8 +334,20 @@ static void readSysEvent(struct dmrbbSnapshot *s)
 
     if (irq & IRQ_TX_START)
         s->sub84 = C6000.readCfgRegister(0x84);
-    if (irq & IRQ_TX_END)
+    if (irq & IRQ_TX_END) {
         s->sub86 = C6000.readCfgRegister(0x86);
+
+        /*
+         * Short LC of the CACH: the manual files "Short LC received" under
+         * the end-of-transmission sub-status (0x82 bit 5, 0x86 bit 2) and
+         * puts the 36 bits at RX RAM 0x24-0x28. Read right away, before
+         * anything else could overwrite the RAM; the snapshot keeps the
+         * previous value when the flag is clear. UNVERIFIED on hardware,
+         * see RAM_SHORT_LC_ADDR.
+         */
+        if (s->sub86 & SUB86_SHORT_LC)
+            C6000.readDataRam(RAM_SHORT_LC_ADDR, s->shortLc, SHORT_LC_BYTES);
+    }
     if (irq & IRQ_RX_INFO)
         s->sub90 = C6000.readCfgRegister(0x90);
     if (irq & IRQ_ABNORMAL_EXIT)
@@ -392,6 +436,15 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
      */
     if (cfg->modeReg != DMRBB_MODE_REG_DEFAULT)
         C6000.writeCfgRegister(0x10, cfg->modeReg);
+
+    /*
+     * Same for the RF_TX_INTER advance word 0x12: the table writes the OEM
+     * 0x98, a different value asked for from the monitor screen (OpenGD77's
+     * 0x15) is rewritten here so that it survives the reconfigurations
+     * the opMode handler does on its own. UNVERIFIED on hardware.
+     */
+    if ((cfg->rfAdvance != 0) && (cfg->rfAdvance != DMRBB_RF_ADVANCE_DEFAULT))
+        C6000.writeCfgRegister(0x12, cfg->rfAdvance);
 
     C6000.setColorCode(cfg->colorCode);
     C6000.setLocalAddress(cfg->ownId);
@@ -538,6 +591,9 @@ uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
         if (addr == DMRBB_DRV_VOICE_PATH)
             return voicePath;
 
+        if (addr == DMRBB_DRV_SYS_LINE)
+            return sysLine;
+
         if ((addr >= DMRBB_DRV_RFTX_TICK(0))
             && (addr <= DMRBB_DRV_RFTX_LEAD(1))) {
             uint32_t tick;
@@ -599,6 +655,15 @@ void dmrbb_writeRegister(uint8_t page, uint8_t addr, uint8_t v)
     if (page == DMRBB_PAGE_DRIVER) {
         if (addr == DMRBB_DRV_VOICE_PATH)
             voicePath = (v != 0) ? VOICE_PATH_RAM : VOICE_PATH_VSPI;
+
+        /*
+         * SYS_INTER line: only the two candidates are accepted, a pulse on
+         * the line already latched between the check and the store is
+         * counted on the old assignment, which is harmless.
+         */
+        if ((addr == DMRBB_DRV_SYS_LINE)
+            && ((v == SYS_LINE) || (v == ALT_LINE)))
+            sysLine = v;
 
         return;
     }

@@ -238,6 +238,15 @@ public:
     static constexpr uint8_t SUB84_VOICE_TX_START = 0x80;
     static constexpr uint8_t SUB86_TX_COMPLETE    = 0x80;
 
+    /*
+     * Register 0x86 bit 2 "Short LC received" (manual §5.1.1 register 0x82
+     * bit 5 description, G4EML "ShortLC"): the CACH Short LC is then in RX
+     * RAM 0x24-0x28 (manual Table 5.2). UNVERIFIED on hardware: whether
+     * the flag fires on a receiving radio, the manual lists it among the
+     * end-of-transmission sub-status bits.
+     */
+    static constexpr uint8_t SUB86_SHORT_LC       = 0x04;
+
     /**
      * Test the "TX request rejected" flag of a register 0x82 value: the
      * chip refused to transmit because the channel is busy under the
