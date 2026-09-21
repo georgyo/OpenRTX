@@ -91,6 +91,15 @@ public:
     static constexpr uint8_t HEADER_REPEAT = 3;
     static constexpr uint32_t TS_TICK_TOLERANCE_MS = 5; /* TS jitter      */
 
+    /*
+     * RF unkey fallback after the last burst of a transmission: the burst
+     * occupies the slot following the timeslot interrupt it was programmed
+     * at, so it has ended one slot later; without a further timeslot
+     * interrupt (passive timing on a silent channel after a wake-up CSBK)
+     * nor a TX-end report, the RF is released on this timer instead.
+     */
+    static constexpr uint32_t RF_UNKEY_MS = BURST_MS + TS_TICK_TOLERANCE_MS;
+
     struct Config {
         uint32_t ownId;         /* own DMR ID, 0 = TX refused          */
         uint32_t dstId;         /* talkgroup (GROUP) or target (PRIVATE) */
@@ -106,6 +115,9 @@ public:
         uint8_t wakeupAttempts; /* N_Wakeup                            */
         uint16_t syncWuMs;      /* T_SyncWu                            */
         uint32_t txTimeoutMs;   /* T_TO, 0 = disabled                  */
+        uint8_t lcssMode;       /* 0x50 LCSS convention of the voice
+                                   bursts, LCSS_MODE_CHIP or
+                                   LCSS_MODE_MANUAL (ModemPort.hpp)    */
     };
 
     struct Report {
@@ -128,6 +140,11 @@ public:
         bool busy;               /* marker: TX rejected, channel busy  */
         bool wakeupFailed;       /* marker: repeater did not answer    */
         bool needsReconfigure;   /* no timeslot interrupt for 2 s      */
+        bool rfKey;              /* RF stage to be keyed for TX: raised
+                                    when the modem is armed, before the
+                                    first header slot is programmed,
+                                    dropped once the last burst has gone
+                                    out or the transmission is aborted */
     };
 
     CallController();
@@ -273,6 +290,10 @@ private:
     void programVoice();
     void programTerminator();
     void txSlot(uint32_t nowMs, bool ownSlot);
+    void keyRf();
+    void unkeyRf();
+    void unkeyAfterBurst(uint32_t nowMs);
+    void runRfTimer(uint32_t nowMs);
 
     ModemPort *port;
     VoiceSink *sink;
@@ -315,6 +336,11 @@ private:
     uint32_t armStartMs;
     uint32_t txStartMs;
     uint32_t wakeupSentMs;
+
+    /* RF keying */
+    bool rfUnkeyPending; /* last burst programmed, release after it  */
+    uint32_t rfUnkeyMs;  /* when that burst has ended (fallback)     */
+
     uint8_t txLc[CHIP_LC_BYTES];
     uint8_t voiceBuf[VOICE_PAYLOAD_BYTES];
 };

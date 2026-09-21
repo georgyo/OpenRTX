@@ -68,21 +68,52 @@ static constexpr uint8_t R50_TERMINATOR = 0x20;      /* type 2, LCSS 00  */
 static constexpr uint8_t R50_CSBK = 0x30;            /* type 3, LCSS 00  */
 static constexpr uint8_t R50_VOICE = 0x08;           /* bit3: voice      */
 
+/*
+ * LCSS convention of the voice bursts, CallController::Config::lcssMode.
+ * Which one the chip needs is UNVERIFIED on hardware: the on-air test with
+ * a hotspot (late entry with EmbeddedLCOnly=1) settles it, the DMR monitor
+ * screen switches it at runtime.
+ */
+static constexpr uint8_t LCSS_MODE_CHIP = 0;   /* 0x08 | seq << 4, LCSS 00 */
+static constexpr uint8_t LCSS_MODE_MANUAL = 1; /* manual §5.4.5 sequence   */
+
+/*
+ * Register 0x50 values of the manual's voice transmission procedure, one per
+ * burst A to F. "HR_C6000 User Manual" §5.4.5 "Voice transmission", steps 5,
+ * 7 and 8: "reg0x50 is configured to 0x08, the next frame is ready to send
+ * speech frame A", "configure reg0x41 to 0x80, reg0x50 to 0x19, and the next
+ * frame to send speech frame B", "repeat 6 and 7 in sequence to send the
+ * remaining C, D, E, and F frames reg0x50 to 0x2B, 0x3B, 0x4A, and 0x58,
+ * respectively". Bits [7:4] count the burst, bit3 flags voice, bits [1:0]
+ * are the LCSS of TS 102 361-1 Table 9.20 for the embedded LC fragments
+ * carried by B to E (01 first, 11 continuation, 11 continuation, 10 last)
+ * and 00 for A (sync, no fragment) and F (single fragment / null).
+ */
+static constexpr uint8_t R50_VOICE_MANUAL[SUPERFRAME_BURST] = { 0x08, 0x19,
+                                                                0x2B, 0x3B,
+                                                                0x4A, 0x58 };
+
 /**
- * Register 0x50 value for voice burst 'seq' (0 = A ... 5 = F): 0x08 |
- * (seq << 4) with LCSS left at 00, the OpenGD77 convention under which the
- * chip fills the embedded LC on its own. UNVERIFIED on hardware: the manual
- * §5.4.5 example writes 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58, i.e. LCSS 00,
- * 01, 11, 11, 10, 00 following the fragment order of TS 102 361-1 §9.3.3;
- * if the hotspot does not decode the embedded LC during bring-up, change
- * this one function.
+ * Register 0x50 value for voice burst 'seq' (0 = A ... 5 = F).
+ *
+ * LCSS_MODE_CHIP: 0x08 | (seq << 4) with LCSS left at 00, the OpenGD77
+ * convention under which the chip fills the embedded LC on its own.
+ * LCSS_MODE_MANUAL: the R50_VOICE_MANUAL sequence of the manual, LCSS
+ * supplied per burst. UNVERIFIED on hardware which one the chip needs: if
+ * the hotspot does not decode the embedded LC during bring-up, switch the
+ * convention from the DMR monitor screen.
  *
  * @param seq: voice burst index, 0 to 5.
+ * @param mode: LCSS_MODE_CHIP or LCSS_MODE_MANUAL.
  * @return value for register 0x50.
  */
-static inline uint8_t r50Voice(uint8_t seq)
+static inline uint8_t r50Voice(uint8_t seq, uint8_t mode = LCSS_MODE_CHIP)
 {
-    return R50_VOICE | (uint8_t)((seq % SUPERFRAME_BURST) << 4);
+    uint8_t n = (uint8_t)(seq % SUPERFRAME_BURST);
+    if (mode == LCSS_MODE_MANUAL)
+        return R50_VOICE_MANUAL[n];
+
+    return R50_VOICE | (uint8_t)(n << 4);
 }
 
 /*

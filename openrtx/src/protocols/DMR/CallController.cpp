@@ -34,6 +34,7 @@ CallController::CallController() : port(nullptr), sink(nullptr), st(OFF)
     cfg.wakeupAttempts = N_WAKEUP;
     cfg.syncWuMs = T_SYNCWU_MS;
     cfg.txTimeoutMs = T_TO_S * 1000;
+    cfg.lcssMode = LCSS_MODE_CHIP;
 
     memset(&rep, 0x00, sizeof(rep));
     memset(txLc, 0x00, sizeof(txLc));
@@ -69,6 +70,8 @@ CallController::CallController() : port(nullptr), sink(nullptr), st(OFF)
     armStartMs = 0;
     txStartMs = 0;
     wakeupSentMs = 0;
+    rfUnkeyPending = false;
+    rfUnkeyMs = 0;
 }
 
 void CallController::setPort(ModemPort *p)
@@ -89,6 +92,8 @@ void CallController::configure(const Config &c)
     if (cfg.timeslot > 2)
         cfg.timeslot = 2;
     cfg.colorCode &= 0x0F;
+    if (cfg.lcssMode > LCSS_MODE_MANUAL)
+        cfg.lcssMode = LCSS_MODE_CHIP;
 }
 
 void CallController::enable(uint32_t nowMs)
@@ -108,6 +113,7 @@ void CallController::enable(uint32_t nowMs)
 
     ptt = false;
     pttLatched = false;
+    rfUnkeyPending = false;
     lastBsSyncMs = nowMs - CARRIER_TIMEOUT_MS;
     lastSync = R5F_SYNC_MS;
     wdRestarted = false;
@@ -128,6 +134,7 @@ void CallController::disable()
     pttLatched = false;
     slotLock = 0;
     tcValid = false;
+    unkeyRf();
     rep.lcOk = false;
     rep.hangActive = false;
     rep.needsReconfigure = false;
@@ -253,6 +260,8 @@ void CallController::trackTimecode(uint8_t rxTc)
 
 void CallController::runTimers(uint32_t nowMs)
 {
+    runRfTimer(nowMs);
+
     switch (st) {
         case RX_CALL:
             /* No voice for two superframes: the call is gone */
@@ -541,6 +550,7 @@ void CallController::armTx(uint32_t nowMs, bool active)
     port->setAccess(cfg.polite ? R21_POLITE : R21_IMPOLITE);
     port->startTx(active);
     armed = true;
+    keyRf();
     buildTxLc();
 
     /* Active timing: the modem provides a fresh axis from now on */
@@ -591,6 +601,7 @@ void CallController::enterWakeup(uint32_t nowMs)
         /* TS 102 361-1 Annex F.2: give up after N_Wakeup attempts */
         rep.wakeupFailed = true;
         pttLatched = true;
+        unkeyRf();
         if (st == TX_WAKEUP && wakeupPhase == WU_WAIT) {
             /* Already receiving: idle if slots ticked, else searching */
             st = (slotLock != 0) ? RX_IDLE : RX_SEARCH;
@@ -615,6 +626,7 @@ void CallController::enterWakeup(uint32_t nowMs)
     activeTiming = true;
     port->setAccess(cfg.polite ? R21_POLITE : R21_IMPOLITE);
     port->startTx(true);
+    keyRf();
     requestAxis(nowMs);
     wdRestarted = false;
 }
@@ -623,7 +635,50 @@ void CallController::abortTx(uint32_t nowMs, bool busy)
 {
     rep.busy = busy;
     pttLatched = true;
+    unkeyRf();
     goRx(nowMs, RX_IDLE);
+}
+
+/*
+ * RF keying, reported to the owner through Report::rfKey: the RF stage is
+ * keyed as soon as the modem is armed for transmission (register 0x40 with
+ * TxEn), that is before the first header slot is programmed, and released
+ * only once the last burst has gone out. That burst occupies the slot after
+ * the timeslot interrupt it was programmed at, so the release happens at
+ * the following timeslot interrupt, at the chip's TX-end report (0x82 bit5,
+ * sub-status 0x86) if it comes first, or on the RF_UNKEY_MS fallback when
+ * neither arrives (manual §5.4.5 step 12: "after the next or a few 30 ms of
+ * the end of the speech frame is sent, configure reg0x40 to 0x03";
+ * UNVERIFIED on hardware whether one slot of margin is enough for the PA
+ * to see the whole terminator burst). An aborted transmission (channel
+ * busy, wake-up failed, PTT released before anything went out, watchdog)
+ * releases it at once.
+ */
+void CallController::keyRf()
+{
+    rep.rfKey = true;
+    rfUnkeyPending = false;
+}
+
+void CallController::unkeyRf()
+{
+    rep.rfKey = false;
+    rfUnkeyPending = false;
+}
+
+void CallController::unkeyAfterBurst(uint32_t nowMs)
+{
+    if (!rep.rfKey)
+        return;
+
+    rfUnkeyPending = true;
+    rfUnkeyMs = nowMs + RF_UNKEY_MS;
+}
+
+void CallController::runRfTimer(uint32_t nowMs)
+{
+    if (rfUnkeyPending && (elapsed(nowMs, rfUnkeyMs) < 0x80000000u))
+        unkeyRf();
 }
 
 void CallController::programHeader()
@@ -644,7 +699,7 @@ void CallController::programVoice()
 
     /* Payload first, then the slot programming (OpenGD77 order) */
     port->writeVoice(voiceBuf);
-    port->setTxFrameType(r50Voice(seq));
+    port->setTxFrameType(r50Voice(seq, cfg.lcssMode));
     port->setNextSlot(R41_TX);
     seq = (seq + 1) % SUPERFRAME_BURST;
     if ((seq == 0) && (superframes < UINT8_MAX))
@@ -707,6 +762,7 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
                     /* CSBK going out now: back to RX, wait for the BS */
                     port->setNextSlot(R41_IDLE);
                     goRx(nowMs, TX_WAKEUP);
+                    unkeyAfterBurst(nowMs);
                     wakeupSentMs = nowMs;
                     wakeupPhase = WU_WAIT;
                     break;
@@ -769,9 +825,13 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
             break;
 
         case TX_TERM:
-            /* Terminator going out now: idle the next slot, back to RX */
+            /*
+             * Terminator going out now: idle the next slot, back to RX.
+             * The RF stays keyed until the burst has gone out.
+             */
             port->setNextSlot(R41_IDLE);
             goRx(nowMs, RX_HANG);
+            unkeyAfterBurst(nowMs);
             hangStartMs = nowMs;
             rep.hangActive = true;
             rep.lcOk = false;
@@ -828,6 +888,10 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
     lastTsMs = nowMs;
     wdRestarted = false;
     rep.needsReconfigure = false;
+
+    /* A last burst programmed at the previous interrupt has gone out */
+    if (rfUnkeyPending)
+        unkeyRf();
 
     /*
      * Interrupts merged into this event: the timecode toggles once per
@@ -900,6 +964,10 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
     if ((irq & R82_TX_REJECTED) && isTx())
         abortTx(nowMs, true);
 
+    /* The chip reports the end of the transmission: release the RF */
+    if ((irq & R82_TX_END) && rfUnkeyPending)
+        unkeyRf();
+
     if (isTx()) {
         publish();
         return;
@@ -945,13 +1013,17 @@ void CallController::onTimeout(uint32_t nowMs)
 
     if ((silent >= TS_RECONFIGURE_MS) && !rep.needsReconfigure) {
         rep.needsReconfigure = true;
-        if (isTx())
+        if (isTx()) {
             pttLatched = true;
+            unkeyRf();
+        }
         goRx(nowMs, RX_SEARCH);
     } else if ((silent >= TS_WATCHDOG_MS) && !wdRestarted) {
         wdRestarted = true;
-        if (isTx())
+        if (isTx()) {
             pttLatched = true;
+            unkeyRf();
+        }
         goRx(nowMs, isTx() ? RX_SEARCH : st);
     }
 
