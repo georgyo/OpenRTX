@@ -873,7 +873,8 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
                       (unsigned long) dmrMonStatus.dmr_audio.framesRx);
             break;
         case DMRMON_AUD_VARY:
-            sniprintf(buf, max_len, "%u", dmrMonStatus.dmr_audio.varying);
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.varying);
             break;
         case DMRMON_AUD_OUT:
             sniprintf(buf, max_len, "%lu",
@@ -884,10 +885,12 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
                       (unsigned long) dmrMonStatus.dmr_audio.framesTx);
             break;
         case DMRMON_AUD_UNDER:
-            sniprintf(buf, max_len, "%u", dmrMonStatus.dmr_audio.underruns);
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.underruns);
             break;
         case DMRMON_AUD_OVER:
-            sniprintf(buf, max_len, "%u", dmrMonStatus.dmr_audio.overruns);
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.overruns);
             break;
         // Actions: the registers the next ENTER writes, or the hint that
         // ui.c refuses them because the RTX stage is not running DMR

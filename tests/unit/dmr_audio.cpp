@@ -134,6 +134,7 @@ static std::atomic<int> startCalls(0);
 static std::atomic<int> stopCalls(0);
 static std::atomic<int> haltCalls(0);
 static std::atomic<int> syncWaits(0); /* sync() calls blocked on a tick */
+static std::atomic<int> lateSyncs(0); /* next output sync()s answer -1  */
 
 /* The idle half index lives in ctx->priv */
 static int idleHalf(struct streamCtx *ctx)
@@ -204,6 +205,15 @@ static int fakeOutSync(struct streamCtx *ctx, uint8_t dirty)
         recorded.insert(recorded.end(), data, data + half);
         pthread_mutex_unlock(&fakeMtx);
         setIdleHalf(ctx, idleHalf(ctx) ^ 1);
+    }
+
+    /*
+     * A late arrival, as the Cx000 DAC driver reports it: the sync point
+     * had already passed, the block is taken and -1 returned at once.
+     */
+    if (lateSyncs.load() > 0) {
+        lateSyncs -= 1;
+        return -1;
     }
 
     return waitTick(ctx) ? 0 : -1;
@@ -422,6 +432,7 @@ public:
         stopCalls.store(0);
         haltCalls.store(0);
         syncWaits.store(0);
+        lateSyncs.store(0);
         rejectedJoins.store(0);
         memset(&stats, 0x00, sizeof(stats));
         dmrAudio_init();
@@ -570,6 +581,55 @@ TEST_CASE("dmr_audio: a missing payload is played as silence and counted",
     REQUIRE(blockIsSilence(4));
     b.refresh();
     REQUIRE(b.stats.underruns == 1);
+}
+
+TEST_CASE("dmr_audio: a late sync point is a glitch, not the end of "
+          "playback",
+          "[dmr][audio]")
+{
+    Bench b;
+    b.startRx();
+
+    uint8_t frame[AMBE];
+    makeFrame(1, frame);
+    REQUIRE(dmrAudio_pushFrame(frame) == true);
+    b.playBlock(1);
+    REQUIRE(blockIs(0, 1));
+
+    /*
+     * The driver answers -1 to the sync() after the next block, the way
+     * the Cx000 DAC does when the thread comes one period late: the thread
+     * goes straight on with the following block (silence, no payload) and
+     * parks in the sync() after it, no stream stopped, no restart needed.
+     */
+    lateSyncs.store(1);
+    makeFrame(2, frame);
+    REQUIRE(dmrAudio_pushFrame(frame) == true);
+    int waits = syncWaits.load();
+    grant();
+    REQUIRE(waitFor([&]() { return recordedSamples() >= 3 * BLOCK; }));
+    REQUIRE(waitParked(waits + 1));
+    REQUIRE(lateSyncs.load() == 0);
+    REQUIRE(blockIs(1, 2));
+    REQUIRE(blockIsSilence(2));
+    REQUIRE(dmrAudio_running() == true);
+    REQUIRE(stopCalls.load() == 0);
+    REQUIRE(startCalls.load() == 1);
+
+    /* Playback goes on as before */
+    makeFrame(3, frame);
+    REQUIRE(dmrAudio_pushFrame(frame) == true);
+    b.playBlock(4);
+    REQUIRE(blockIs(3, 3));
+    b.refresh();
+    REQUIRE(b.stats.blocksOut == 4);
+    REQUIRE(b.stats.framesRx == 3);
+    REQUIRE(b.stats.underruns == 1);
+
+    /* A stopped stream still ends the thread */
+    stopAudio();
+    REQUIRE(dmrAudio_running() == false);
+    REQUIRE(stopCalls.load() == 1);
 }
 
 TEST_CASE("dmr_audio: silence before the first payload is not an underrun",
@@ -743,6 +803,73 @@ TEST_CASE("dmr_audio: startTx pulls 480-sample blocks and popFrame returns "
     stopAudio();
     REQUIRE(dmrAudio_running() == false);
     REQUIRE(haltCalls.load() == 1); /* input streams are terminated */
+}
+
+TEST_CASE("dmr_audio: flushTx keeps the newest payload only", "[dmr][audio]")
+{
+    Bench b;
+    uint8_t frame[AMBE];
+
+    /* Nothing running: a no-op */
+    dmrAudio_flushTx();
+    REQUIRE(dmrAudio_popFrame(frame) == false);
+
+    b.startTx();
+
+    /* Three blocks fill the queue, one more drops the oldest */
+    for (int i = 0; i < DMR_AUDIO_QUEUE_DEPTH + 1; i++) {
+        int waits = syncWaits.load();
+        grant();
+        REQUIRE(waitParked(waits + 1));
+    }
+    b.refresh();
+    REQUIRE(b.stats.framesTx == DMR_AUDIO_QUEUE_DEPTH + 1);
+    REQUIRE(b.stats.overruns == 1);
+
+    /* The voice bursts begin: only block 3, the newest, is left */
+    dmrAudio_flushTx();
+    REQUIRE(dmrAudio_popFrame(frame) == true);
+    REQUIRE(frame[0] == DMR_AUDIO_QUEUE_DEPTH);
+    REQUIRE(dmrAudio_popFrame(frame) == false);
+    b.refresh();
+    REQUIRE(b.stats.overruns == 1); /* the flush is not an overrun */
+
+    /* Encoding goes on: the next block is the next payload */
+    int waits = syncWaits.load();
+    grant();
+    REQUIRE(waitParked(waits + 1));
+    REQUIRE(dmrAudio_popFrame(frame) == true);
+    REQUIRE(frame[0] == DMR_AUDIO_QUEUE_DEPTH + 1);
+
+    /* A single queued payload survives a flush */
+    waits = syncWaits.load();
+    grant();
+    REQUIRE(waitParked(waits + 1));
+    dmrAudio_flushTx();
+    REQUIRE(dmrAudio_popFrame(frame) == true);
+    REQUIRE(frame[0] == DMR_AUDIO_QUEUE_DEPTH + 2);
+    REQUIRE(dmrAudio_popFrame(frame) == false);
+
+    stopAudio();
+    REQUIRE(dmrAudio_running() == false);
+}
+
+TEST_CASE("dmr_audio: flushTx leaves the receive queue alone", "[dmr][audio]")
+{
+    Bench b;
+    b.startRx();
+
+    uint8_t frame[AMBE];
+    makeFrame(1, frame);
+    REQUIRE(dmrAudio_pushFrame(frame) == true);
+    makeFrame(2, frame);
+    REQUIRE(dmrAudio_pushFrame(frame) == true);
+
+    dmrAudio_flushTx();
+    b.playBlock(1);
+    b.playBlock(2);
+    REQUIRE(blockIs(0, 1));
+    REQUIRE(blockIs(1, 2));
 }
 
 TEST_CASE("dmr_audio: a start on a path with no device fails at once",
