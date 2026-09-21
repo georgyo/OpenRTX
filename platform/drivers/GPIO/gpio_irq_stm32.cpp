@@ -82,6 +82,7 @@ static constexpr uint32_t EXTI15_10_LINES = 0xFC00;
 struct extiLine {
     void (*cb)(void *arg);
     void *arg;
+    uint8_t port; /* SYSCFG_EXTICR port index of the attached pin */
 };
 
 static struct extiLine lines[16];
@@ -180,6 +181,7 @@ int gpioIrq_attach(const struct gpioPin *pin, enum gpioIrqEdge edge,
     /* Install the callback before unmasking the line. */
     lines[line].cb = cb;
     lines[line].arg = arg;
+    lines[line].port = static_cast<uint8_t>(port);
 
     EXTI_IMR_REG |= bit;
 
@@ -193,7 +195,11 @@ int gpioIrq_attach(const struct gpioPin *pin, enum gpioIrqEdge edge,
 
 void gpioIrq_detach(const struct gpioPin *pin)
 {
-    if ((pin == NULL) || (pin->pin > 15))
+    if ((pin == NULL) || (pin->port == NULL) || (pin->pin > 15))
+        return;
+
+    const int port = portIndex(pin);
+    if (port < 0)
         return;
 
     const uint32_t line = pin->pin;
@@ -201,7 +207,9 @@ void gpioIrq_detach(const struct gpioPin *pin)
 
     miosix::FastInterruptDisableLock dLock;
 
-    if (lines[line].cb == NULL)
+    /* The line belongs to whoever attached it: another port's pin of the
+     * same number was never attached and leaves it alone. */
+    if ((lines[line].cb == NULL) || (lines[line].port != port))
         return;
 
     EXTI_IMR_REG &= ~bit;
