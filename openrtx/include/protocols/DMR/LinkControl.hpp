@@ -191,6 +191,102 @@ FullLC lcFromChannel(const channel_t &channel, const contact_t *contact,
                      uint32_t ownId, uint32_t fallbackDst,
                      uint8_t fallbackType);
 
+/**
+ * Short Link Control opcodes, TS 102 361-2 V2.4.1 Annex B.3 table B.3.
+ */
+enum Slco : uint8_t {
+    SLCO_NULL_MSG = 0, /* Nul_Msg,  §7.1.3.1 */
+    SLCO_ACT_UPDT = 1, /* Act_Updt, §7.1.3.2 */
+};
+
+/**
+ * Time Slot Activity ID of the Activity Update Short LC, TS 102 361-2
+ * §7.1.3.2 table 7.10. Values not listed are reserved.
+ */
+enum SlotActivity : uint8_t {
+    ACT_NONE = 0,               /* No activity on the BS time slot        */
+    ACT_GROUP_CSBK = 2,         /* Group CSBK activity                    */
+    ACT_INDIVIDUAL_CSBK = 3,    /* Individual CSBK activity               */
+    ACT_GROUP_VOICE = 8,        /* Group voice activity                   */
+    ACT_INDIVIDUAL_VOICE = 9,   /* Individual voice activity              */
+    ACT_INDIVIDUAL_DATA = 10,   /* Individual data activity               */
+    ACT_GROUP_DATA = 11,        /* Group data activity                    */
+    ACT_EMERGENCY_GROUP = 12,   /* Emergency group voice activity         */
+    ACT_EMERGENCY_INDIVID = 13, /* Emergency individual voice activity    */
+};
+
+/**
+ * Activity Update Short LC (Act_Updt), TS 102 361-2 §7.1.3.2 table 7.10:
+ * what a base station announces in its CACH about both of its time slots.
+ * Layout of the 28-bit message, LC(27) first:
+ *
+ *   LC(27..24): SLCO = 0001
+ *   LC(23..20): Time Slot 1 Activity ID
+ *   LC(19..16): Time Slot 2 Activity ID
+ *   LC(15..8):  Hashed address time slot 1
+ *   LC(7..0):   Hashed address time slot 2
+ *
+ * The hashed address is the 8-bit CRC of TS 102 361-1 §B.3.7 over the 24
+ * bits of the destination address of the call on that slot.
+ */
+struct ActivityUpdate {
+    uint8_t activity[2]; /* Activity ID of time slot 1 and 2, SlotActivity */
+    uint8_t hash[2];     /* Hashed destination of time slot 1 and 2       */
+
+    /**
+     * Parse a Short LC message.
+     *
+     * @param shortLc: 28-bit Short LC, SLCO in bits 27..24.
+     * @return true when the message is an Activity Update, false otherwise
+     * (the fields are left untouched).
+     */
+    bool unpack(uint32_t shortLc);
+
+    /**
+     * Serialise into a 28-bit Short LC message, for the tests and the
+     * emulator.
+     *
+     * @return the message, SLCO = 1 in bits 27..24.
+     */
+    uint32_t pack() const;
+
+    /**
+     * Whether a time slot is busy: any activity other than "no activity",
+     * reserved values included, since a reserved code is still not idle.
+     *
+     * @param timeslot: 1 or 2.
+     * @return true when the slot carries activity.
+     */
+    bool busy(uint8_t timeslot) const;
+
+    /**
+     * Whether the call announced on a time slot is a voice call (group,
+     * individual or emergency).
+     *
+     * @param timeslot: 1 or 2.
+     * @return true for a voice activity ID.
+     */
+    bool voice(uint8_t timeslot) const;
+
+    /**
+     * Whether the hashed destination of a time slot matches an address.
+     *
+     * @param timeslot: 1 or 2.
+     * @param dst: 24-bit destination address.
+     * @return true when the hash of dst equals the announced one.
+     */
+    bool matches(uint8_t timeslot, uint32_t dst) const;
+
+    /**
+     * Hashed address of TS 102 361-2 table 7.10 note 1: the 8-bit CRC of
+     * TS 102 361-1 §B.3.7 over the 24-bit destination address.
+     *
+     * @param dst: 24-bit address.
+     * @return the hash.
+     */
+    static uint8_t hashAddress(uint32_t dst);
+};
+
 } /* namespace DMR */
 
 #endif /* DMR_LINKCONTROL_H */
