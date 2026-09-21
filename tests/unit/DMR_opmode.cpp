@@ -6,8 +6,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include "SDL2/SDL.h"
 #include "core/audio_path.h"
+#include "core/dmr_audio.h"
 #include "emulator.h"
 #include "interfaces/delays.h"
 #include "protocols/DMR/CallController.hpp"
@@ -28,7 +31,10 @@ using namespace DMR;
  * style of M17_opmode_ptt.cpp: the fake modem of dmr_linux.cpp is scripted
  * from here (no clock thread runs), PTT is driven through the
  * emulator_state.PTTstatus flag read by platform_getPttStatus() and the
- * handler is stepped with update() as rtx_task() would do.
+ * handler is stepped with update() as rtx_task() would do. The speaker is
+ * SDL's dummy audio device, so that the DMR audio thread opens a real
+ * output stream on the emulator's SINK_SPK; the emulator has no microphone
+ * device, so the encoder side is refused and silence is transmitted.
  */
 
 static const uint32_t OWN_ID = 2345678;
@@ -71,6 +77,13 @@ public:
 
     Bench()
     {
+        static bool sdlAudio = false;
+        if (!sdlAudio) {
+            setenv("SDL_AUDIODRIVER", "dummy", 1);
+            SDL_InitSubSystem(SDL_INIT_AUDIO);
+            sdlAudio = true;
+        }
+
         dmrEmu_reset();
         emulator_state.PTTstatus = false;
         state.settings.dmr_hangTime = 0;
@@ -387,9 +400,11 @@ TEST_CASE("DMR OpMode: an injected group call is received and published",
     REQUIRE(b.status.opStatus == RX);
     REQUIRE(dmr.rxSquelchOpen() == true);
 
-    /* Voice bursts reach the audio placeholder, the terminator ends it */
+    /* Voice bursts reach the audio layer, the terminator ends it */
     REQUIRE(b.runUntil(CallController::RX_HANG));
     REQUIRE(dmr.audio().rxFrames == 12);
+    REQUIRE(dmr.audio().rxQueued == 12);
+    REQUIRE(b.status.dmr_audio.framesRx == 12);
     REQUIRE(b.status.dmr_callState == DMR_CALL_RX_HANG);
     REQUIRE(b.status.dmr_lcOk == true);
     REQUIRE(b.status.dmr_rxSrcId == CALLER);
@@ -598,6 +613,156 @@ TEST_CASE("DMR OpMode: audio paths follow the call", "[dmr][rtx]")
     REQUIRE(dmr.txAudioPathId() < 0);
     REQUIRE(audioPath_getStatus(mic) == PATH_CLOSED);
     REQUIRE(dmr.rxAudioPathId() < 0);
+}
+
+TEST_CASE("DMR OpMode: received voice flows into the audio thread",
+          "[dmr][rtx]")
+{
+    Bench b;
+    state.settings.dmr_hangTime = 1;
+    b.start();
+    b.ticks(6);
+    REQUIRE(dmrAudio_running() == false);
+    REQUIRE(b.status.dmr_audio.framesRx == 0);
+    REQUIRE(b.status.dmr_audio.blocksOut == 0);
+
+    /* The call opens: speaker path granted, playback thread started */
+    dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 12);
+    REQUIRE(b.runUntil(CallController::RX_CALL));
+    pathId spk = dmr.rxAudioPathId();
+    REQUIRE(audioPath_getStatus(spk) == PATH_OPEN);
+    REQUIRE(dmrAudio_running() == true);
+
+    /* Blocks flow to the speaker while the call is up, silence so far */
+    sleepFor(0, 150);
+    b.run(1);
+    REQUIRE(b.status.dmr_audio.blocksOut >= 1);
+    REQUIRE(b.status.dmr_audio.framesRx == 0);
+    REQUIRE(b.status.dmr_audio.underruns == 0);
+
+    /* Every voice burst is pushed; the terminator stops the thread */
+    REQUIRE(b.runUntil(CallController::RX_HANG));
+    REQUIRE(dmr.audio().rxFrames == 12);
+    REQUIRE(dmr.audio().rxQueued == 12);
+    REQUIRE(b.status.dmr_audio.framesRx == 12);
+    REQUIRE(b.status.dmr_audio.varying == 12);
+    REQUIRE(dmrAudio_running() == false);
+    REQUIRE(audioPath_getStatus(spk) == PATH_OPEN);
+    b.drain();
+
+    /* A call opening during the hang time starts the thread again */
+    dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 6);
+    REQUIRE(b.runUntil(CallController::RX_CALL));
+    REQUIRE(dmr.rxAudioPathId() == spk);
+    REQUIRE(dmrAudio_running() == true);
+    REQUIRE(b.runUntil(CallController::RX_HANG));
+    REQUIRE(dmr.audio().rxQueued == 18);
+    REQUIRE(dmrAudio_running() == false);
+    b.drain();
+
+    /* Hang time over: path released */
+    sleepFor(0, 1100);
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(dmr.rxAudioPathId() < 0);
+    REQUIRE(audioPath_getStatus(spk) == PATH_CLOSED);
+    REQUIRE(dmrAudio_running() == false);
+
+    /* The counters are kept until the next enable() */
+    REQUIRE(b.status.dmr_audio.framesRx == 18);
+    dmr.disable();
+    b.start();
+    REQUIRE(b.status.dmr_audio.framesRx == 0);
+}
+
+TEST_CASE("DMR OpMode: no microphone device, the encoder is refused and "
+          "silence is sent",
+          "[dmr][rtx]")
+{
+    Bench b;
+    b.start();
+    b.ticks(6);
+
+    emulator_state.PTTstatus = true;
+    unsigned n = 0;
+    while (b.ctrlState() != CallController::TX_VOICE) {
+        b.tick();
+        REQUIRE(++n < 12);
+    }
+    REQUIRE(audioPath_getStatus(dmr.txAudioPathId()) == PATH_OPEN);
+    REQUIRE(dmrAudio_running() == false);
+
+    b.ticks(12);
+    REQUIRE(dmr.audio().txRequests == 6);
+    REQUIRE(dmr.audio().txFrames == 0);
+    REQUIRE(b.status.dmr_audio.framesTx == 0);
+    REQUIRE(memcmp(b.rec->voice, AMBE_SILENCE, VOICE_PAYLOAD_BYTES) == 0);
+
+    emulator_state.PTTstatus = false;
+    n = 0;
+    while (b.ctrlState() >= CallController::TX_ARM) {
+        b.tick();
+        REQUIRE(++n < 30);
+    }
+    REQUIRE(dmr.txAudioPathId() < 0);
+    REQUIRE(dmrAudio_running() == false);
+}
+
+TEST_CASE("DMR OpMode: a voice prompt suspends the RX path, playback resumes "
+          "after it",
+          "[dmr][rtx]")
+{
+    Bench b;
+    state.settings.dmr_hangTime = 1;
+    b.start();
+    b.ticks(6);
+
+    dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 30);
+    REQUIRE(b.runUntil(CallController::RX_CALL));
+    pathId spk = dmr.rxAudioPathId();
+    REQUIRE(dmrAudio_running() == true);
+
+    /* Play the script until n voice bursts were received */
+    auto runUntilRx = [&](uint32_t n) {
+        for (unsigned i = 0; (i < 400) && (dmr.audio().rxFrames < n); i++)
+            dmr.update(&b.status, false);
+        return dmr.audio().rxFrames == n;
+    };
+
+    /* Two bursts in, then the UI plays a prompt on the speaker */
+    REQUIRE(runUntilRx(2));
+    REQUIRE(dmr.audio().rxQueued == 2);
+    pathId prompt = audioPath_request(SOURCE_MCU, SINK_SPK, PRIO_PROMPT);
+    REQUIRE(prompt > 0);
+    REQUIRE(audioPath_getStatus(spk) == PATH_SUSPENDED);
+
+    /* The thread quits at its next period; the bursts meanwhile are lost */
+    bool stopped = false;
+    for (int i = 0; (i < 50) && !stopped; i++) {
+        sleepFor(0, 10);
+        stopped = (dmrAudio_running() == false);
+    }
+    REQUIRE(stopped);
+    REQUIRE(runUntilRx(4));
+    REQUIRE(b.ctrlState() == CallController::RX_CALL);
+    REQUIRE(dmr.audio().rxQueued == 2);
+    REQUIRE(dmr.rxAudioPathId() == spk);
+    REQUIRE(dmrAudio_running() == false);
+
+    /* Prompt over: the path is open again and playback restarts */
+    audioPath_release(prompt);
+    REQUIRE(audioPath_getStatus(spk) == PATH_OPEN);
+    b.run(1);
+    REQUIRE(dmrAudio_running() == true);
+    uint32_t lost = dmr.audio().rxFrames - dmr.audio().rxQueued;
+    REQUIRE(runUntilRx(dmr.audio().rxFrames + 1));
+    REQUIRE(dmr.audio().rxQueued == dmr.audio().rxFrames - lost);
+
+    REQUIRE(b.runUntil(CallController::RX_HANG));
+    REQUIRE(dmr.audio().rxFrames == 30);
+    REQUIRE(dmr.audio().rxQueued == 30 - lost);
+    REQUIRE(dmrAudio_running() == false);
+    b.drain();
 }
 
 TEST_CASE("DMR OpMode: disable releases the audio paths mid-call", "[dmr][rtx]")
