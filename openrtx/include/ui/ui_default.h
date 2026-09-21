@@ -190,6 +190,10 @@ enum settingsDMRItems
 // terminator
 #define DMR_DEST_NAME_LEN 16
 
+// Room left for the top-bar lock symbol before the DMR TS busy tags, in
+// pixels (the symbol fonts are 13 px wide at most, plus a gap)
+#define DMR_TSBUSY_LOCK_OFFSET 16
+
 // Longest DMR ID or talkgroup entry, in digits: DMR_ID_MAX is 16777215
 #define DMR_ID_DIGITS 8
 
@@ -258,7 +262,9 @@ enum dmrMonitorRows
     DMRMON_ACT_TWOPOINT,  // 0x12 bit6 toggle
     DMRMON_ACT_LCSS,      // 0x50 LCSS convention of the voice bursts,
                           // chip-filled / manual, through the RTX status
-    DMRMON_ACT_RFADV,     // 0x12 = 0x98 / 0x15 (RF_TX_INTER advance)
+    DMRMON_ACT_RFADV,     // 0x12 = 0x98 / 0x15 (RF_TX_INTER advance),
+                          // through the RTX status like the mode word
+    DMRMON_ACT_SYSLINE,   // driver page DMRBB_DRV_SYS_LINE = PC1 / PC3
     DMRMON_ROWS_NUM
 };
 
@@ -510,9 +516,10 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status);
 
 /**
  * Name of the codeplug contact with the given DMR ID and call type, if any.
- * The codeplug is scanned once per ID and the answer cached, so that the
- * main screen and the last heard list can ask at every redraw. Implemented
- * in ui_menu.c.
+ * The codeplug is scanned once per ID and the answer cached (the cache
+ * holds the whole last heard ring plus the caller of the main screen, so a
+ * redraw never rescans), so that the main screen and the last heard list
+ * can ask at every redraw. Implemented in ui_menu.c.
  *
  * @param id: 24-bit DMR ID.
  * @param type: dmrContactType_t of the call.
@@ -595,6 +602,7 @@ uint8_t _ui_dmrMonitorSelectedAction(void);
  */
 int _ui_getLastHeardEntryName(char *buf, uint8_t max_len, uint8_t index);
 int _ui_getLastHeardValueName(char *buf, uint8_t max_len, uint8_t index);
+int _ui_getLastHeardDestName(char *buf, uint8_t max_len, uint8_t index);
 
 /**
  * Rows of the DMR favourites screen, list getter signatures: the entry is

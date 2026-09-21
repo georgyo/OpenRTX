@@ -218,14 +218,23 @@ void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status)
               (last_state.settings.dmr_monitor != 0) ? " M" : "");
 
     // The slots a repeater reports busy in its Activity Update Short LC,
-    // "TS1*" / "TS2*" at the right of line 1, which the idle and transmit
-    // screens leave free (the frequency sits below the destination line)
+    // "1*" / "2*" / "1*2*" at the left of the top bar, the one place both
+    // the VFO and the MEM screen leave free on both layouts (line 1 holds
+    // the bank and channel name on the MEM screen, the destination line is
+    // full with the widest ID). The tags sit to the right of the lock
+    // symbol when the keypad is locked, and a DMR marker drawn over the
+    // top bar hides them for its three seconds. Width guard in
+    // tests/unit/ui_dmr.cpp
     if(status->dmr_tsBusy != 0)
-        gfx_print(layout.line1_pos, layout.message_font, TEXT_ALIGN_RIGHT,
-                  yellow_fab413, "%s%s%s",
-                  (status->dmr_tsBusy & 0x01) ? "TS1*" : "",
-                  (status->dmr_tsBusy == 0x03) ? " " : "",
-                  (status->dmr_tsBusy & 0x02) ? "TS2*" : "");
+    {
+        point_t tags_pos = layout.top_pos;
+        if(ui_state->input_locked)
+            tags_pos.x += DMR_TSBUSY_LOCK_OFFSET;
+        gfx_print(tags_pos, layout.message_font, TEXT_ALIGN_LEFT,
+                  yellow_fab413, "%s%s",
+                  (status->dmr_tsBusy & 0x01) ? "1*" : "",
+                  (status->dmr_tsBusy & 0x02) ? "2*" : "");
+    }
 
     #if CONFIG_SCREEN_HEIGHT > 127
     // Destination on the left, channel on the right in the small font: at

@@ -131,6 +131,7 @@ typedef struct
     const char* twoPointTest;
     const char* lcssMode;
     const char* rfAdvance;
+    const char* sysLine;
     const char* dmrRfFailed;
     const char* lastHeard;
     const char* favourites;
