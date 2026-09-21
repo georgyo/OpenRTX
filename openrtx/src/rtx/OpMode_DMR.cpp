@@ -38,6 +38,7 @@ OpMode_DMR::OpMode_DMR()
     , markers(0)
     , tsBusy(0)
     , tsBusyMs(0)
+    , rxFrequency(0)
     , callTracked(false)
     , trackedSrc(0)
     , trackedDst(0)
@@ -169,6 +170,7 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
                                                LCSS_MODE_CHIP;
 
     struct dmrbbConfig bb;
+    memset(&bb, 0x00, sizeof(bb));
     bb.colorCode = status->dmr_txColorCode & 0x0F;
     bb.timeslot = c.timeslot;
     bb.ownId = c.ownId;
@@ -184,15 +186,34 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
                                               DMRBB_MODE_REG_DEFAULT;
 
     /*
+     * RF_TX_INTER advance word 0x12, same rule: the driver default unless
+     * the monitor screen chose the other word, which the driver then
+     * rewrites after its table on every reconfiguration (UNVERIFIED on
+     * hardware which advance the CS7000 needs).
+     */
+    bb.rfAdvance = (status->dmr_rfAdvance != 0) ? status->dmr_rfAdvance :
+                                                  DMRBB_RF_ADVANCE_DEFAULT;
+
+    /*
      * A reconfiguration deferred by an earlier call stays due: cfg/bbCfg
      * already hold the new values, so the comparison alone would miss it.
      */
-    bool modemChange = force || !cfgValid || cfgPending
-                    || (c.colorCode != cfg.colorCode)
-                    || (c.timeslot != cfg.timeslot) || (c.ownId != cfg.ownId)
-                    || (c.polite != cfg.polite)
-                    || (bb.colorCode != bbCfg.colorCode)
-                    || (bb.modeReg != bbCfg.modeReg);
+    bool modemChange =
+        force || !cfgValid || cfgPending || (c.colorCode != cfg.colorCode)
+        || (c.timeslot != cfg.timeslot) || (c.ownId != cfg.ownId)
+        || (c.polite != cfg.polite) || (bb.colorCode != bbCfg.colorCode)
+        || (bb.modeReg != bbCfg.modeReg) || (bb.rfAdvance != bbCfg.rfAdvance);
+
+    /*
+     * The Activity Update describes the repeater whose CACH it came from:
+     * once the RX frequency changes the TS busy hints and the monitor's
+     * Short LC belong to a channel no longer listened to and are dropped
+     * (a modem reprogramming drops them too, see reprogramModem()). Any
+     * other reconfiguration keeps them.
+     */
+    if (cfgValid && (status->rxFrequency != rxFrequency))
+        forgetShortLc();
+    rxFrequency = status->rxFrequency;
 
     cfg = c;
     bbCfg = bb;
@@ -239,6 +260,16 @@ void OpMode_DMR::reprogramModem(uint32_t nowMs)
     dmrAudio_stop();
     dmrbb_configure(&bbCfg);
     ctrl.enable(nowMs);
+
+    /* The restarted modem starts without a repeater's Short LC */
+    forgetShortLc();
+}
+
+void OpMode_DMR::forgetShortLc()
+{
+    tsBusy = 0;
+    tsBusyMs = 0;
+    mon.shortLc = 0;
 }
 
 void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
@@ -553,15 +584,21 @@ void OpMode_DMR::parseShortLc(uint32_t nowMs)
         mon.shortLcOk++;
 
     /*
+     * Any Short LC with a good CRC proves the repeater is still on the
+     * air: the hold of the busy hints restarts from it, so that a Null
+     * message (which says nothing about the slots) keeps the hints alive
+     * rather than letting them expire while the carrier is up.
+     */
+    tsBusyMs = nowMs;
+
+    /*
      * Activity Update: what the repeater says about its two slots. A Null
-     * message (an idle repeater) leaves the hints alone until they expire,
-     * a repeater that has gone idle sends "no activity" on both anyway.
+     * message leaves the hints as they are; a repeater that has gone idle
+     * sends "no activity" on both anyway.
      */
     ActivityUpdate au;
-    if (au.unpack(message)) {
+    if (au.unpack(message))
         tsBusy = (au.busy(1) ? 0x01 : 0x00) | (au.busy(2) ? 0x02 : 0x00);
-        tsBusyMs = nowMs;
-    }
 }
 
 void OpMode_DMR::trackCall(uint32_t nowMs)
