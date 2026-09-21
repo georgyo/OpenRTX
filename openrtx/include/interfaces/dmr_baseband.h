@@ -70,10 +70,13 @@ struct dmrbbSnapshot {
     uint8_t sub86; /**< 0x86, TX end sub-status, read when 0x82 bit5:
                         bit7 service transmission completely terminated
                         (voice and data), bit4 the Layer 2 per-slot "last
-                        processing timing" interrupt (Rdy_lst_inter), the
-                        rest data fragment / OACSU events (manual §5.1.1).
-                        Only bit7 ends a transmission. UNVERIFIED on
-                        hardware which bits the 0x87 mask lets through */
+                        processing timing" interrupt (Rdy_lst_inter),
+                        bit2 "Short LC received" (G4EML table, manual
+                        §4.4: the chip raises 0x82 bit5 for it in
+                        reception as well, see shortLc[]), the rest data
+                        fragment / OACSU events (manual §5.1.1). Only
+                        bit7 ends a transmission. UNVERIFIED on hardware
+                        which bits the 0x87 mask lets through         */
     uint8_t sub90; /**< 0x90, data message status, read when 0x82 bit2 */
     uint8_t sub98; /**< 0x98, abnormal exit cause, read when 0x82 bit1 */
 
@@ -113,6 +116,21 @@ struct dmrbbSnapshot {
      * state machine skips it.
      */
     uint8_t lc[12];
+
+    /*
+     * RX RAM bytes 0x24-0x28 (U_SPI page DATA): the Short LC of the last
+     * completed CACH cycle as the chip decodes it, i.e. after the BPTC of
+     * TS 102 361-1 §B.2.3: the 28 message bits in 0x24-0x26 and the upper
+     * nibble of 0x27, the 8-bit CRC in 0x28 (HR_C6000 manual, RAM map
+     * "Short LC 0x24~0x28"). Read when 0x82 bit5 is set together with
+     * 0x86 bit2. UNVERIFIED on hardware: the layout (the manual's worked
+     * examples never read it back), the interrupt reporting, and whether
+     * the chip verifies the CRC itself: the opMode handler verifies it
+     * again (DMR::FEC::ShortLc::fromChipBytes()) and drops the message
+     * on a mismatch. Zero on the emulator unless a test injects one, and
+     * on the stub.
+     */
+    uint8_t shortLc[5];
 
     /*
      * Voice payload of the burst, 27 bytes (216 bits, three AMBE+2 frames,

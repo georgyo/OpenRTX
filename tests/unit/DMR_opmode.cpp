@@ -11,10 +11,12 @@
 #include "SDL2/SDL.h"
 #include "core/audio_path.h"
 #include "core/dmr_audio.h"
+#include "core/dmr_lastheard.h"
 #include "emulator.h"
 #include "interfaces/delays.h"
 #include "protocols/DMR/CallController.hpp"
 #include "protocols/DMR/Constants.hpp"
+#include "protocols/DMR/FEC/ShortLc.hpp"
 #include "protocols/DMR/LinkControl.hpp"
 #include "protocols/DMR/ModemPort.hpp"
 #include "rtx/OpMode_DMR.hpp"
@@ -1711,4 +1713,158 @@ TEST_CASE("DMR OpMode TX: the LCSS convention follows the RTX status",
     dmr.update(&b.status, true);
     REQUIRE(dmr.controller().config().lcssMode == LCSS_MODE_CHIP);
     REQUIRE(b.rec->configureCount == 1);
+}
+
+/*
+ * Stage 6: the Short LC of a repeater and the last heard list.
+ */
+
+static uint32_t actUpdt(uint8_t ts1, uint8_t ts2, uint32_t dst1, uint32_t dst2)
+{
+    ActivityUpdate au;
+    au.activity[0] = ts1;
+    au.activity[1] = ts2;
+    au.hash[0] = ActivityUpdate::hashAddress(dst1);
+    au.hash[1] = ActivityUpdate::hashAddress(dst2);
+    return au.pack();
+}
+
+TEST_CASE("DMR OpMode: Short LC activity updates raise and expire the TS "
+          "busy hints",
+          "[dmr][rtx][shortlc]")
+{
+    Bench b;
+    b.start();
+    b.ticks(6);
+    REQUIRE(b.status.dmr_tsBusy == 0);
+    REQUIRE(b.status.dmr_mon.shortLcOk == 0);
+
+    /* 0x82 bit5 with 0x86 bit2: the driver read RX RAM 0x24-0x28 */
+    struct dmrbbSnapshot s;
+    memset(&s, 0x00, sizeof(s));
+    s.irq82 = R82_TX_END;
+    s.sub86 = R86_SHORT_LC;
+    uint32_t msg = actUpdt(ACT_GROUP_VOICE, ACT_NONE, TALKGROUP, 0);
+    FEC::ShortLc::toChipBytes(msg, s.shortLc);
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0x01);
+    REQUIRE(b.status.dmr_mon.shortLc == msg);
+    REQUIRE(b.status.dmr_mon.shortLcOk == 1);
+    REQUIRE(b.status.dmr_mon.shortLcBad == 0);
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+
+    /* Without 0x86 bit2 the bytes are not looked at */
+    s.sub86 = 0;
+    FEC::ShortLc::toChipBytes(actUpdt(ACT_GROUP_VOICE, ACT_GROUP_VOICE, 1, 2),
+                              s.shortLc);
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0x01);
+    REQUIRE(b.status.dmr_mon.shortLcOk == 1);
+
+    /* A bad CRC is counted, the hints stay */
+    s.sub86 = R86_SHORT_LC;
+    s.shortLc[4] ^= 0x5A;
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0x01);
+    REQUIRE(b.status.dmr_mon.shortLcOk == 1);
+    REQUIRE(b.status.dmr_mon.shortLcBad == 1);
+
+    /* Both slots busy, then the hints expire two seconds after the last
+     * Short LC: a repeater that dropped its carrier */
+    FEC::ShortLc::toChipBytes(
+        actUpdt(ACT_GROUP_DATA, ACT_INDIVIDUAL_VOICE, 1, 2), s.shortLc);
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0x03);
+    REQUIRE(b.status.dmr_mon.shortLcOk == 2);
+
+    sleepFor(0, 1000);
+    b.tick();
+    REQUIRE(b.status.dmr_tsBusy == 0x03);
+    sleepFor(0, 1100);
+    b.tick();
+    REQUIRE(b.status.dmr_tsBusy == 0);
+
+    /* A Null message does not touch the hints, "no activity" clears them */
+    FEC::ShortLc::toChipBytes(actUpdt(ACT_INDIVIDUAL_CSBK, ACT_NONE, 1, 0),
+                              s.shortLc);
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0x01);
+    FEC::ShortLc::toChipBytes(0x00000000, s.shortLc);
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0x01);
+    REQUIRE(b.status.dmr_mon.shortLcOk == 4);
+    FEC::ShortLc::toChipBytes(actUpdt(ACT_NONE, ACT_NONE, 0, 0), s.shortLc);
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0);
+
+    /* enable() starts without hints */
+    FEC::ShortLc::toChipBytes(actUpdt(ACT_GROUP_VOICE, ACT_NONE, 9, 0),
+                              s.shortLc);
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0x01);
+    dmr.disable();
+    b.start();
+    REQUIRE(b.status.dmr_tsBusy == 0);
+}
+
+TEST_CASE("DMR OpMode: a received call feeds the last heard list once",
+          "[dmr][rtx][lastheard]")
+{
+    Bench b;
+    dmrLastHeard_clear();
+    state.settings.dmr_hangTime = 1;
+    b.start();
+    b.ticks(6);
+    REQUIRE(dmrLastHeard_count() == 0);
+
+    /* Three headers and twelve bursts: one entry */
+    dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 12);
+    REQUIRE(b.runUntil(CallController::RX_CALL));
+    REQUIRE(dmrLastHeard_count() == 1);
+    REQUIRE(b.runUntil(CallController::RX_HANG));
+    REQUIRE(dmrLastHeard_count() == 1);
+
+    struct dmrLastHeardEntry e;
+    REQUIRE(dmrLastHeard_get(0, &e) == true);
+    REQUIRE(e.src == CALLER);
+    REQUIRE(e.dst == TALKGROUP);
+    REQUIRE(e.flco == FLCO_GRP_V_CH_USR);
+    uint32_t first = e.timestamp;
+
+    /* The same call reopened during the hang time refreshes the entry */
+    sleepFor(0, 20);
+    dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 6);
+    REQUIRE(b.runUntil(CallController::RX_CALL));
+    REQUIRE(dmrLastHeard_count() == 1);
+    REQUIRE(dmrLastHeard_get(0, &e) == true);
+    REQUIRE(e.timestamp >= first + 20);
+    REQUIRE(b.runUntil(CallController::RX_HANG));
+
+    /* Another caller to the same talkgroup: a second entry, on top */
+    dmrEmu_injectGroupCall(CALLER + 1, TALKGROUP, 1, 2, 6);
+    REQUIRE(b.runUntil(CallController::RX_CALL));
+    REQUIRE(dmrLastHeard_count() == 2);
+    REQUIRE(dmrLastHeard_get(0, &e) == true);
+    REQUIRE(e.src == CALLER + 1);
+    REQUIRE(dmrLastHeard_get(1, &e) == true);
+    REQUIRE(e.src == CALLER);
+
+    /* A call filtered out (other colour code) is not heard */
+    REQUIRE(b.runUntil(CallController::RX_HANG));
+    sleepFor(0, 1100);
+    b.tick();
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    dmrEmu_injectGroupCall(CALLER + 2, TALKGROUP, 5, 2, 6);
+    b.run(60);
+    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(dmrLastHeard_count() == 2);
+    dmrLastHeard_clear();
 }
