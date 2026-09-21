@@ -173,8 +173,8 @@ class OpMode_DMR : public OpMode
 {
 public:
     /**
-     * How long the noId / busy / wakeupFailed markers stay raised, unless a
-     * new PTT press clears them first.
+     * How long the noId / busy / wakeupFailed / rfFailed markers stay
+     * raised, unless a new PTT press clears them first.
      */
     static constexpr uint32_t MARKER_TIME_MS = 3000;
 
@@ -330,11 +330,14 @@ private:
     /**
      * Key or release the RF stage as the controller's report asks: one
      * radio_enableTx() when the modem is armed, one radio_disableRtx()
-     * followed by radio_enableRx() once the last burst has gone out.
+     * followed by radio_enableRx() once the last burst has gone out. A
+     * driver that refuses to key (PLL not locked, radio_getStatus() not
+     * TX) aborts the transmission through CallController::rfFailed().
      *
      * @param key: true to transmit, false to receive.
+     * @param nowMs: current time.
      */
-    void keyRf(bool key);
+    void keyRf(bool key, uint32_t nowMs);
 
     /**
      * Update the bring-up monitor block from the last modem event: the

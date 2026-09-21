@@ -166,16 +166,17 @@ enum dmrCallState
 
 /**
  * \enum dmrMarker Bit mask of the markers the DMR opMode handler raises for
- * the UI top bar in rtxStatus_t::dmr_markers. The first three are cleared at
- * the next PTT press or a few seconds after being raised, the last one stays
- * as long as DMR mode is selected on a radio without a DMR modem.
+ * the UI top bar in rtxStatus_t::dmr_markers. All but DMR_MARK_NOT_SUPPORTED
+ * are cleared at the next PTT press or a few seconds after being raised; that
+ * one stays as long as DMR mode is selected on a radio without a DMR modem.
  */
 enum dmrMarker
 {
     DMR_MARK_NO_ID         = 0x01,  /**< PTT refused: no DMR ID configured  */
     DMR_MARK_BUSY          = 0x02,  /**< TX rejected: channel busy          */
     DMR_MARK_WAKEUP_FAILED = 0x04,  /**< Repeater did not answer the wakeup */
-    DMR_MARK_NOT_SUPPORTED = 0x08   /**< No DMR modem on this radio         */
+    DMR_MARK_NOT_SUPPORTED = 0x08,  /**< No DMR modem on this radio         */
+    DMR_MARK_RF_FAILED     = 0x10   /**< RF stage refused to key (PLL lock) */
 };
 
 /**
