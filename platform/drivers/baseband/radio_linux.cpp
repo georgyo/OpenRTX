@@ -7,7 +7,20 @@
 #include "emulator/emulator.h"
 #include "interfaces/radio.h"
 #include <cstdio>
+#include <cstring>
 #include <string>
+
+static struct radioEmuRecord record = { 0, 0, 0, false };
+
+const struct radioEmuRecord *radioEmu_record()
+{
+    return &record;
+}
+
+void radioEmu_reset()
+{
+    memset(&record, 0x00, sizeof(record));
+}
 
 void radio_init(const rtxStatus_t *rtxState)
 {
@@ -39,16 +52,22 @@ bool radio_checkRxDigitalSquelch()
 
 void radio_enableRx()
 {
+    record.enableRx++;
+    record.keyed = false;
     puts("radio_linux: enableRx() called");
 }
 
 void radio_enableTx()
 {
+    record.enableTx++;
+    record.keyed = true;
     puts("radio_linux: enableTx() called");
 }
 
 void radio_disableRtx()
 {
+    record.disableRtx++;
+    record.keyed = false;
     puts("radio_linux: disableRtx() called");
 }
 

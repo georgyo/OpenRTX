@@ -214,6 +214,32 @@ void dmrEmu_setClock(bool enable);
  */
 void dmrEmu_requestCall(uint32_t src, uint32_t dst);
 
+/*
+ * Fake RF stage, platform/drivers/baseband/radio_linux.cpp: the calls of the
+ * interfaces/radio.h keying functions are counted so that the tests can
+ * check when the opMode handlers key and release the RF stage.
+ */
+
+/**
+ * Record of the RF stage calls.
+ */
+struct radioEmuRecord {
+    uint32_t enableRx;   /* radio_enableRx() calls   */
+    uint32_t enableTx;   /* radio_enableTx() calls   */
+    uint32_t disableRtx; /* radio_disableRtx() calls */
+    bool keyed;          /* last call was enableTx   */
+};
+
+/**
+ * @return the record of the RF stage calls.
+ */
+const struct radioEmuRecord *radioEmu_record(void);
+
+/**
+ * Clear the record of the RF stage calls.
+ */
+void radioEmu_reset(void);
+
 #ifdef __cplusplus
 }
 #endif
