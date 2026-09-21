@@ -29,8 +29,8 @@
  *    validated yet: the dispatch to the event bits uses the pinmap
  *    constants DMR_TS_INT / DMR_TX_INT and, for SYS_INTER, a runtime
  *    choice between DMR_SYS_INT (default) and DMR_SYS_INT_ALT made from
- *    the monitor screen (DMRBB_DRV_SYS_LINE, dmr_CS7000.h); the line not
- *    chosen only counts.
+ *    the monitor screen's "SYS line" action (DMRBB_DRV_SYS_LINE,
+ *    interfaces/dmr_baseband.h); the line not chosen only counts.
  *
  *  - Bus access. All the SPI traffic happens in the thread calling
  *    dmrbb_waitEvent() (the rtx thread): the "user" SPI is shared with the
@@ -113,12 +113,15 @@ static constexpr uint8_t RAM_VOICE_ADDR = 0x30;
 static constexpr uint8_t RAM_LC_ADDR = 0x00;
 
 /*
- * RX RAM address of the CACH Short LC (manual Table 5.2, "Short LC
- * 0x24~0x28"): 0x24-0x26 plus bits 7:4 of 0x27 hold the 28 control bits
- * (SLCO and 24 payload bits, TS 102 361-1 §7.1.4, §9.1.7), 0x28 the 8 check
- * bits (CRC-8, Annex B.3.7). Five bytes are read as they are, the
- * decoding is left to the protocol layer. UNVERIFIED on hardware: the RAM
- * layout (the manual's map is partial) and whether 0x28 is the CRC as
+ * RX RAM address of the CACH Short LC: 0x24-0x26 plus bits 7:4 of 0x27 hold
+ * the 28 control bits (SLCO and 24 payload bits, TS 102 361-1 §7.1.4,
+ * §9.1.7), 0x28 the 8 check bits (CRC-8, Annex B.3.7). The address is the
+ * one of the TX-side RAM allocation (manual Table 5.2, "Short LC
+ * 0x24~0x28", the RAM the MCU fills for a transmission): the RX-side table
+ * (5.3) is omitted in the translated manual, so the RX RAM is assumed to
+ * mirror the TX map, as RAM_LC_ADDR at 0x00 already assumes. Five bytes are
+ * read as they are, the decoding is left to the protocol layer. UNVERIFIED
+ * on hardware: the RX address and layout, and whether 0x28 is the CRC as
  * received or the chip's own check byte.
  */
 static constexpr uint8_t RAM_SHORT_LC_ADDR = 0x24;
@@ -339,11 +342,12 @@ static void readSysEvent(struct dmrbbSnapshot *s)
 
         /*
          * Short LC of the CACH: the manual files "Short LC received" under
-         * the end-of-transmission sub-status (0x82 bit 5, 0x86 bit 2) and
-         * puts the 36 bits at RX RAM 0x24-0x28. Read right away, before
-         * anything else could overwrite the RAM; the snapshot keeps the
-         * previous value when the flag is clear. UNVERIFIED on hardware,
-         * see RAM_SHORT_LC_ADDR.
+         * the end-of-transmission sub-status (0x82 bit 5, 0x86 bit 2); the
+         * 36 bits are read from RX RAM 0x24-0x28, the TX-side address of
+         * Table 5.2 assumed to be mirrored on the RX side. Read right
+         * away, before anything else could overwrite the RAM; the snapshot
+         * keeps the previous value when the flag is clear. UNVERIFIED on
+         * hardware, see RAM_SHORT_LC_ADDR.
          */
         if (s->sub86 & SUB86_SHORT_LC)
             C6000.readDataRam(RAM_SHORT_LC_ADDR, s->shortLc, SHORT_LC_BYTES);
@@ -440,8 +444,9 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
     /*
      * Same for the RF_TX_INTER advance word 0x12: the table writes the OEM
      * 0x98, a different value asked for from the monitor screen (OpenGD77's
-     * 0x15) is rewritten here so that it survives the reconfigurations
-     * the opMode handler does on its own. UNVERIFIED on hardware.
+     * 0x15, carried by rtxStatus_t::dmr_rfAdvance into cfg->rfAdvance) is
+     * rewritten here so that it survives the reconfigurations the opMode
+     * handler does on its own. UNVERIFIED on hardware.
      */
     if ((cfg->rfAdvance != 0) && (cfg->rfAdvance != DMRBB_RF_ADVANCE_DEFAULT))
         C6000.writeCfgRegister(0x12, cfg->rfAdvance);
