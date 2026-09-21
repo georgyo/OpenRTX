@@ -587,13 +587,17 @@ void radio_updateConfiguration()
          * for both two-point outputs. Target: +-1.944kHz symbol deviation,
          * to be measured on a deviation meter or a DMR test set.
          */
-        qAmp = interpParameter(config->txFrequency, calData.txCalFreq, calData.txDigitalPathQ);
-        iAmp = interpParameter(config->txFrequency, calData.txCalFreq, calData.txDigitalPathI);
+        qAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                               calData.txDigitalPathQ);
+        iAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                               calData.txDigitalPathI);
     }
     else
     {
-        qAmp = interpParameter(config->txFrequency, calData.txCalFreq, calData.txDigitalPathQ);
-        iAmp = interpParameter(config->txFrequency, calData.txCalFreq, calData.txAnalogPathI);
+        qAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                               calData.txDigitalPathQ);
+        iAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                               calData.txAnalogPathI);
     }
 
     C6000.writeCfgRegister(0x45, qAmp);   // Adjustment of Mod2 amplitude
