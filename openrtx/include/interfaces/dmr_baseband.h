@@ -179,6 +179,13 @@ struct dmrbbConfig {
                             aligned (G4EML bit map; manual §5.4.3 gives
                             0x68/0x6A). UNVERIFIED on hardware, selectable
                             from the monitor screen                       */
+    uint8_t rfAdvance; /**< Value for register 0x12, RF_TX_INTER advance:
+                            bit7 RF ramp smoothing, [5:0] x 100 us before
+                            the own burst. 0 = driver default (0x98, the
+                            OEM init word: 2.4 ms with smoothing); 0x15 is
+                            the OpenGD77 word. Written after the mode table
+                            so that the monitor screen's choice survives a
+                            reconfiguration. UNVERIFIED on hardware       */
 };
 
 /**
@@ -188,6 +195,13 @@ struct dmrbbConfig {
  * screen once it exists.
  */
 #define DMRBB_MODE_REG_DEFAULT 0x6E
+
+/**
+ * Default value for dmrbbConfig::rfAdvance, register 0x12: RF ramp smoothing
+ * on, RF_TX_INTER 24 x 100 us = 2.4 ms ahead of the own burst (OEM CS7000
+ * init capture; OpenGD77 uses 0x15). UNVERIFIED on hardware.
+ */
+#define DMRBB_RF_ADVANCE_DEFAULT 0x98
 
 /**
  * Initialise the DMR modem driver: interrupt lines, ISR mailbox, SPI ports.
