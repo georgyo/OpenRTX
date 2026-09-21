@@ -158,6 +158,7 @@ static const uintptr_t midPortAddr = GPIOC_BASE + 0x10;
 static const struct gpioDev misaligned = { nullptr, (void *)midPortAddr };
 
 static const struct gpioPin pa0 = { &portA, 0 };
+static const struct gpioPin pa3 = { &portA, 3 };
 static const struct gpioPin pc0 = { &portC, 0 };
 static const struct gpioPin pc1 = { &portC, 1 };
 static const struct gpioPin pc2 = { &portC, 2 };
@@ -194,6 +195,7 @@ static void recordCall(void *arg)
 static void cleanup()
 {
     gpioIrq_detach(&pa0);
+    gpioIrq_detach(&pa3);
     gpioIrq_detach(&pc0);
     gpioIrq_detach(&pc1);
     gpioIrq_detach(&pc2);
@@ -385,6 +387,36 @@ TEST_CASE("Detaching masks the line, drops the callback and frees the line",
     REQUIRE(gpioIrq_attach(&pa0, GPIO_IRQ_FALLING, recordCall, &rec) == 0);
     REQUIRE(regExticr(0) == SYSCFG_EXTICR1_EXTI0_PA);
     REQUIRE(regImr() == (1U << 0));
+
+    cleanup();
+}
+
+TEST_CASE("Detaching a pin of another port leaves the attached line alone",
+          "[stm32][gpio_irq]")
+{
+    cleanup();
+    CallRecord rec;
+    REQUIRE(gpioIrq_attach(&pc3, GPIO_IRQ_FALLING, recordCall, &rec) == 0);
+    const uint32_t exticr = regExticr(0);
+
+    /* PA3 was never attached: line 3 belongs to PC3 */
+    gpioIrq_detach(&pa3);
+    REQUIRE(regImr() == (1U << 3));
+    REQUIRE(regFtsr() == (1U << 3));
+    REQUIRE(regExticr(0) == exticr);
+    REQUIRE(nvicEnabled(EXTI3_IRQn));
+
+    setPr(1U << 3);
+    EXTI3_IRQHandler();
+    REQUIRE(rec.calls == 1);
+
+    /* PA3 cannot be attached while PC3 holds the line either */
+    REQUIRE(gpioIrq_attach(&pa3, GPIO_IRQ_FALLING, recordCall, &rec) == -1);
+
+    /* The owner detaches it */
+    gpioIrq_detach(&pc3);
+    REQUIRE(regImr() == 0);
+    REQUIRE(nvicEnabled(EXTI3_IRQn) == false);
 
     cleanup();
 }
