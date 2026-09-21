@@ -13,10 +13,18 @@ Added
 -----
 - ui: FRS mode (Settings > FRS): 22-channel Family Radio Service channel plan
   with per-channel Motorola-style CTCSS privacy codes 1-38, see docs/frs_mode.md
-- ui: DMR mode selection (macro key 5), main screen talkgroup/colour code/slot
-  lines and Settings > DMR (ID, talkgroup, call type, colour code, timeslot,
-  monitor, access, hang time) on CS7000, CS7000 Plus and the emulator; first
-  stage of the DMR series, no RF yet, see docs/dmr_mode.md
+- DMR mode on the CS7000, CS7000 Plus and the emulator, see docs/dmr_mode.md:
+  mode selection (macro key 5), Settings > DMR (ID, talkgroup, call type,
+  colour code, timeslot, monitor, access, hang time, test tone, favourites,
+  monitor screen), the ETSI TS 102 361 protocol library and FEC reference
+  module, the Layer-2 call state machine over an abstract modem interface
+  with the HR_C6000 driver and the emulator's scriptable fake modem, the RX
+  and TX voice plumbing around a pluggable vocoder (no AMBE code in the
+  tree: null and loopback backends only), simplex and repeater transmission
+  with wake-up, contacts as destinations, a favourites list, a last heard
+  list with private call back (macro key 4), the repeater's slot activity
+  from the Short LC, contact names and voice prompts for received calls.
+  Nothing has been verified on a radio yet, see docs/dmr_bringup.md
 
 v0.4.5 - 2026-09-25
 ===================
