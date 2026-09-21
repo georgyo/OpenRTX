@@ -659,6 +659,7 @@ int _ui_getDMRValueName(char *buf, uint8_t max_len, uint8_t index)
  * see interfaces/dmr_baseband.h; the action values are the ones ui.c writes.
  */
 static rtxStatus_t dmrMonStatus;
+static bool dmrMonReady = false;    // RTX in DMR on a working modem
 static uint8_t dmrMonModeReg = DMRBB_MODE_REG_DEFAULT;
 static uint8_t dmrMonR06 = 0;
 static uint8_t dmrMonPage = 0;
@@ -825,7 +826,8 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
         case DMRMON_RB10:
         case DMRMON_RB06:
         case DMRMON_RB12:
-            sniprintf(buf, max_len, "%02X", dmrMonReadback[index - DMRMON_RB10]);
+            sniprintf(buf, max_len, "%02X",
+                      dmrMonReadback[index - DMRMON_RB10]);
             break;
         case DMRMON_RB14:
             // In address order: byte order UNVERIFIED on hardware
@@ -859,21 +861,39 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
                       (mon->lcValid & 0x01) ? "ok" : "bad",
                       (mon->lcValid & 0x02) ? "" : "*");
             break;
+        // Actions: the registers the next ENTER writes, or the hint that
+        // ui.c refuses them because the RTX stage is not running DMR
         case DMRMON_ACT_RESYNC:
-            sniprintf(buf, max_len, "41<-20");
-            break;
         case DMRMON_ACT_MODE:
-            sniprintf(buf, max_len, "10<-%02X",
-                      (dmrMonModeReg == 0x6E) ? 0x6A : 0x6E);
-            break;
         case DMRMON_ACT_R06:
-            sniprintf(buf, max_len, "06<-%02X", dmrMonR06Values[dmrMonR06]);
-            break;
         case DMRMON_ACT_BER:
-            sniprintf(buf, max_len, "10 40 41");
-            break;
         case DMRMON_ACT_TWOPOINT:
-            sniprintf(buf, max_len, "12^40");
+            if(dmrMonReady == false)
+            {
+                sniprintf(buf, max_len, "DMR off");
+            }
+            else if(index == DMRMON_ACT_RESYNC)
+            {
+                sniprintf(buf, max_len, "41<-20");
+            }
+            else if(index == DMRMON_ACT_MODE)
+            {
+                sniprintf(buf, max_len, "10<-%02X",
+                          (dmrMonModeReg == 0x6E) ? 0x6A : 0x6E);
+            }
+            else if(index == DMRMON_ACT_R06)
+            {
+                sniprintf(buf, max_len, "06<-%02X",
+                          dmrMonR06Values[dmrMonR06]);
+            }
+            else if(index == DMRMON_ACT_BER)
+            {
+                sniprintf(buf, max_len, "81 10 40 41");
+            }
+            else
+            {
+                sniprintf(buf, max_len, "12^40");
+            }
             break;
         default:
             buf[0] = '\0';
@@ -892,6 +912,8 @@ void _ui_drawDMRMonitor(ui_state_t* ui_state)
     char value_buf[MAX_ENTRY_LEN] = "";
 
     dmrMonStatus = rtx_getCurrentStatus();
+    dmrMonReady = (dmrMonStatus.opMode == OPMODE_DMR)
+               && ((dmrMonStatus.dmr_markers & DMR_MARK_NOT_SUPPORTED) == 0);
     dmrMonModeReg = ui_state->dmr_mon_modeReg;
     dmrMonR06 = ui_state->dmr_mon_r06 % DMRMON_R06_VARIANTS;
     ui_state->dmr_mon_page %= pages;
@@ -930,7 +952,8 @@ void _ui_drawDMRMonitor(ui_state_t* ui_state)
                          color_white, true);
         }
 
-        gfx_print(pos, layout.menu_font, TEXT_ALIGN_LEFT, text_color, entry_buf);
+        gfx_print(pos, layout.menu_font, TEXT_ALIGN_LEFT, text_color,
+                  entry_buf);
         gfx_print(pos, layout.menu_font, TEXT_ALIGN_RIGHT, text_color,
                   value_buf);
         pos.y += layout.menu_h;

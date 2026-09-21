@@ -229,10 +229,11 @@ enum dmrMonitorRows
     DMRMON_LC_FLCO,       // decoded FLCO
     DMRMON_LC_FID,        // decoded FID
     DMRMON_LC_CRC,        // chip CRC verdict and parse result
-    DMRMON_ACT_RESYNC,    // 0x41 = 0x20
+    DMRMON_ACT_RESYNC,    // 0x81 = 0xFE, 0x41 = 0x20
     DMRMON_ACT_MODE,      // 0x10 = 0x6E / 0x6A
     DMRMON_ACT_R06,       // 0x06 = next variant
-    DMRMON_ACT_BER,       // 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41
+    DMRMON_ACT_BER,       // 0x83 = 0xFF, 0x81 = 0xFF, 0x10 = 0x02,
+                          // 0x40 = 0x40, 0x41 = 0x41
     DMRMON_ACT_TWOPOINT,  // 0x12 bit6 toggle
     DMRMON_ROWS_NUM
 };
