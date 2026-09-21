@@ -1144,7 +1144,13 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     REQUIRE(monitorValue(DMRMON_LC_FLCO) == "0");
     REQUIRE(monitorValue(DMRMON_LC_FID) == "00");
     REQUIRE(monitorValue(DMRMON_LC_CRC) == "ok");
-    REQUIRE(monitorValue(DMRMON_AUD_VOCODER) == dmrAudio_backendName());
+    /* The backend this build links, initialised by the RTX stage: "none"
+     * would mean OpMode_DMR::enable() never reached dmrAudio_init() */
+#ifdef CONFIG_DMR_VOCODER_LOOPBACK
+    REQUIRE(monitorValue(DMRMON_AUD_VOCODER) == "loopback");
+#else
+    REQUIRE(monitorValue(DMRMON_AUD_VOCODER) == "null");
+#endif
     REQUIRE(monitorValue(DMRMON_AUD_RX) == "0");
     REQUIRE(monitorValue(DMRMON_AUD_VARY) == "0");
     REQUIRE(monitorValue(DMRMON_AUD_OUT) == "0");
