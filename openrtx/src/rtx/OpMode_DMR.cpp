@@ -291,14 +291,22 @@ void OpMode_DMR::followState(uint32_t nowMs)
 void OpMode_DMR::monitor(uint32_t ev)
 {
     mon.timecode = ctrl.report().timecode;
-    if (ev == DMRBB_EV_TIMEOUT)
-        return;
 
-    /* Interrupt counters and per-slot measurements come with every event */
+    /*
+     * The interrupt counters are refreshed by the driver on every wait,
+     * timeouts included: a line that pulses without raising an event (PC3
+     * while the pinmap expects SYS on PC1) is only visible through them, so
+     * they are published before the event gating of the register fields.
+     */
     mon.tsCount = snap.tsCount;
     mon.sysCount = snap.sysCount;
     mon.rftxCount = snap.rftxCount;
     memcpy(mon.lineCount, snap.lineCount, sizeof(mon.lineCount));
+
+    if (ev == DMRBB_EV_TIMEOUT)
+        return;
+
+    /* Per-slot measurements come with every event */
     mon.rssi = snap.rssi;
     mon.fskErr = snap.fskErr;
 

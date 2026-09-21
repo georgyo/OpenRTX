@@ -1086,9 +1086,10 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     s.r5f = 0x01;
     s.rssi = 1234;
     s.fskErr = 7;
-    s.lineCount[0] = 6;
-    s.lineCount[3] = 1;
     memcpy(s.lc, lc, sizeof(s.lc));
+    for (unsigned i = 0; i < 6; i++)
+        dmrEmu_pulseLine(0);
+    dmrEmu_pulseLine(3);
     dmrEmu_pushSys(&s);
     rtx_task();
 

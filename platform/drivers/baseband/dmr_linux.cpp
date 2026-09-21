@@ -115,6 +115,7 @@ bool running = false; /* 0x40 has TxEn/RxEn: timeslots tick   */
 uint8_t tcNext = 0;   /* CACH TC of the next timeslot started */
 uint32_t tsCount = 0;
 uint32_t sysCount = 0;
+uint32_t lineCount[4] = { 0, 0, 0, 0 }; /* fake EXTI pulses, see pulseLine */
 uint32_t tsEpoch = 0; /* tick of slot zero, see pushTsEvent()    */
 
 uint32_t replaySrc = 0;
@@ -132,14 +133,26 @@ void pushEvent(const Event &e)
     pthread_cond_signal(&cv);
 }
 
+/*
+ * The interrupt counters as the real driver reports them: on every wait,
+ * events and timeouts alike. The per-line counters only move through
+ * dmrEmu_pulseLine(), the fake modem having no interrupt lines of its own.
+ */
+void fillCounters(struct dmrbbSnapshot *s)
+{
+    s->tsCount = tsCount;
+    s->sysCount = sysCount;
+    memcpy(s->lineCount, lineCount, sizeof(s->lineCount));
+}
+
 void pushTsEvent(uint8_t cc)
 {
     Event e;
-    memset(&e, 0x00, sizeof(e)); /* lineCount[]: no EXTI lines here */
+    memset(&e, 0x00, sizeof(e));
     e.mask = DMRBB_EV_TS;
     e.snap.r52 = (uint8_t)((cc << 4) | (tcNext ? R52_TC : 0));
-    e.snap.tsCount = ++tsCount;
-    e.snap.sysCount = sysCount;
+    tsCount++;
+    fillCounters(&e.snap);
     /*
      * Timestamp of the slot clock: the fake chip's axis is this counter,
      * one slot per event, so the tick advances by a slot per event rather
@@ -157,8 +170,8 @@ void pushSysEvent(const struct dmrbbSnapshot &s)
     memset(&e, 0x00, sizeof(e));
     e.mask = DMRBB_EV_SYS;
     e.snap = s;
-    e.snap.tsCount = tsCount;
-    e.snap.sysCount = ++sysCount;
+    sysCount++;
+    fillCounters(&e.snap);
     pushEvent(e);
 }
 
@@ -369,6 +382,11 @@ int dmrbb_init(void)
     running = false;
     replayTicks = 0;
 
+    /* The interrupt counters start from zero, as on the radio */
+    tsCount = 0;
+    sysCount = 0;
+    memset(lineCount, 0x00, sizeof(lineCount));
+
     if (clockEnabled) {
         if (emulator_state.dmrCallSrc != 0) {
             replaySrc = emulator_state.dmrCallSrc;
@@ -522,6 +540,7 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
         if (mask & DMRBB_EV_SYS)
             rec.sysDelivered++;
     } else {
+        fillCounters(s);
         rec.timeouts++;
     }
 
@@ -570,6 +589,7 @@ void dmrEmu_reset(void)
     tcNext = 0;
     tsCount = 0;
     sysCount = 0;
+    memset(lineCount, 0x00, sizeof(lineCount));
     tsEpoch = (uint32_t)getTick();
     replaySrc = 0;
     replayDst = 0;
@@ -595,6 +615,16 @@ void dmrEmu_pushSys(const struct dmrbbSnapshot *s)
 {
     pthread_mutex_lock(&mtx);
     pushSysEvent(*s);
+    pthread_mutex_unlock(&mtx);
+}
+
+void dmrEmu_pulseLine(uint8_t line)
+{
+    if (line >= 4)
+        return;
+
+    pthread_mutex_lock(&mtx);
+    lineCount[line]++;
     pthread_mutex_unlock(&mtx);
 }
 
