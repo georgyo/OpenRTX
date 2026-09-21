@@ -24,6 +24,7 @@
 #include <cstring>
 #include <vector>
 
+#include "drivers/audio/Cx000_dac.h"
 #include "drivers/baseband/HR_C6000.h"
 #include "hwconfig.h"
 #include "interfaces/delays.h"
@@ -303,8 +304,18 @@ extern "C" long long getTick()
 /*
  * Test helpers.
  */
+
+/*
+ * Every case starts from a driver in its power-on state, whatever the
+ * previous case left behind (a failed REQUIRE skips its trailing
+ * dmrbb_terminate()): the driver is reset through its public API, then the
+ * fakes are cleared.
+ */
 static void resetAll()
 {
+    dmrbb_terminate();
+    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 0);
+
     uspi.reset();
     vspi.reset();
     gpioModes.clear();
@@ -919,4 +930,44 @@ TEST_CASE("dmrbb_terminate detaches the lines and idles the chip once",
     REQUIRE(uspi.pages[1][0x54] == 0x78);
     uspi.pages[2][0x05] = 0x5A;
     REQUIRE(dmrbb_readRegister(2, 0x05) == 0x5A);
+}
+
+TEST_CASE("The OpenMusic DAC keeps the vocoder bits while DMR owns the chip",
+          "[dmr_cs7000]")
+{
+    /*
+     * The real DAC driver on the same fake bus: after dmrbb_configure() a
+     * beep toggles bit 1 of 0x06 with a read-modify-write around the 0x21
+     * the DMR table wrote, after dmrbb_terminate() it writes the FM pair
+     * 0x22 / 0x20 wholesale without reading the register first.
+     */
+    bringUp();
+    Cx000dac_init(&C6000);
+    uspi.log.clear();
+    REQUIRE(uspi.pages[4][0x06] == 0x21);
+
+    REQUIRE(Cx000dac_startBeep(1000) == 0);
+    REQUIRE(uspi.log.size() == 2);
+    requireTx(uspi.log[0], { 0x84, 0x06, 0x00 });
+    requireTx(uspi.log[1], cfgWrite(0x06, 0x23));
+    REQUIRE(uspi.pages[4][0x06] == 0x23);
+
+    uspi.log.clear();
+    Cx000dac_stopBeep();
+    REQUIRE(uspi.log.size() == 2);
+    requireTx(uspi.log[1], cfgWrite(0x06, 0x21));
+
+    /* FM again: the register still reads 0x21, the write is wholesale */
+    dmrbb_terminate();
+    uspi.log.clear();
+    REQUIRE(Cx000dac_startBeep(1000) == 0);
+    REQUIRE(uspi.log.size() == 1);
+    requireTx(uspi.log[0], cfgWrite(0x06, 0x22));
+
+    uspi.log.clear();
+    Cx000dac_stopBeep();
+    REQUIRE(uspi.log.size() == 1);
+    requireTx(uspi.log[0], cfgWrite(0x06, 0x20));
+
+    Cx000dac_terminate();
 }
