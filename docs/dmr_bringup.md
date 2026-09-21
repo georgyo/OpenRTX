@@ -121,19 +121,21 @@ rebuild. Nothing on it is needed for normal operation.
 Pages are flipped with LEFT and RIGHT (UP, DOWN and ENTER flip them too,
 except on the action page, where UP and DOWN select the action and ENTER runs
 it); ESC returns to `Settings > DMR`. The rows come in five sections of 12,
-13, 7, 7 and 5 rows, each starting on a new page and spanning as many pages as
-the screen height needs: six rows per page on the 160x128 displays, hence
+13, 7, 11 and 7 rows (`enum dmrMonitorRows` in `ui_default.h`), each value
+section starting on a new page and spanning as many pages as the screen
+height needs, the action section always one page whose rows scroll behind
+the selection: six rows per page on the 160x128 displays, hence
 2 + 3 + 2 + 2 + 1 = 10 pages, five rows per page on 128x64, hence
-3 + 3 + 2 + 2 + 1 = 11 pages (`_ui_dmrMonitorPages()` in `ui_menu.c`; the title reads
-`DMR monitor n/N`):
+3 + 3 + 2 + 3 + 1 = 12 pages (`_ui_dmrMonitorPages()` in `ui_menu.c`; the
+title reads `DMR monitor n/N`):
 
 | Section | Rows | Source |
 |---|---|---|
 | 1. Counters | `TS`, `SYS`, `RFTX` interrupt counts; `PC0`..`PC3` EXTI pulses per line; `Lock` (0 none, 1 slots ticking, 2 timecode locked); `Timecode`; last `0x82`, `0x84`, `0x86` | `dmrbbSnapshot` counters and `lineCount[]`, refreshed on every pass of the opMode handler including the 30 ms timeouts (a line pulsing without raising an event, PC3 while the pinmap expects SYS on PC1, is counted all the same); flags of the last SYS event |
 | 2. Registers | last `0x51`, `0x52`, `0x5F`, `0x42`; `CC` (0x52[7:4]); `TC` (0x52 bit2); `Sync` (0x5F[1:0]: MS, BS, TDMA1, TDMA2); `RSSI` (0x43:0x44); `FSK err` (0x0F); `rd 0x10`, `rd 0x06`, `rd 0x12`, `rd 0x14-16` read back over U_SPI at every redraw | registers read in the TS/SYS passes; `dmrbb_readRegister()` |
 | 3. Link control | `LC 0-5`, `LC 6-11` (the 12 LC RAM octets in hex), `Src`, `Dst`, `FLCO`, `FID` decoded from them, `CRC` (`ok`/`bad` from 0x51 bit2, `*` appended when the 9 octets do not parse as a standard Full LC) | RX RAM of the last header, terminator or late entry |
-| 4. Audio (stage 4) | `Vocoder` (backend name), `Aud RX` (payloads pushed to playback), `Aud vary` (of which differing from the previous one), `Aud out` (480-sample blocks written to the speaker), `Aud TX` (payloads encoded from the microphone), `Underrun` (silent blocks between two payloads of a call), `Overrun` (payloads dropped from a full queue) | `rtxStatus_t::dmr_audio`, `dmrAudio_getStats()` of `core/dmr_audio.c` |
-| 5. Actions | `Resync`, `Mode 0x10`, `Reg 0x06`, `BER test`, `Two-point`, the value column showing the register and the value the next ENTER writes | `dmrbb_writeRegister()` on the CONFIG page (U_SPI opmode 4) |
+| 4. Audio (stages 4 and 5) | `Vocoder` (backend name), `Aud RX` (payloads pushed to playback), `Aud vary` (of which differing from the previous one), `Aud out` (480-sample blocks written to the speaker), `Aud TX` (payloads encoded from the microphone), `Underrun` (silent blocks between two payloads of a call), `Overrun` (payloads dropped from a full queue); since stage 5 `TX bursts` (own voice bursts sent), `TX silent` (of which carrying the AMBE silence pattern: all of them with the null backend), `TX under` (silence sent while the encoder thread ran, the microphone stream fell behind), `RF keyed` (times the RF stage was keyed for a transmission, one per accepted PTT press) | `rtxStatus_t::dmr_audio`, `dmrAudio_getStats()` of `core/dmr_audio.c`; `dmrMonitor_t` for the TX rows |
+| 5. Actions | `Resync`, `Mode 0x10`, `Reg 0x06`, `BER test`, `Two-point`, `LCSS mode`, `RF advance`, the value column showing the register and the value the next ENTER writes (`LCSS mode`: the convention it selects) | `dmrbb_writeRegister()` on the CONFIG page (U_SPI opmode 4); `LCSS mode` writes `state.dmr_lcssMode` instead |
 
 The actions, all `UNVERIFIED on hardware` (`openrtx/src/ui/default/ui.c`,
 `_ui_dmr_monitorAction()`), are only run while the RTX stage is in DMR on a
@@ -149,16 +151,18 @@ on a radio without a DMR modem the value column of the action page reads
 | Reg 0x06 | 0x06 = 0x21, 0x01, 0x24, 0x20, 0x00 in turn | Vocoder port variants: V_SPI under MCU control (OEM value), TX/RX RAM under MCU control, HR_V3000 hook-up value, V_SPI without MCU control, all off |
 | BER test | 0x83 = 0xFF, 0x81 = 0xFF, 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41 | PHY-layer BER test of manual 5.4.6: 36 raw bytes per frame in RX RAM 0x30, 0x82 bit0 per frame. Bit0 is the "PHY-only" interrupt `dmrMode()` masks with 0x81 = 0xFE, so the stale flags are cleared and the mask opened first; `Resync` or the next modem reconfiguration put 0xFE back |
 | Two-point | 0x12 bit6 toggled (read-modify-write) | 40 Hz square wave on MOD1/MOD2 to balance the two-point modulation |
+| LCSS mode | no register write: `state.dmr_lcssMode` toggled, pushed to the RTX stage as `rtxStatus_t::dmr_lcssMode` | Convention of the LCSS bits of register 0x50 in voice bursts, applied by the call controller to the next transmission without reprogramming the modem: `50 chip` = 0x08 \| seq << 4 with LCSS 00, the chip filling the embedded LC fragments (OpenGD77, default); `50 manual` = the manual's 5.4.5 sequence 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58. The value column names the convention the next ENTER selects; forgotten at power off |
+| RF advance | 0x12[5:0] and bit7 = 0x98 or 0x15, alternately (read-modify-write, bit6 preserved) | RF_TX_INTER advance: the OEM init word 0x98 (2.4 ms, RF ramp smoothing) or OpenGD77's 0x15 (2.1 ms, no smoothing); the OEM word when the register holds neither. The `Two-point` bit is left as it is, so the two can be combined |
 
 Two things to keep in mind:
 
 - The modem is reprogrammed from scratch (`dmrbb_configure()`, table 4.1 of
   the design note) whenever the colour code, timeslot, ID, access policy or
   mode word changes, and after 2 s without timeslot interrupts. `Reg 0x06`,
-  `BER test` and `Two-point` are therefore overwritten within 2 s while no
-  signal is being received; read `rd 0x06` / `rd 0x12` right after the
-  action, or run the check with a signal present. `Mode 0x10` survives, see
-  above.
+  `BER test`, `Two-point` and `RF advance` are therefore overwritten within
+  2 s while no signal is being received; read `rd 0x06` / `rd 0x12` right
+  after the action, or run the check with a signal present. `Mode 0x10` and
+  `LCSS mode` survive, see above.
 - PTT is disabled on every menu screen. For the checks that need
   transmission, run the action, press ESC back to the main screen, key the
   radio (a DMR transmission with silence frames), release, and come back to
@@ -527,24 +531,37 @@ impolite, then 0x40 = 0xE3 direct mode / 0xC3 repeater mode) and bursts go
 out only from the `0x41 = 0x80` of a later slot tick, with the frame type in
 0x50, the link control in TX RAM 0x00-0x0B (opcode 0x02, one chip select)
 and the 27 voice bytes on V_SPI (command 0x03, address 0x00). The PA stays
-keyed for the whole call; `RF_TX_INTER` is only counted and timestamped.
-The test coverage is in `tests/unit/hr_c6000_dmr.cpp` (byte streams) and
-`tests/unit/radio_cs7000.cpp` (keying order against the FM path). Nothing
-below has been run on a radio: the whole section is `UNVERIFIED on
+keyed for the whole call, from the arming of the modem to one slot after
+the terminator (or the wake-up CSBK) was programmed, earlier on the chip's
+"service transmission completely terminated" report (0x82 bit5 with 0x86
+bit7; the per-slot 0x86 bit4 sub-interrupt on the same 0x82 bit does not
+release it), or after 35 ms when neither arrives; the falling edge of
+`TX_PWR_EN` comes from `radio_disableRtx()`, followed by `radio_enableRx()`.
+`RF_TX_INTER` is only counted and timestamped. A PLL that does not lock
+(`radio_getStatus()` reads `OFF` after `radio_enableTx()`) aborts the
+transmission at once with the `RF failed` marker, nothing being shaped into
+the parked VCO. The test coverage is in `tests/unit/hr_c6000_dmr.cpp` (byte
+streams), `tests/unit/radio_cs7000.cpp` (keying order against the FM path)
+and `tests/unit/DMR_opmode.cpp` (keying around the call on the emulator).
+Nothing below has been run on a radio: the whole section is `UNVERIFIED on
 hardware`.
 
 Before keying a radio for the first time: dummy load or attenuator on the
 antenna port, low power, a DMR ID of your own (BrandMeister drops
 unregistered and 1xxxxxx IDs), and a receiver (SDR, test set or the second
-radio) to see what actually goes out. The two knobs of this stage live on
-the driver pseudo page (`dmrbb_readRegister(0xFF, addr)` /
-`dmrbb_writeRegister(0xFF, addr, v)`, `platform/drivers/baseband/dmr_CS7000.h`):
-`DMRBB_DRV_LCSS_MODE` (0x01: 0 = OpenGD77 convention, 1 = manual
-convention for the LCSS bits of 0x50 in voice bursts) and the read-only
-`DMRBB_DRV_RFTX_TICK` (0x20-0x23, tick of the last `RF_TX_INTER`) and
-`DMRBB_DRV_RFTX_LEAD` (0x24-0x25, milliseconds from the last slot tick to
-the last `RF_TX_INTER`). The monitor screen rows for them come with the UI
-side of this stage.
+radio) to see what actually goes out. The two knobs of this stage are
+actions of the monitor screen (section 2): `LCSS mode` (the convention of
+the LCSS bits of 0x50 in voice bursts, `state.dmr_lcssMode`: `50 chip` =
+OpenGD77's 0x08 | seq << 4, `50 manual` = the manual's 0x08 / 0x19 / 0x2B /
+0x3B / 0x4A / 0x58) and `RF advance` (0x12 = 0x98 or 0x15). Two read-only
+counters of the CS7000 driver have no monitor row yet and are read with a
+debugger or `dmrbb_readRegister(DMRBB_PAGE_DRIVER, addr)`
+(`platform/drivers/baseband/dmr_CS7000.h`): `DMRBB_DRV_RFTX_TICK`
+(0x20-0x23, tick of the last `RF_TX_INTER`) and `DMRBB_DRV_RFTX_LEAD`
+(0x24-0x25, milliseconds from the last slot tick to the last `RF_TX_INTER`);
+a monitor row for the lead is a follow-up. The per-transmission counters
+of the main flow are on the audio page: `TX bursts`, `TX silent`, `TX
+under` and `RF keyed`.
 
 ### 5.1 PA keying, PLL lock and the RF_TX_INTER lead
 
@@ -553,22 +570,35 @@ side of this stage.
 - Do: scope `TX_PWR_EN` (74HC595 bit 9, net 5TC), `PLL_LD` (PD11) and PC2
   (`RF_TX_INTER`), plus the RF envelope on a detector or the SDR waterfall.
   Key the radio in DMR on the dummy load for 5 s and release. Read `RFTX`
-  on the monitor screen and, once the rows exist, the `RFTX_LEAD` value.
-- Expect: `TX_PWR_EN` rises once per PTT press, after `PLL_LD` asserts and
-  within a few milliseconds of the press; it stays high until the
-  terminator has gone out and the controller is back in RX (a single
-  falling edge, from `radio_enableRx()`); no RF before `TX_PWR_EN`. PC2
-  pulses once per own slot (16.7/s) while transmitting, `RFTX` counts at
-  that rate, `RFTX_LEAD` reads 27 or 28 ms (2.4 ms before the next slot
-  boundary with 0x12 = 0x98). On the waterfall: bursts of 27.5 ms every
-  60 ms in one slot, an unmodulated carrier in the other slot (direct
-  mode, whole-call keying), nothing outside the channel mask.
+  and `RF keyed` on the monitor screen and, with a debugger (no monitor row
+  yet), `DMRBB_DRV_RFTX_LEAD`.
+- Expect: `TX_PWR_EN` rises once per PTT press (`RF keyed` counts 1 per
+  press), after `PLL_LD` asserts and within a few milliseconds of the
+  press, before the first header burst; it stays high until the terminator
+  has gone out, one slot (30 ms) after the controller went back to RX, or
+  less if the chip reports 0x82 bit5 with 0x86 bit7 first (a single
+  falling edge, from `radio_disableRtx()`, `radio_enableRx()` following at
+  once); no RF before `TX_PWR_EN`. PC2 pulses once per own slot (16.7/s)
+  while transmitting, `RFTX` counts at that rate, the lead reads 27 or
+  28 ms (2.4 ms before the next slot boundary with 0x12 = 0x98). On the
+  waterfall: bursts of 27.5 ms every 60 ms in one slot, an unmodulated
+  carrier in the other slot (direct mode, whole-call keying), nothing
+  outside the channel mask; the last burst on the air (the terminator) is
+  complete, not cut by the falling edge. A mode change (MONI + 5) or a
+  channel change to an FM channel while transmitting drops `TX_PWR_EN`
+  before the chip is reprogrammed to FM, with no carrier left on the air
+  during the teardown.
 - If wrong: RF without `TX_PWR_EN` or `TX_PWR_EN` before `PLL_LD`: the
   driver order is broken, compare with the FM path (both are asserted by
   `tests/unit/radio_cs7000.cpp`). `PLL_LD` never asserts: the TX VCO does
-  not reach the frequency (issue #436 territory), the driver stays OFF and
-  the call controller transmits into a parked VCO with the PA off; try
-  another frequency. No PC2 pulses: 3.1 (pin mapping) or 0x12 = 0x00 (the
+  not reach the frequency (issue #436 territory), the driver stays OFF,
+  the handler aborts the transmission and shows `RF failed` in the top bar
+  (`OpMode_DMR::keyRf()`); try another frequency. The terminator is cut
+  (the hotspot logs a call timeout instead of `end of voice
+  transmission`): the release comes too early, check the `0x86` row after
+  the release (`10` or `40` would mean a sub-interrupt other than bit7 got
+  through the controller's check) or widen `CallController::RF_UNKEY_MS`
+  by a slot. No PC2 pulses: 3.1 (pin mapping) or 0x12 = 0x00 (the
   advance disabled, `rd 0x12`). Bursts do not fall on the slot boundary
   (visible against a repeater or in a two-slot capture): 0x2E = 0x04 (400
   us internal TX delay compensation) is wrong for this board. The
@@ -634,10 +664,12 @@ side of this stage.
   the terminator (0x50 = 0x20, LC still in TX RAM) or the voice sequence.
   BER above a few percent: 5.2 or the 0x2E / 0x12 timing. No late entry
   with `EmbeddedLCOnly=1` while it works with 0: the LCSS convention:
-  flip `DMRBB_DRV_LCSS_MODE` to 1 (manual sequence 0x08 / 0x19 / 0x2B /
-  0x3B / 0x4A / 0x58) and repeat; if neither works, the chip does not
-  build the embedded LC from the TX RAM and the fragments have to be
-  supplied by the MCU (a follow-up). Silence frames not decoded as silence
+  run the `LCSS mode` action of the monitor screen so that its value
+  column reads `50 chip` (i.e. the manual sequence 0x08 / 0x19 / 0x2B /
+  0x3B / 0x4A / 0x58 is now selected, `dmr_lcssMode` = 1), go back to the
+  main screen and repeat; if neither works, the chip does not build the
+  embedded LC from the TX RAM and the fragments have to be supplied by the
+  MCU (a follow-up). Silence frames not decoded as silence
   by the network (noise on the far end): the V_SPI orientation or the TX
   RAM alternative (`DMRBB_DRV_VOICE_PATH` = 1, with `Reg 0x06` = 0x01).
   Busy never rejected: 0x21 = 0xA2 versus the manual's 0xA3 (3.4 for the
@@ -694,14 +726,19 @@ side of this stage.
 | Unknown | Assumed | Where | If wrong |
 |---|---|---|---|
 | 0x40 bit 3, who computes the RS(12,9) / CRC parity of headers, terminators and CSBKs | 0 = the chip, from the 9 or 10 octets in TX RAM | `HR_C6000::dmrTxStart()`, `dmrbb_writeTxLc()` | headers carry zero parity, nobody decodes the call: compute RS(12,9) / CRC-CCITT on the MCU with the stage-1 FEC module, write the 12 bytes, set bit 3 |
-| LCSS bits of 0x50 in voice bursts | OpenGD77: 0x08 | seq << 4, LCSS 00, chip fills the fragments | `dmrbb_setTxFrameType()`, `DMRBB_DRV_LCSS_MODE` | no late entry on the hotspot: knob = 1 (manual sequence); if still none, MCU-built fragments |
+| LCSS bits of 0x50 in voice bursts | OpenGD77: 0x08 \| seq << 4, LCSS 00, chip fills the fragments | `DMR::r50Voice()`, `LCSS mode` action (`dmr_lcssMode`) | no late entry on the hotspot: `LCSS mode` action (manual sequence); if still none, MCU-built fragments |
 | Voice payload transport | V_SPI, command 0x03 address 0x00, 27 bytes (0x06 = 0x21) | `dmrbb_writeVoice()`, `DMRBB_DRV_VOICE_PATH` | noise on the far end: knob = 1 (TX RAM 0x30) with `Reg 0x06` = 0x01, or the V_SPI pin orientation (pinmap.h) |
 | 0x21 arming value | 0xA2 polite / 0x02 impolite (bit 1 clears the encode buffer) | `HR_C6000::dmrTxStart()` | busy never rejected or TX never starts: manual's 0xA3 / plain 0xA0 |
 | 0x40 arming value | 0xE3 direct / 0xC3 repeater (TxEn + RxEn) | same | manual's 0xA3 (TxEn only) if the chip refuses to transmit with RxEn set |
 | RF timing: 0x12 advance, 0x2E delay, PA latency | 0x98 (2.4 ms, ramp smoothing), 0x04 (400 us), PA keyed for the whole call | `dmrMode()`, `radio_enableTx()` | bursts off the slot boundary: 0x2E; adjacent-slot emissions: per-slot keying from `DMRBB_EV_RFTX` |
 | 4FSK deviation pair | `txDigitalPathQ` / `txDigitalPathI` on 0x45 / 0x46 | `radio_updateConfiguration()` | deviation off: the analog pair, see 5.2 |
 | 0x22 encoder start (manual step 4, 0x22 = 0x80) | not written: the MCU is the vocoder (0x06 = 0x21), no chip-side encoder to start | - | TX start flag (0x84 bit 7) never seen or no voice bits go out: write 0x22 = 0x80 after the header, 0x40 after the terminator |
-| TX flags 0x82 bit 7 / 6 / 5 and sub-status 0x84 / 0x86 bit 7 | rejected / started / ended, voice bit 7 | `dmrbb_waitEvent()`, `HR_C6000::txRejected()` etc. | monitor screen `0x82` / `0x84` / `0x86` rows tell |
+| TX flags 0x82 bit 7 / 6 / 5 and sub-status 0x84 / 0x86 bit 7 | rejected / started / ended, voice bit 7; 0x82 bit 7 arrives through SYS_INTER for the busy path | `dmrbb_waitEvent()`, `HR_C6000::txRejected()` etc. | monitor screen `0x82` / `0x84` / `0x86` rows tell |
+| 0x86 sub-status bits under 0x82 bit 5 | bit 7 alone ends the transmission; bit 4 (Layer 2 per-slot deadline, Rdy_lst_inter) and the data bits come while the last burst is on the air and are ignored for the RF release; 0x87 = 0xFF lets all of them through | `CallController::onSysEvent()`, `R86_TX_COMPLETE` | terminator cut: mask 0x87 down to 0x80 in `dmrMode()`, or a sub-status other than bit 7 turns out to be the real end |
+| RF release margin after the last burst | one slot after the terminator / wake-up CSBK was programmed, or 35 ms without a timeslot interrupt, is enough for the PA to see the whole burst (manual 5.4.5 step 12: "after the next or a few 30 ms") | `CallController::unkeyAfterBurst()`, `RF_UNKEY_MS` | terminator cut on the waterfall or the hotspot: one more slot |
+| Whole-call PA keying | acceptable for the adjacent-slot emissions of a handheld | `OpMode_DMR::keyRf()` | per-slot keying from `DMRBB_EV_RFTX` (driver follow-up) |
+| Wake-up CSBK timing | sent with the chip's own timing, the RF released one slot after it while the modem is put back into passive RX in the same slot (0x40 = 0xC3, 0x41 = 0x20 / 0x50 written with the CSBK on the air) | `CallController` TX_WAKEUP | repeater never sees the CSBK: keep 0x40 = 0xE3 until the RF release |
+| `radio_disableRtx()` / `radio_enableRx()` one slot after the controller's own `dmrbb_startRx()` | a second resync 30 ms later is harmless (the chip is already in RX) | `OpMode_DMR::keyRf(false)` | `TS` stops counting after a transmission: drop the `dmrbb_startRx()` of the RF release |
 
 ## 6. Results
 
@@ -726,12 +763,15 @@ Fill one column per radio; leave a cell empty until the check was run.
 | 4.2 | Internal-vocoder experiment | silence in every 0x06 / 0x22 / 0x36 combination | | | |
 | 4.3 | V_SPI payload | `Aud vary` follows `Aud RX`, bytes match the hotspot dump | | | |
 | 4.4 | Call end, DAC FIFO stall, C6K_SLEEP | no rattle, C6K_SLEEP flat | | | |
-| 5.1 | PA keying, PLL lock, RFTX lead | TX_PWR_EN after PLL_LD, once per PTT; PC2 16.7/s; lead 27-28 ms | | | |
+| 5.1 | PA keying, PLL lock, RFTX lead | TX_PWR_EN after PLL_LD and before the first header, once per PTT (`RF keyed` +1), off one slot after the terminator; PC2 16.7/s; lead 27-28 ms | | | |
+| 5.1 | PLL lock failure | `RF failed` marker, no TX_PWR_EN, back in RX | | | |
+| 5.1 | Mode / channel change while transmitting | TX_PWR_EN off before the FM reprogramming, no carrier during the teardown | | | |
+| 5.1 | Null backend counters | `TX bursts` = `TX silent`, `TX under` 0 | | | |
 | 5.2 | 4FSK deviation on air | +/- 1.944 kHz / +/- 648 Hz, mask met, BER 0 % | | | |
-| 5.3 | Hotspot: header, end, duration, BER | `received RF voice header`, `end of voice transmission` 5.0 s, BER < 1 % | | | |
-| 5.3 | Hotspot: late entry, EmbeddedLCOnly 0 / 1 | `received RF late entry` in both; LCSS knob value that works | | | |
-| 5.3 | Busy channel, polite / impolite | rejected with `busy` marker / transmits | | | |
-| 5.4 | Repeater: BS sync, lock, slot, wake-up, rebroadcast | no TX before Lock 2, right TS, repeater wakes, second radio hears | | | |
+| 5.3 | Hotspot: header, end, duration, BER | `received RF voice header`, `end of voice transmission` 5.0 s (terminator complete), BER < 1 % | | | |
+| 5.3 | Hotspot: late entry, EmbeddedLCOnly 0 / 1 | `received RF late entry` in both; `LCSS mode` value that works | | | |
+| 5.3 | Busy channel, polite / impolite | rejected with `Busy` marker, RF keyed for the arming pass only / transmits | | | |
+| 5.4 | Repeater: BS sync, lock, slot, wake-up, rebroadcast | no TX before Lock 2, right TS, `WAKE` on the destination line then `TX` or `Wake-up failed` within ~0.8 s, repeater wakes, second radio hears | | | |
 | 5.5 | OEM interop, both directions | caller shown for the whole call, idle at release, silence not noise | | | |
 
 ## 7. Flashing back to the OEM DMR firmware

@@ -335,10 +335,11 @@ The top bar shows, in the place and look of the FRS marker, one of:
 | `No DMR ID` | PTT pressed with `Settings > DMR > DMR ID` unset. Registering an ID with RadioID is required by the networks |
 | `Busy` | The modem rejected the transmission because the channel is busy (polite access) |
 | `Wake-up failed` | A repeater channel did not answer the wake-up after N_Wakeup attempts |
+| `RF failed` | The RF stage refused to key for the transmission (the synthesizer did not lock, `radio_getStatus()` not `TX` after `radio_enableTx()`): aborted at once, nothing on the air |
 | `DMR not supported` | The radio has no DMR modem driver: the mode stays off |
 
-The first three go away at the next PTT press or after three seconds; the
-last one stays as long as DMR is selected.
+All but the last go away at the next PTT press or after three seconds; that
+one stays as long as DMR is selected.
 
 ### On the radios: the stub
 
@@ -549,8 +550,8 @@ receive report) and shown by a fifth section of the DMR monitor screen,
 | `Underrun` | `underruns` | silent blocks played between two payloads of the same reception (a lost or late burst); the silence before the first payload and after the last one is not counted |
 | `Overrun` | `overruns` | payloads dropped from a full queue, either direction |
 
-The section moves the actions to the last page as before; the screen has
-10 pages on the 160x128 displays and 11 on 128x64.
+The section moves the actions to the last page as before; with the stage 5
+rows the screen has 10 pages on the 160x128 displays and 12 on 128x64.
 
 ### The emulator demo
 
@@ -682,14 +683,24 @@ the first header slot is programmed), one `radio_disableRtx()` followed by
 the slot after the timeslot interrupt it was programmed at, so the release
 happens at the *following* timeslot interrupt, one slot after the
 controller went back to reception (the terminator is on the air during
-that slot); the chip's TX-end report (0x82 bit5, sub-status 0x86 bit7)
-releases it earlier when it comes first, and a timer of one slot plus the
-jitter tolerance (`CallController::RF_UNKEY_MS` = 35 ms) does it when
-neither arrives (a wake-up CSBK on a silent channel: passive timing gives
-no timeslot interrupt afterwards). A rejected transmission (0x82 bit7,
-channel busy under polite access), a PTT released before anything went
-out, a failed wake-up, the timeslot watchdog and `disable()` release it at
-once. `rtxStatus_t::opStatus` reads `TX` exactly while the RF is keyed.
+that slot); the chip's TX-end report (0x82 bit5 with sub-status 0x86 bit7,
+"service transmission completely terminated", `R86_TX_COMPLETE`) releases
+it earlier when it comes first, and a timer of one slot plus the jitter
+tolerance (`CallController::RF_UNKEY_MS` = 35 ms) does it when neither
+arrives (a wake-up CSBK on a silent channel: passive timing gives no
+timeslot interrupt afterwards). The other 0x86 sub-interrupts that raise
+the same 0x82 bit, in particular the per-slot Layer 2 deadline (bit4,
+Rdy_lst_inter, given every 30 ms once a time axis exists) and the data
+fragment events, come while the last burst is still on the air and are
+ignored for the release. A rejected transmission (0x82 bit7, channel busy
+under polite access), a PTT released before anything went out, a failed
+wake-up, the timeslot watchdog and `disable()` release it at once; an RF
+stage that refuses to key (the synthesizer did not lock, `radio_getStatus()`
+not `TX` right after `radio_enableTx()`) aborts the transmission before
+anything is programmed, with the `RF failed` marker. `disable()` drops the
+RF before the rest of its teardown when a transmission is in progress (a
+mode or channel change mid-call), and a modem reprogramming releases it
+first too. `rtxStatus_t::opStatus` reads `TX` exactly while the RF is keyed.
 `UNVERIFIED on hardware`: whether one slot of margin after the terminator
 is enough for the PA to see the whole burst (manual §5.4.5 step 12 says
 "after the next or a few 30 ms"), and whether keying the PA for the whole
@@ -701,9 +712,12 @@ timeslot, own ID, access policy changed from the UI) waits for the RF to
 be released as well, not only for the controller to leave its TX states.
 
 The microphone path (`SOURCE_MIC -> SINK_MCU`, `PRIO_TX`) is requested when
-the modem is armed and released when the controller is back in reception;
-the encoder thread on it is stopped as soon as the terminator is
-programmed, no payload being needed any more. The counters of the transmit
+the modem is armed and released, with the encoder thread on it stopped,
+once the RF is released (or at once when a call opens in between): no
+payload is requested after the terminator is programmed, and stopping the
+thread joins it, which may block for up to one 60 ms microphone block, a
+stall that must not sit between the terminator write and the idling of the
+slot after it. The counters of the transmit
 side (`DmrAudioLink`: bursts requested, filled by the audio layer, silence
 sent while the encoder ran) go to the monitor screen, see
 [DMR monitor screen](#dmr-monitor-screen).
@@ -791,18 +805,26 @@ expected anywhere: silence is the payload by design, see
   one 27-byte write per own slot and the silence pattern, a release after
   burst A completing B..F then the terminator, one `radio_disableRtx()` at
   the timeslot after the terminator slot (and `opStatus` following the
-  keying), the TX-end report releasing earlier, a rejected transmission
-  unkeying at once with the `Busy` marker, T_TO (1 s) ending at the
-  superframe boundary with the PTT latched, a silent repeater channel
-  (wake-up keyed per attempt, released after each CSBK, the marker after
-  two attempts) and one that answers (the call in passive timing), the
-  LCSS convention from the RTX status, and the transmit counters of the
-  bring-up block.
-- `ui_dmr_test`: the `TX -> ` / `WAKE ` prefix of the destination line
-  and its width guard, the new monitor rows and actions (`LCSS mode`
-  pushing `dmr_lcssMode` to the RTX stage, `RF advance` writing 0x12 =
-  0x15 / 0x98), the scrolling action page, and the marker text of a
-  rejection.
+  keying), the TX-end report with 0x86 bit7 releasing earlier while the
+  per-slot bit4 sub-interrupt does not, a rejected transmission unkeying
+  at once with the `Busy` marker, T_TO (1 s) ending at the superframe
+  boundary with the PTT latched, a silent repeater channel (wake-up keyed
+  per attempt, released after each CSBK, the marker after two attempts)
+  and one that answers (the call in passive timing), the LCSS convention
+  from the RTX status, the transmit counters of the bring-up block, the
+  encoder and microphone held (no `dmrAudio_stop()`) from the terminator
+  write to the RF release, a configuration change in the slot after the
+  terminator reprogramming the modem only once the RF is off, `disable()`
+  mid-transmission dropping the RF before the modem terminate, an RF stage
+  that refuses to key (`radioEmu_setTxFails()`) aborting with the `RF
+  failed` marker, and a call opening under the still keyed RF taking the
+  microphone down for the playback.
+- `ui_dmr_test`: the `TX -> ` / `WAKE ` (`TX->` / `WAKE:` compact) prefix
+  of the destination line and its width guards for both layouts, the new
+  monitor rows and actions (`LCSS mode` pushing `dmr_lcssMode` to the RTX
+  stage, `RF advance` writing 0x12 = 0x15 / 0x98 with the two-point bit
+  preserved), the scrolling action page, and the marker text of a
+  rejection and of an RF failure.
 
 ## Licensing
 
