@@ -11,25 +11,29 @@ in, and the rules the series follows.
 
 ## Read this first: status of the series
 
-DMR support lands in six stages. **Stages 1 to 3 are in the tree.** With
+DMR support lands in six stages. **Stages 1 to 4 are in the tree.** With
 them, DMR is a mode the user can select and configure, the RTX stage runs
 the complete Layer-2 call state machine (`OpMode_DMR` in `rtx.cpp`) against
-an abstract modem interface, and stage 3 adds what is needed to bring that
+an abstract modem interface, stage 3 adds what is needed to bring that
 interface up on the CS7000 radios: the STM32 external interrupt shim
 (`openrtx/include/peripherals/gpio_irq.h`), the HR_C6000 DMR modem driver,
 and the DMR monitor screen with its bring-up checklist
-([dmr_bringup.md](dmr_bringup.md)). On the Linux emulator the modem is a
-scriptable fake, so calls are received and transmitted headlessly. Nothing
-has been run on a radio: the analog FM and M17 modes keep working after
-visiting DMR, and the monitor screen exists so that the first person with a
-radio can find out which of the documented assumptions hold.
+([dmr_bringup.md](dmr_bringup.md)), and stage 4 the audio plumbing around a
+pluggable vocoder whose in-tree backends are not codecs (see
+[Vocoder](#vocoder)): a received call plays silence, the test tone, or on
+the emulator a tone, at the right times. On the Linux emulator the modem is
+a scriptable fake, so calls are received and transmitted headlessly and a
+replayed call is audible. Nothing has been run on a radio: the analog FM
+and M17 modes keep working after visiting DMR, and the monitor screen
+exists so that the first person with a radio can find out which of the
+documented assumptions hold.
 
 | Stage | Title | Status |
 |---|---|---|
 | 1 | DMR data model, settings, UI mode selection and ETSI protocol library (no RF) | in tree |
 | 2 | Call-control state machine, `dmr_baseband` interface, `OpMode_DMR` and the emulator modem model | in tree |
 | 3 | HR_C6000 DMR driver, EXTI shim, `radio_CS7000` branches and the DMR monitor screen (RX sync, colour code, slot and LC with caller display, no audio) | in tree |
-| 4 | RX voice plumbing: vocoder backend interface, `dmr_audio` thread, PCM to the speaker through the C6000 DAC, and the internal-vocoder experiment | in progress: the vocoder seam and the null / loopback backends are in tree (see [Vocoder](#vocoder)) |
+| 4 | RX voice plumbing: vocoder backend interface, `dmr_audio` thread, PCM to the speaker through the C6000 DAC, and the internal-vocoder experiment | in tree (the vocoder seam, the null / loopback backends, the audio thread and the emulator demo; the internal-vocoder experiment is a bring-up check, see [dmr_bringup.md](dmr_bringup.md)) |
 | 5 | TX voice calls: simplex (DMO, active timing) first, then repeater (RMO, passive timing with wake-up) | planned |
 | 6 | Contacts and talkgroup UI, last heard, private calls from history, voice prompts and documentation polish | planned |
 
@@ -144,10 +148,10 @@ timeslot and system passes, the last link control RAM with its decoded
 fields) and from `dmrbb_readRegister()` for a few registers read back at
 every redraw.
 
-The rows are grouped in four sections of 12, 13, 7 and 5 rows, each
+The rows are grouped in five sections of 12, 13, 7, 7 and 5 rows, each
 starting on a new page; a section spans as many pages as the display height
-needs (six rows per page on 160x128: 2 + 3 + 2 + 1 = 8 pages; five on
-128x64: 3 + 3 + 2 + 1 = 9 pages), the top bar reading `DMR monitor n/N`:
+needs (six rows per page on 160x128: 2 + 3 + 2 + 2 + 1 = 10 pages; five on
+128x64: 3 + 3 + 2 + 2 + 1 = 11 pages), the top bar reading `DMR monitor n/N`:
 
 1. counters: `TS`, `SYS`, `RFTX` interrupts, `PC0`..`PC3` pulses per EXTI
    line, slot lock, timecode, last `0x82` / `0x84` / `0x86`;
@@ -156,7 +160,9 @@ needs (six rows per page on 160x128: 2 + 3 + 2 + 1 = 8 pages; five on
    `0x06`, `0x12`, `0x14`-`0x16` read back;
 3. link control: the 12 LC RAM octets in hex, source, destination, FLCO, FID
    and the CRC verdict of the last header;
-4. actions: `Resync` (0x81 = 0xFE, the Layer-2 mask of `dmrMode()`, then
+4. audio (stage 4): the vocoder backend name and the `dmr_audio` counters,
+   see [Counters and the monitor screen](#counters-and-the-monitor-screen);
+5. actions: `Resync` (0x81 = 0xFE, the Layer-2 mask of `dmrMode()`, then
    0x41 = 0x20), `Mode 0x10` (0x6E / 0x6A, also pushed to the RTX stage as
    `rtxStatus_t::dmr_modeReg` so that it survives the modem reconfigurations
    until power off), `Reg 0x06` (cycles 0x21, 0x01, 0x24, 0x20, 0x00),
@@ -205,8 +211,10 @@ default), a receive report the DMR opMode handler fills (`dmr_lcOk`,
 `dmr_markers`) and the bring-up block `dmr_mon` (`dmrMonitor_t`, 64 bytes:
 interrupt and EXTI line counters, the last 0x82/0x84/0x86 flags,
 0x51/0x52/0x5F/0x42, RSSI, FSK error, timecode, the last LC RAM with its
-decoded source, destination, FLCO, FID and CRC verdict). The report and the
-block are owned by the opMode handler: `rtx_task()` keeps them across the
+decoded source, destination, FLCO, FID and CRC verdict) and, since stage 4,
+the audio layer counters `dmr_audio` (`struct dmrAudioStats` of
+`core/dmr_audio.h`, 16 bytes). The report, the block and the counters are
+owned by the opMode handler: `rtx_task()` keeps them across the
 copy of a new configuration, together with `opStatus`. The call state is one
 of `DMR_CALL_IDLE`, `DMR_CALL_RX`, `DMR_CALL_RX_HANG`, `DMR_CALL_TX` and
 `DMR_CALL_TX_WAKEUP`.
@@ -391,6 +399,179 @@ counts of headers, voice bursts, terminators and driver calls);
   (opening from `Settings > DMR`, the page walk on both key sets, the
   rendering of every row from a scripted call on the fake modem, and each
   action's register writes as recorded by `dmrEmu_record()->regLog`).
+
+## Stage 4: RX voice plumbing, the `dmr_audio` thread and the emulator demo
+
+Stage 4 closes the receive audio path from the modem to the speaker, and
+the transmit path from the microphone to the modem, around the vocoder seam
+of the [Vocoder](#vocoder) section. Nothing here decodes AMBE: with the null
+backend a received call plays silence (or the test tone) at the right
+times, with the loopback backend the emulator plays a tone.
+
+### The receive path
+
+```
+HR_C6000 -> V_SPI 27 bytes -> dmrbbSnapshot::voice -> CallController
+   -> DmrAudioLink::rxVoiceFrame() -> dmrAudio_pushFrame() [queue of 3]
+   -> DMR audio thread: dmrVocoder_get()->decode() -> 480 samples
+   -> 8 kHz output stream on SINK_SPK (audio_stream.c, double buffered,
+      one 60 ms block per half)
+   -> Cx000_dac.cpp "OpenMusic" (U_SPI SOUND page, 32 samples every 4 ms,
+      register 0x06 bit1 read-modify-write) -> C6000 DAC -> LINEOUT
+   -> TC75S51F -> volume -> TDA2822G -> speaker
+```
+
+`OpMode_DMR` requests `SOURCE_MCU -> SINK_SPK` at `PRIO_RX` when the call
+controller opens a call (`DMR_CALL_RX`), keeps the path through the hang
+time (the amplifier stays on for the answer) and releases it when the hang
+time ends, as in stage 2. New in stage 4: as soon as the path is granted it
+calls `dmrAudio_startRx()`, which opens the output stream on the sink of
+the path and starts the audio thread; every voice burst the controller
+hands to the `VoiceSink` (`DmrAudioLink` in `OpMode_DMR.hpp`) goes to
+`dmrAudio_pushFrame()`. The thread pops one payload per 60 ms period of the
+stream, decodes it into the idle half of the double buffer and syncs; when
+no payload is queued it writes silence. When the call ends (terminator or
+voice timeout, `DMR_CALL_RX_HANG`) the thread is stopped and the stream
+released while the path stays open; a call opening during the hang time
+starts it again.
+
+The audio path manager can suspend the RX path under a higher priority one
+on the same sink, typically a voice prompt (`PRIO_PROMPT`) or a beep: the
+stream layer then terminates the stream, the thread finds the path no
+longer `PATH_OPEN` at its next period and quits on its own. Payloads pushed
+meanwhile are dropped (`dmrAudio_pushFrame()` returns false, the opMode
+counts them as received but not queued). When the prompt releases the sink
+the RX path is open again and the next `update()` pass restarts the thread;
+the old one is reclaimed by that start, no thread is ever detached. A start
+that fails on an open path (no output device on that sink, as the emulator
+has no microphone device for the transmit side) is not retried until the
+path is requested anew.
+
+### The transmit side
+
+The microphone path (`SOURCE_MIC -> SINK_MCU`, `PRIO_TX`) is requested for
+the whole transmission as in stage 2; stage 4 adds `dmrAudio_startTx()` on
+it: an 8 kHz input stream on the source (with the `CONFIG_MIC_OVERSAMPLE`
+decimation, DC block and `CONFIG_MIC_GAIN` of the M17 encoder), the thread
+encodes each 480-sample block through the backend and queues the payload;
+`DmrAudioLink::txVoiceFrameNeeded()` pops one per own voice burst and the
+controller writes it to the modem, or the AMBE+2 silence pattern when the
+queue is empty. With the null backend every payload is the silence pattern,
+so the air interface carries a well-formed call with silence; keying the PA
+for it is stage 5. On the emulator there is no microphone device, the start
+is refused and silence is sent.
+
+### The `dmr_audio` module
+
+`openrtx/include/core/dmr_audio.h` / `openrtx/src/core/dmr_audio.c`, a C
+module modelled on `audio_codec.c`:
+
+| Function | Role |
+|---|---|
+| `dmrAudio_init()` / `dmrAudio_terminate()` | reference counted; the first init calls the backend's `init()` and clears the counters, the last terminate stops the thread and calls `terminate()`. `OpMode_DMR::enable()` / `disable()` pair them |
+| `dmrAudio_startRx(path)` / `dmrAudio_startTx(path)` | open the stream on the sink / source of an open path and start the thread; true at once when already running on that path; another path takes over only with a higher priority (the codec's rule) |
+| `dmrAudio_stop()` | stop the thread, release its stream, join. Idempotent and safe from two threads at once |
+| `dmrAudio_running()` | true while the thread runs; false once it quit on its own (path suspended, stream error) |
+| `dmrAudio_pushFrame(ambe)` | RX: queue a payload, never blocks; on a full queue the oldest is dropped and counted |
+| `dmrAudio_popFrame(ambe)` | TX: take the next encoded payload, false when empty or not encoding |
+| `dmrAudio_getStats()` | copy of `struct dmrAudioStats` |
+| `dmrAudio_backendName()` | `dmrVocoder_get()->name` |
+
+The queue holds `DMR_AUDIO_QUEUE_DEPTH` = 3 payloads (the one being played
+plus two bursts of jitter) in either direction, one direction at a time.
+Start and stop transitions are serialised by a mutex held until the new
+thread exists, so that a stop from the UI thread cannot slip between the
+stop of the old thread and the start of the new one, and the join is
+exclusive (Miosix fails a second concurrent join at once). The thread has
+`DMR_AUDIO_THREAD_STKSIZE` = 4096 bytes of stack (`core/threads.h`), sized
+for the in-tree backends: the output buffer is static, the oversampled
+input buffer is heap allocated for the life of the thread, the backends
+keep a payload and the DSP state on the stack. An out-of-tree backend
+documents its own figure.
+
+### Counters and the monitor screen
+
+`struct dmrAudioStats` is published on every pass into
+`rtxStatus_t::dmr_audio` (kept across configuration copies like the
+receive report) and shown by a fifth section of the DMR monitor screen,
+"Audio", between the link control and the actions:
+
+| Row | Field | Meaning |
+|---|---|---|
+| `Vocoder` | `dmrAudio_backendName()` | `null`, `loopback`, or the name an external backend gives |
+| `Aud RX` | `framesRx` | payloads handed to the audio layer while playback was running, dropped ones included |
+| `Aud vary` | `varying` | of which differed from the previous one: stays at 0 when the modem hands over the same bytes at every burst, what a dead V_SPI read looks like; follows `Aud RX` with real voice |
+| `Aud out` | `blocksOut` | 480-sample blocks written to the speaker stream, silence included |
+| `Aud TX` | `framesTx` | payloads encoded from the microphone |
+| `Underrun` | `underruns` | silent blocks played between two payloads of the same reception (a lost or late burst); the silence before the first payload and after the last one is not counted |
+| `Overrun` | `overruns` | payloads dropped from a full queue, either direction |
+
+The section moves the actions to the last page as before; the screen has
+10 pages on the 160x128 displays and 11 on 128x64.
+
+### The emulator demo
+
+With the default `dmr_vocoder=auto`, the Linux emulator links the loopback
+backend and `dmr_linux.cpp` fills the voice bursts of a replayed call with
+`dmrVocoderLoopback_tonePayload()`: 1 kHz on bursts A..C and 700 Hz on
+D..F at about -12 dBFS, the level stepping down by an inaudible notch from
+A to F so that every burst differs from the previous one. So
+
+```
+openrtx_linux --dmr-call 2345678,9      # a call to the default talkgroup
+```
+
+then MONI + 5 to switch to DMR: two seconds later the call is on the main
+screen and audible through SDL as a 180 ms alternation of the two tones for
+three seconds, every twelve seconds. Two seconds after each replayed call
+the fake modem prints what the audio layer did with it:
+
+```
+dmr_linux: audio loopback: rx 50, tx 0, blocks out 62, underruns 7, overruns 0, varying 50
+```
+
+which is also the headless check of the path: with
+`SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy` and the shell commands
+`sleep 2500`, `keycombo MONI 5`, `sleep 14000`, `quit` on stdin, the 50
+payloads reach the thread, every one differs from the previous, and one
+480-sample block per burst goes out (`blocks out` also counts the silence
+before the first burst and the gaps). A few underruns per call are normal
+on the emulator: the fake modem's 30 ms clock thread (`usleep`) and SDL's
+audio clock are not locked and drift apart over a call, whereas on a radio
+the slot timing and the DAC clock both come from the HR_C6000. The call is
+filtered like any other, so it must be addressed to the configured
+talkgroup (or `Settings > DMR > Monitor` set to accept it).
+
+### Tests
+
+- `dmr_audio_test` (`tests/unit/dmr_audio.cpp`, in the style of
+  `audio_threading_test`): the module with a fake audio driver paced by
+  the test, whose `sync()` blocks until the test grants a period and which
+  records every block written to the speaker, and a fake vocoder backend
+  (decode fills a pattern carrying the payload's first byte, encode
+  recovers the block index from the level of a square wave the fake
+  microphone delivers). Covered: init/terminate reference counting;
+  `startRx` then ten payloads played in order, 480 samples each; a missing
+  payload played as 480 zeros and counted once voice resumes, but not
+  before the first payload nor after the last; a full queue dropping the
+  oldest payload; `stop` releasing the stream and joining; a path
+  suspended by a prompt making the thread quit and a restart resuming
+  playback; `startTx` pulling 480-sample blocks with `popFrame` returning
+  the encoded payloads in order and the queue overflow; a start refused on
+  a sink without a device; the TX path taking over the RX one and not the
+  reverse; two concurrent stops; a hundred start/stop rounds, half of them
+  with the thread parked in the driver. `pthread_join()` is wrapped as in
+  the audio threading test; the sanitizer build runs it too.
+- `dmr_opmode_test`, extended: SDL's dummy audio device is initialised so
+  that the emulator's `SINK_SPK` stream really opens. An injected call
+  starts the thread on the granted `SOURCE_MCU -> SINK_SPK` path, blocks
+  flow while the call is up, every voice burst is pushed and counted, the
+  thread stops at the hang time and restarts for a call during it, the
+  path is released after; a transmission with no microphone device is
+  refused and sends the silence pattern; a voice prompt suspends the RX
+  path, the thread quits, the bursts meanwhile are lost, and playback
+  resumes after the prompt.
+- `ui_dmr_test`, extended: the audio section's rows, names and values.
 
 ## Licensing
 
@@ -616,3 +797,5 @@ of the DMR VFO from the settings, the exclusion with FRS mode, every item of
 receive, hang, transmit and wake-up call states, the DMR monitor screen with
 its pages and actions, the preservation of the receive report in
 `rtx_task()`, the size and the defaults of `settings_t`.
+
+To hear a replayed call, see [The emulator demo](#the-emulator-demo).
