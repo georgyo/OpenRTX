@@ -181,6 +181,7 @@ TEST_CASE("DMR OpMode: enable goes OFF -> RX and ticks to RX_IDLE",
     REQUIRE(b.rec->config.ownId == OWN_ID);
     REQUIRE(b.rec->config.polite == true);
     REQUIRE(b.rec->config.modeReg == DMRBB_MODE_REG_DEFAULT);
+    REQUIRE(b.rec->config.rfAdvance == DMRBB_RF_ADVANCE_DEFAULT);
     REQUIRE(b.rec->startRxCount == 1);
     REQUIRE(b.rec->r40 == R40_RX);
     REQUIRE(b.rec->r41 == R41_RX);
@@ -1055,6 +1056,28 @@ TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
     dmr.update(&b.status, true);
     REQUIRE(b.rec->configureCount == 4);
     REQUIRE(b.rec->config.modeReg == DMRBB_MODE_REG_DEFAULT);
+
+    /* The RF advance word the same way: 0 is the driver default, another
+     * word reprograms the modem once and survives a later reconfiguration
+     * (a colour code change), until the default is asked for again */
+    REQUIRE(b.rec->config.rfAdvance == DMRBB_RF_ADVANCE_DEFAULT);
+    b.status.dmr_rfAdvance = 0x15;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 5);
+    REQUIRE(b.rec->config.rfAdvance == 0x15);
+    REQUIRE(b.rec->config.modeReg == DMRBB_MODE_REG_DEFAULT);
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 5);
+    b.status.dmr_txColorCode = 7;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 6);
+    REQUIRE(b.rec->config.colorCode == 7);
+    REQUIRE(b.rec->config.rfAdvance == 0x15);
+    b.status.dmr_rfAdvance = 0;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 7);
+    REQUIRE(b.rec->config.rfAdvance == DMRBB_RF_ADVANCE_DEFAULT);
+    b.status.dmr_txColorCode = 1;
 }
 
 /*
@@ -1788,17 +1811,31 @@ TEST_CASE("DMR OpMode: Short LC activity updates raise and expire the TS "
     b.tick();
     REQUIRE(b.status.dmr_tsBusy == 0);
 
-    /* A Null message does not touch the hints, "no activity" clears them */
+    /* A Null message does not touch the hints but restarts their hold: a
+     * repeater sending it between two Activity Updates is still on the
+     * air. "No activity" clears them */
     FEC::ShortLc::toChipBytes(actUpdt(ACT_INDIVIDUAL_CSBK, ACT_NONE, 1, 0),
                               s.shortLc);
     dmrEmu_pushSys(&s);
     dmr.update(&b.status, false);
     REQUIRE(b.status.dmr_tsBusy == 0x01);
+    sleepFor(0, 1500);
     FEC::ShortLc::toChipBytes(0x00000000, s.shortLc);
     dmrEmu_pushSys(&s);
     dmr.update(&b.status, false);
     REQUIRE(b.status.dmr_tsBusy == 0x01);
     REQUIRE(b.status.dmr_mon.shortLcOk == 4);
+    sleepFor(0, 1500);
+    b.tick();
+    REQUIRE(b.status.dmr_tsBusy == 0x01);
+    sleepFor(0, 700);
+    b.tick();
+    REQUIRE(b.status.dmr_tsBusy == 0);
+    FEC::ShortLc::toChipBytes(actUpdt(ACT_GROUP_VOICE, ACT_NONE, 1, 0),
+                              s.shortLc);
+    dmrEmu_pushSys(&s);
+    dmr.update(&b.status, false);
+    REQUIRE(b.status.dmr_tsBusy == 0x01);
     FEC::ShortLc::toChipBytes(actUpdt(ACT_NONE, ACT_NONE, 0, 0), s.shortLc);
     dmrEmu_pushSys(&s);
     dmr.update(&b.status, false);
@@ -1813,6 +1850,61 @@ TEST_CASE("DMR OpMode: Short LC activity updates raise and expire the TS "
     dmr.disable();
     b.start();
     REQUIRE(b.status.dmr_tsBusy == 0);
+}
+
+TEST_CASE("DMR OpMode: a retune or a modem reprogramming drops the TS busy "
+          "hints and the monitor's Short LC",
+          "[dmr][rtx][shortlc]")
+{
+    Bench b;
+    b.start();
+    b.ticks(6);
+    REQUIRE(b.rec->configureCount == 1);
+
+    struct dmrbbSnapshot s;
+    memset(&s, 0x00, sizeof(s));
+    s.irq82 = R82_TX_END;
+    s.sub86 = R86_SHORT_LC;
+    uint32_t msg = actUpdt(ACT_GROUP_VOICE, ACT_GROUP_DATA, TALKGROUP, 9);
+    FEC::ShortLc::toChipBytes(msg, s.shortLc);
+
+    auto raise = [&]() {
+        dmrEmu_pushSys(&s);
+        dmr.update(&b.status, false);
+        REQUIRE(b.status.dmr_tsBusy == 0x03);
+        REQUIRE(b.status.dmr_mon.shortLc == msg);
+    };
+
+    /* A reconfiguration that changes nothing keeps them */
+    raise();
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 1);
+    REQUIRE(b.status.dmr_tsBusy == 0x03);
+    REQUIRE(b.status.dmr_mon.shortLc == msg);
+
+    /* Another RX frequency: the repeater is no longer listened to, the
+     * modem is not reprogrammed for that */
+    b.status.rxFrequency += 12500;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 1);
+    REQUIRE(b.status.dmr_tsBusy == 0);
+    REQUIRE(b.status.dmr_mon.shortLc == 0);
+    REQUIRE(b.status.dmr_mon.shortLcOk == 1);
+
+    /* The next Short LC of the new channel raises them again */
+    raise();
+    REQUIRE(b.status.dmr_mon.shortLcOk == 2);
+
+    /* A modem reprogramming (colour code change) drops them as well */
+    b.status.dmr_txColorCode = 3;
+    b.status.dmr_rxColorCode = 3;
+    dmr.update(&b.status, true);
+    REQUIRE(b.rec->configureCount == 2);
+    REQUIRE(b.status.dmr_tsBusy == 0);
+    REQUIRE(b.status.dmr_mon.shortLc == 0);
+    b.ticks(2);
+    REQUIRE(b.status.dmr_tsBusy == 0);
+    raise();
 }
 
 TEST_CASE("DMR OpMode: a received call feeds the last heard list once",
