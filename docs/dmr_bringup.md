@@ -65,8 +65,10 @@ fault.
   detector on PC1. The two boards may differ.
 - Check: the counters of check 1.1 tell which line pulses every 60 ms, see
   3.1.
-- If wrong: fix `DMR_SYS_INT` per target. The EXTI shim attaches PC0..PC3 all
-  four during bring-up, so no rebuild is needed to see the answer.
+- If wrong: switch the driver to the other line at runtime with the
+  `DMRBB_DRV_SYS_LINE` knob (section 6.3) and carry on with the checks;
+  then fix `DMR_SYS_INT` per target. The EXTI shim attaches PC0..PC3 all
+  four, so no rebuild is needed to see the answer nor to act on it.
 
 ### 1.3 NVIC priority 14 for the EXTI lines
 
@@ -121,7 +123,7 @@ rebuild. Nothing on it is needed for normal operation.
 Pages are flipped with LEFT and RIGHT (UP, DOWN and ENTER flip them too,
 except on the action page, where UP and DOWN select the action and ENTER runs
 it); ESC returns to `Settings > DMR`. The rows come in five sections of 12,
-13, 7, 11 and 7 rows (`enum dmrMonitorRows` in `ui_default.h`), each value
+15, 7, 11 and 7 rows (`enum dmrMonitorRows` in `ui_default.h`), each value
 section starting on a new page and spanning as many pages as the screen
 height needs, the action section always one page whose rows scroll behind
 the selection: six rows per page on the 160x128 displays, hence
@@ -154,6 +156,10 @@ on a radio without a DMR modem the value column of the action page reads
 | LCSS mode | no register write: `state.dmr_lcssMode` toggled, pushed to the RTX stage as `rtxStatus_t::dmr_lcssMode` | Convention of the LCSS bits of register 0x50 in voice bursts, applied by the call controller to the next transmission without reprogramming the modem: `50 chip` = 0x08 \| seq << 4 with LCSS 00, the chip filling the embedded LC fragments (OpenGD77, default); `50 manual` = the manual's 5.4.5 sequence 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58. The value column names the convention the next ENTER selects; forgotten at power off |
 | RF advance | 0x12[5:0] and bit7 = 0x98 or 0x15, alternately (read-modify-write, bit6 preserved) | RF_TX_INTER advance: the OEM init word 0x98 (2.4 ms, RF ramp smoothing) or OpenGD77's 0x15 (2.1 ms, no smoothing); the OEM word when the register holds neither. The `Two-point` bit is left as it is, so the two can be combined |
 
+The driver has one more knob on the pseudo page with no action row yet:
+`DMRBB_DRV_SYS_LINE` (0x02, `platform/drivers/baseband/dmr_CS7000.h`),
+which moves the SYS_INTER dispatch between PC1 and PC3, see 6.3.
+
 Two things to keep in mind:
 
 - The modem is reprogrammed from scratch (`dmrbb_configure()`, table 4.1 of
@@ -171,7 +177,7 @@ Two things to keep in mind:
 ## 3. Hardware checks, in order
 
 Each check names the unknown, what to do, what is expected and what to change
-where if it fails. Record the outcome in the table of section 6.
+where if it fails. Record the outcome in the table of section 7.
 
 ### 3.1 Interrupt lines: which pin carries SYS_INTER (PC1 or PC3) and whether RF_TX_INTER reaches PC2
 
@@ -190,9 +196,11 @@ where if it fails. Record the outcome in the table of section 6.
   receiving, then `RFTX` and `PC2` both counting about 16 per second after
   the transmission. `0x82` shows `08` (control frame) or `10` (late entry)
   during the call.
-- If wrong: `PC3` counts and `PC1` stays at 0 on the Plus: set
-  `DMR_SYS_INT` to PC3 in the CS7000-PLUS pinmap (the schematic). `PC1`
-  counts: the pinmap is right for that board. Neither counts while `PC0`
+- If wrong: `PC3` counts and `PC1` stays at 0 on the Plus: switch the
+  driver to PC3 with the `DMRBB_DRV_SYS_LINE` knob (6.3) and check that
+  `SYS` now counts with `PC3`; then set `DMR_SYS_INT` to PC3 in the
+  CS7000-PLUS pinmap (the schematic). `PC1` counts: the pinmap is right
+  for that board. Neither counts while `PC0`
   does: SYS interrupts are masked, see 3.5. `PC0` never counts: no sync, see
   3.3 and 3.7. `PC2` never counts during TX while `RFTX` is expected: the
   `_C` pad switch, check 1.1; if `PC2` counts but `RFTX` does not, the
@@ -740,7 +748,136 @@ under` and `RF keyed`.
 | Wake-up CSBK timing | sent with the chip's own timing, the RF released one slot after it while the modem is put back into passive RX in the same slot (0x40 = 0xC3, 0x41 = 0x20 / 0x50 written with the CSBK on the air) | `CallController` TX_WAKEUP | repeater never sees the CSBK: keep 0x40 = 0xE3 until the RF release |
 | `radio_disableRtx()` / `radio_enableRx()` one slot after the controller's own `dmrbb_startRx()` | a second resync 30 ms later is harmless (the chip is already in RX) | `OpMode_DMR::keyRf(false)` | `TS` stops counting after a transmission: drop the `dmrbb_startRx()` of the RF release |
 
-## 6. Results
+What the core side of stage 5 expects to see, all `UNVERIFIED on hardware`
+and to be ticked in the table of section 7 together with 5.1-5.5:
+
+- On a scope, `TX_PWR_EN` rises before the first header burst and falls one
+  slot after the terminator burst (5.1).
+- `RF keyed` on the monitor screen counts 1 per PTT press, `TX bursts`
+  equals `TX silent` with the null vocoder backend, `TX under` stays 0.
+- A repeater wake-up shows `WAKE` on the destination line, then either
+  `TX` or the `Wake-up failed` marker within about 0.8 s (two unanswered
+  wake-ups of `T_SyncWu`, 5.4).
+- A polite-access PTT over a busy slot shows `Busy` and the RF is never
+  keyed longer than the arming pass (`RF keyed` does not count, `TX_PWR_EN`
+  stays low, 5.3).
+
+## 6. Stage 6: Short LC, last heard and the SYS line knob (`dmr_CS7000.cpp`, `OpMode_DMR.cpp`)
+
+Stage 6 adds the day-to-day layer on top of the call flow: the last-heard
+list, contacts and favourites, the private call back, and the timeslot
+busy hint of the main screen derived from the Short LC the repeater sends
+in the CACH (TS 102 361-1 §7.1.4; the Activity Update of TS 102 361-2
+tells which slot is busy and with which hashed talkgroup). On the driver
+side the Short LC is a new snapshot field and the SYS_INTER line becomes a
+runtime choice. Nothing has been run on a radio: all of it is `UNVERIFIED
+on hardware`.
+
+### 6.1 Short LC in the snapshot (`dmrbbSnapshot::shortLc`, RX RAM 0x24-0x28)
+
+- Where: `readSysEvent()` in `platform/drivers/baseband/dmr_CS7000.cpp`,
+  `HR_C6000::SUB86_SHORT_LC`, the `shortLc[5]` field of
+  `openrtx/include/interfaces/dmr_baseband.h`.
+- Assumption: the manual (register 0x82 bit 5 description) lists "Short LC
+  receive interrupt" as bit 2 of the end-of-transmission sub-status
+  register 0x86, and its RAM map (Table 5.2) puts the Short LC at RX RAM
+  0x24-0x28: 0x24-0x26 plus bits 7:4 of 0x27 are the 28 control bits (SLCO
+  and 24 payload bits), 0x28 the 8 check bits (CRC-8, Annex B.3.7). The
+  driver reads the five bytes, in one chip select, when 0x82 bit 5 and
+  0x86 bit 2 are both set, right after 0x86 and before the status
+  registers; the snapshot keeps the previous bytes otherwise. The map is
+  partial in the manual and nothing says whether 0x28 holds the CRC as
+  received or the chip's own verdict, nor whether the flag fires on a
+  radio that is only receiving (it sits among the TX end bits).
+- Do: near a repeater with traffic on the other slot (or both), section 1
+  of the monitor screen: `0x82` and `0x86`. Then the main screen: the
+  TS1 / TS2 busy hint, if the UI shows one, against what the repeater's
+  dashboard says about the other slot.
+- Expect: `0x82` showing `20` (or `28`, `30` with a control frame) now and
+  then during the repeater's activity with `0x86` = `04`; the busy hint
+  following the other slot's activity within a second of the dashboard.
+- If wrong: `0x82` bit 5 never set while receiving: the chip does not
+  report Short LCs on the RX side, or 0x87 masks it (3.4; 0x87 = 0xFF is
+  already written by `dmrMode()`); failing that, read RX RAM 0x24-0x28 on
+  every SYS event in a debug build and compare with the repeater's CACH.
+  Bytes that never change or fail the CRC-8: the RAM address (try the
+  neighbouring words of Table 5.2, 0x18-0x23 is the Idle message) or the
+  bit packing of 0x27; the CRC of the host-side decoder is checked against
+  dmr_utils3 vectors, so a systematic failure on the radio points at the
+  layout.
+
+### 6.2 Last heard on a busy repeater and the call back
+
+- Where: the last-heard ring, the last-heard screen and the contacts /
+  favourites entries of the UI (core and UI side, see
+  [dmr_mode.md](dmr_mode.md)).
+- Do: monitor a busy talkgroup for a few minutes, open the last-heard
+  screen: the ring must hold the last eight distinct callers in order of
+  arrival, a caller talking twice moving to the top, not duplicated. Then
+  select one, ENTER: the destination line shows `PC <id>`, key the radio
+  for two seconds and check on the other radio (or the network dashboard)
+  that a private call from your ID reached that ID. Power cycle: the
+  favourites and the selected destination must be back, the last-heard
+  ring empty (RAM only).
+- Expect: as described; the hang-time display keeps the last caller on
+  the main screen for the configured hang time after the terminator, a
+  repeater's own hang-time terminators do not clear it early.
+- If wrong: duplicates or a wrong order are a core bug (the ring is
+  tested on the host, so a difference on the radio means the IDs reaching
+  it differ: check `Src` on the monitor screen); a private call that does
+  not arrive: the FLCO (3 = unit to unit) in the LC header, visible in the
+  hotspot log as `to <id>`.
+
+### 6.3 The SYS line knob (`DMRBB_DRV_SYS_LINE`)
+
+- Where: `platform/drivers/baseband/dmr_CS7000.h` (`DMRBB_DRV_SYS_LINE` =
+  0x02 on the driver pseudo page 0xFF, values `DMRBB_SYS_LINE_PINMAP` = 1
+  and `DMRBB_SYS_LINE_SCHEMATIC` = 3), the ISR of `dmr_CS7000.cpp`. The
+  knob is reachable with `dmrbb_writeRegister(0xFF, 0x02, 1 or 3)`; the
+  monitor screen has no action row for it yet (a `SYS line` action next to
+  `LCSS mode`, writing the driver page, is the UI side of it; in the
+  meantime the host test `tests/unit/hr_c6000_dmr.cpp` exercises it).
+- Assumption: PC0..PC3 are all attached and counted whatever the choice;
+  only the line that raises `DMRBB_EV_SYS` (and the 0x82 reads behind it)
+  moves. The default is the pinmap constant `DMR_SYS_INT` (PC1); the
+  alternative is `DMR_SYS_INT_ALT` (PC3_C, the schematic). Any other value
+  is ignored. The knob survives a reconfiguration and is forgotten at
+  power off.
+- Do: check 3.1 first. If `PC3` counts while `SYS` stays at 0 (the
+  pinmap is wrong for that board), write 3 to the knob, go back to the
+  monitor screen: `SYS` must now count with `PC3`, `0x82` must show the
+  flags of the call (`08` / `10`), the caller must appear on the main
+  screen within 360 ms and the audio counters of section 4 must move.
+  Write 1 to go back.
+- Expect: with the right line selected the whole RX path of stage 3 and
+  4 works without a rebuild; with the wrong one `SYS` stays at 0 and no
+  caller is ever shown, while `TS` and `PC0` keep counting.
+- If wrong: `SYS` counts on neither choice while one of `PC1` / `PC3`
+  pulses: the pulse is on a line the knob does not accept (PC0 / PC2
+  are TS / RF_TX by the pinmap and the schematic alike); `SYS` counts but
+  `0x82` stays `00`: the pulses are not the C6000's (the 2T/5T detector on
+  PC1 of the Plus), select the other line.
+
+### 6.4 RF advance word through the configuration (`dmrbbConfig::rfAdvance`)
+
+- Where: `dmrbb_configure()` in `dmr_CS7000.cpp`, the `rfAdvance` field of
+  `struct dmrbbConfig` (`openrtx/include/interfaces/dmr_baseband.h`,
+  `DMRBB_RF_ADVANCE_DEFAULT` = 0x98).
+- Assumption: the `RF advance` action writes 0x12 at once and the next
+  `dmrbb_configure()` (colour code change, watchdog, mode word) puts the
+  table's 0x98 back. With the field set to a value other than 0 and 0x98
+  the driver rewrites 0x12 right after the mode word on every
+  reconfiguration, so the choice holds for the whole session once the
+  opMode handler copies the monitor screen's value into it (the copy from
+  `rtxStatus_t` to `bbCfg.rfAdvance` is the core side of this item).
+- Do: `RF advance` on the monitor screen, then change the colour code and
+  back (a reconfiguration), read `rd 0x12`.
+- Expect: `15` after the action and still `15` after the reconfiguration
+  once the copy is in; `98` after the reconfiguration otherwise.
+- If wrong: `rd 0x12` reads `98` although the copy is in: the value did
+  not reach the RTX stage (`sync_rtx` not raised by the action).
+
+## 7. Results
 
 Fill one column per radio; leave a cell empty until the check was run.
 
@@ -773,20 +910,47 @@ Fill one column per radio; leave a cell empty until the check was run.
 | 5.3 | Busy channel, polite / impolite | rejected with `Busy` marker, RF keyed for the arming pass only / transmits | | | |
 | 5.4 | Repeater: BS sync, lock, slot, wake-up, rebroadcast | no TX before Lock 2, right TS, `WAKE` on the destination line then `TX` or `Wake-up failed` within ~0.8 s, repeater wakes, second radio hears | | | |
 | 5.5 | OEM interop, both directions | caller shown for the whole call, idle at release, silence not noise | | | |
+| 5.6 | TX_PWR_EN edges on the scope | up before the first header, down one slot after the terminator | | | |
+| 5.6 | Monitor TX counters | `RF keyed` 1 per PTT, `TX bursts` = `TX silent`, `TX under` 0 | | | |
+| 5.6 | Wake-up outcome | `WAKE`, then `TX` or `Wake-up failed` within ~0.8 s | | | |
+| 5.6 | Polite PTT on a busy slot | `Busy`, `RF keyed` unchanged, TX_PWR_EN low | | | |
+| 6.1 | Short LC flag and RAM | `0x82` bit 5 with `0x86` = 04 during repeater traffic; bytes change, CRC-8 ok | | | |
+| 6.1 | TS busy hint | follows the other slot's activity within 1 s | | | |
+| 6.2 | Last heard on a busy repeater | eight distinct callers, newest first, no duplicates | | | |
+| 6.2 | Call back from last heard | private call reaches the selected ID | | | |
+| 6.2 | Contacts / favourites survive power cycle | destination and favourites restored, LC sent matches (hotspot log) | | | |
+| 6.2 | Hang-time display | caller kept for the hang time, repeater hang terminators do not clear it | | | |
+| 6.3 | SYS line knob | `SYS` follows the selected line, caller shown after the switch | | | |
+| 6.4 | RF advance kept through reconfiguration | `rd 0x12` = 15 after a colour code change | | | |
+| 6 | Voice prompts at call start | ID / talkgroup announced, RX audio resumes | | | |
 
-## 7. Flashing back to the OEM DMR firmware
+## 8. Flashing back to the OEM DMR firmware
 
-Connect Systems publishes, on the CS7000 M17 PLUS software page, the OEM
-bootloader (`M17PLUS_Bootloader_B7.06.dfu`) and the DMR + analog host
-firmware (V9.00.96) together with DfuSeDemo / STM32CubeProgrammer, and its
-application note "Converting DMR to M17 Protocol" states that the radio
-carries either the DMR or the M17 (OpenRTX) firmware, never both, and
-describes the erase-and-load procedure with DfuSeDemo in the OpenRTX
-direction. The reverse procedure is not documented in this tree: the
-`dmr/flashing_dmr.md` page of the M17-Project `cs7000-wiki` is a placeholder
-with no steps yet, and nobody on this series has done it. Until somebody
-writes it down here after doing it, the only guidance is the outline above:
-put the radio in DFU mode, load the OEM bootloader `.dfu` with
-DfuSeDemo / STM32CubeProgrammer, then the OEM firmware with the tool Connect
-Systems ships for it, and keep a copy of the OEM firmware files before
-flashing OpenRTX.
+Nobody on this series has flashed a radio back, and nothing in this tree
+describes the procedure. What is known, from the research notes behind the
+series and the sources they cite:
+
+- The Connect Systems "CS7000 M17 PLUS software" page lists, for the
+  CS7000-M17 Plus: the OEM bootloader `M17PLUS_Bootloader_B7.06.dfu`, the
+  host firmware `Firmware V9.00.96.bin` (dated 20260303; the DMR + analog
+  firmware, with CPS V1.02.21.00 and a "DMR Tuner" V2.18), "Open RTX
+  V0.4.4", DfuSeDemo and STM32CubeProgrammer. A "Factory Tool_M17_DMR V1.0"
+  appears in a search summary of the page only; it has not been seen.
+- The Connect Systems application note "Converting DMR to M17 Protocol"
+  (July 2024) states that the radio carries either the DMR (with analog)
+  or the M17 firmware, never both, and describes the erase and load of
+  `openrtx_cs7000.dfu` with DfuSeDemo, i.e. the OpenRTX direction only.
+- The `dmr/flashing_dmr.md` page of the M17-Project `cs7000-wiki` ("Flashing
+  DMR to the CS7000-M17 with OpenRTX firmware loaded") has Windows, Mac
+  and Linux headings and no steps.
+
+What is not documented anywhere the series could find, and is therefore
+not written here: whether the OEM bootloader `.dfu` has to be loaded
+before the host firmware, which tool loads `Firmware V9.00.96.bin` (a
+`.bin`, not a `.dfu`: DfuSeDemo, STM32CubeProgrammer at a given address,
+the CPS, or the factory tool), the flash addresses, the DFU entry
+sequence for the OEM bootloader, and the files for the original CS7000
+(STM32F405; the OpenRTX driver comments cite its OEM firmware V8.01.05 for
+the calibration and two-point bias maths, no download was located). Keep
+a copy of the OEM files before flashing OpenRTX, and when somebody does
+the procedure, write it down here step by step with the tool versions.
