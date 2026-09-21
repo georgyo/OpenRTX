@@ -67,7 +67,13 @@ struct dmrbbSnapshot {
      */
     uint8_t irq82;
     uint8_t sub84; /**< 0x84, TX start sub-status, read when 0x82 bit6 */
-    uint8_t sub86; /**< 0x86, TX end sub-status, read when 0x82 bit5   */
+    uint8_t sub86; /**< 0x86, TX end sub-status, read when 0x82 bit5:
+                        bit7 service transmission completely terminated
+                        (voice and data), bit4 the Layer 2 per-slot "last
+                        processing timing" interrupt (Rdy_lst_inter), the
+                        rest data fragment / OACSU events (manual §5.1.1).
+                        Only bit7 ends a transmission. UNVERIFIED on
+                        hardware which bits the 0x87 mask lets through */
     uint8_t sub90; /**< 0x90, data message status, read when 0x82 bit2 */
     uint8_t sub98; /**< 0x98, abnormal exit cause, read when 0x82 bit1 */
 

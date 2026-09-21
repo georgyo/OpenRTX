@@ -105,11 +105,13 @@ void CallController::enable(uint32_t nowMs)
     bool noId = rep.noId;
     bool busy = rep.busy;
     bool wakeupFailed = rep.wakeupFailed;
+    bool rfFail = rep.rfFailed;
 
     memset(&rep, 0x00, sizeof(rep));
     rep.noId = noId;
     rep.busy = busy;
     rep.wakeupFailed = wakeupFailed;
+    rep.rfFailed = rfFail;
 
     ptt = false;
     pttLatched = false;
@@ -146,6 +148,17 @@ void CallController::clearMarkers()
     rep.noId = false;
     rep.busy = false;
     rep.wakeupFailed = false;
+    rep.rfFailed = false;
+}
+
+void CallController::rfFailed(uint32_t nowMs)
+{
+    if ((st == OFF) || (port == nullptr) || !isTx())
+        return;
+
+    rep.rfFailed = true;
+    abortTx(nowMs, false);
+    publish();
 }
 
 /*
@@ -645,10 +658,11 @@ void CallController::abortTx(uint32_t nowMs, bool busy)
  * TxEn), that is before the first header slot is programmed, and released
  * only once the last burst has gone out. That burst occupies the slot after
  * the timeslot interrupt it was programmed at, so the release happens at
- * the following timeslot interrupt, at the chip's TX-end report (0x82 bit5,
- * sub-status 0x86) if it comes first, or on the RF_UNKEY_MS fallback when
- * neither arrives (manual §5.4.5 step 12: "after the next or a few 30 ms of
- * the end of the speech frame is sent, configure reg0x40 to 0x03";
+ * the following timeslot interrupt, at the chip's TX-end report (0x82 bit5
+ * with sub-status 0x86 bit7, R86_TX_COMPLETE) if it comes first, or on the
+ * RF_UNKEY_MS fallback when neither arrives (manual §5.4.5 step 12: "after
+ * the next or a few 30 ms of the end of the speech frame is sent, configure
+ * reg0x40 to 0x03";
  * UNVERIFIED on hardware whether one slot of margin is enough for the PA
  * to see the whole terminator burst). An aborted transmission (channel
  * busy, wake-up failed, PTT released before anything went out, watchdog)
@@ -964,8 +978,16 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
     if ((irq & R82_TX_REJECTED) && isTx())
         abortTx(nowMs, true);
 
-    /* The chip reports the end of the transmission: release the RF */
-    if ((irq & R82_TX_END) && rfUnkeyPending)
+    /*
+     * The chip reports the end of the transmission: release the RF. Only
+     * the "service transmission completely terminated" sub-status counts
+     * (0x86 bit7): bit5 of 0x82 is shared with the per-slot Layer 2
+     * deadline interrupt (0x86 bit4, Rdy_lst_inter) and the data events,
+     * which come while the last burst is still on the air. Those are left
+     * to the next timeslot interrupt or the RF_UNKEY_MS fallback.
+     */
+    if ((irq & R82_TX_END) && ((s.sub86 & R86_TX_COMPLETE) != 0)
+        && rfUnkeyPending)
         unkeyRf();
 
     if (isTx()) {
