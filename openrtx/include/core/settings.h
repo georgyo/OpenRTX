@@ -17,6 +17,13 @@
  */
 #define FRS_CHANNEL_NUM 22
 
+/*
+ * Number of DMR favourite destinations (Settings > DMR > Favourites). Each
+ * slot packs a 24-bit ID and the call type into one 32-bit word, see the
+ * DMR_FAV_* macros below; an all-zero word is an empty slot.
+ */
+#define DMR_FAV_NUM 6
+
 typedef enum
 {
     TIMER_OFF =  0,
@@ -71,11 +78,20 @@ typedef struct
              dmr_hangTime   : 3,  // DMR call hang time, in seconds (0-7)
              dmr_testTone   : 1,  // Null vocoder RX test tone, debug only
              _dmr_reserved  : 3;
+    uint32_t dmr_favourites[DMR_FAV_NUM]; // DMR favourite destinations:
+                                          // bits 0-23 ID, bits 24-25 call
+                                          // type, 0 = empty slot
 }
 __attribute__((packed)) settings_t;
 
 // Highest DMR ID and talkgroup number: 24 bit, ETSI TS 102 361-1 section 7.2
 #define DMR_ID_MAX 16777215u
+
+// DMR favourite slot packing: ID in the low 24 bits, call type above
+#define DMR_FAV_ID(f)         ((uint32_t)(f) & DMR_ID_MAX)
+#define DMR_FAV_TYPE(f)       (((uint32_t)(f) >> 24) & 0x03u)
+#define DMR_FAV_PACK(id, type) (((uint32_t)(id) & DMR_ID_MAX) | \
+                                (((uint32_t)(type) & 0x03u) << 24))
 
 
 static const settings_t default_settings =
@@ -115,6 +131,7 @@ static const settings_t default_settings =
     3,                            // DMR hang time 3 s, T_CallHt
     0,                            // DMR test tone off
     0,                            // not used
+    { 0 },                        // DMR favourites all empty
 };
 
 #endif /* SETTINGS_H */

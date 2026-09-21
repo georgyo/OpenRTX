@@ -121,7 +121,7 @@ TEST_CASE("FRS settings layout", "[frs]")
      * codes), and the whole record must still fit the CS7000 EEEP limit.
      * The DMR fields follow them (11 bytes, see ui_dmr.cpp).
      */
-    REQUIRE(sizeof(settings_t) == 119);
+    REQUIRE(sizeof(settings_t) == 143);
     REQUIRE(sizeof(settings_t) < 255);
     REQUIRE(offsetof(settings_t, frs_mode) == 84);
     REQUIRE(offsetof(settings_t, frs_channel) == 85);

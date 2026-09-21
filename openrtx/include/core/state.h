@@ -58,6 +58,10 @@ typedef struct {
     // DMR monitor screen: 0 chip-filled (OpenGD77), 1 manual sequence.
     // Not saved.
     uint8_t dmr_lcssMode;
+    // Name of the DMR destination when it was picked from the contacts
+    // list, empty when the destination was typed or picked elsewhere.
+    // Shown on the main screen in place of the ID. Not saved.
+    char dmr_destName[16];
 } state_t;
 
 extern const uint32_t freq_steps[];
