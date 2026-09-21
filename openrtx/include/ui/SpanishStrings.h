@@ -127,5 +127,8 @@ const stringsTable_t spanishStrings =
     .lcssMode          = "Modo LCSS",
     .rfAdvance         = "Avance RF",
     .dmrRfFailed       = "Fallo RF",
+    .lastHeard         = "Escuchados",
+    .favourites        = "Favoritos",
+    .empty             = "Vacío",
 };
 #endif  // SPANISHSTRINGS_H

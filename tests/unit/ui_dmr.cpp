@@ -11,19 +11,27 @@
 #include <string>
 
 extern "C" {
+#include "core/dmr_lastheard.h"
 #include "core/event.h"
 #include "core/graphics.h"
 #include "core/input.h"
 #include "core/settings.h"
 #include "core/state.h"
 #include "core/ui.h"
+#include "interfaces/cps_io.h"
 #include "interfaces/delays.h"
 #include "interfaces/dmr_baseband.h"
 #include "interfaces/keyboard.h"
+#include "interfaces/nvmem.h"
+#include "core/voicePrompts.h"
+#include "core/voicePromptUtils.h"
 #include "rtx/rtx.h"
 #include "ui/ui_default.h"
 }
 #include "emulator.h"
+#include "protocols/DMR/FEC/ShortLc.hpp"
+#include "protocols/DMR/LinkControl.hpp"
+#include "protocols/DMR/ModemPort.hpp"
 
 /*
  * Drives the default UI state machine of the Linux build (160x128, GPS, RTC,
@@ -34,6 +42,9 @@ extern "C" {
  */
 
 static const freq_t VFO_FREQ = 430000000;
+
+/* Codeplug of the bench, see boot() */
+static char cpsPath[] = "/tmp/ui_dmr_test.rtxc";
 
 /* Press (and release) a key combination, return the RTX sync request. */
 static bool press(uint32_t keys)
@@ -81,7 +92,35 @@ static void boot(const settings_t &settings)
     if (!rtxReady) {
         rtx_init(&rtxMutex);
         rtxReady = true;
+
+        /*
+         * The firmware opens (or creates) a codeplug at boot (openrtx.c):
+         * the contacts lookups of the DMR screens need one here too. Two
+         * DMR contacts and an M17 one, see the contacts tests.
+         */
+        cps_create(cpsPath);
+        REQUIRE(cps_open(cpsPath) == 0);
+
+        contact_t tg, pc, m17;
+        memset(&tg, 0, sizeof(tg));
+        memset(&pc, 0, sizeof(pc));
+        memset(&m17, 0, sizeof(m17));
+        strcpy(tg.name, "BM Italy");
+        tg.mode = OPMODE_DMR;
+        tg.info.dmr.id = 2222;
+        tg.info.dmr.contactType = GROUP;
+        strcpy(pc.name, "IZ1ABC Mario");
+        pc.mode = OPMODE_DMR;
+        pc.info.dmr.id = 2345678;
+        pc.info.dmr.contactType = PRIVATE;
+        strcpy(m17.name, "M17 contact");
+        m17.mode = OPMODE_M17;
+        REQUIRE(cps_insertContact(tg, 0) == 0);
+        REQUIRE(cps_insertContact(pc, 1) == 0);
+        REQUIRE(cps_insertContact(m17, 2) == 0);
     }
+    _ui_dmrContactNameCacheClear();
+    dmrLastHeard_clear();
 
     memset(&state, 0, sizeof(state));
     state.charge = 100;
@@ -169,6 +208,47 @@ TEST_CASE("settings_t fits an EEEP record and carries the DMR defaults",
     REQUIRE(default_settings.dmr_hangTime == 3);
     REQUIRE(default_settings.dmr_testTone == 0);
     REQUIRE(DMR_ID_MAX == 16777215u);
+
+    /* Six favourite slots of four bytes, empty by default */
+    REQUIRE(DMR_FAV_NUM == 6);
+    REQUIRE(sizeof(default_settings.dmr_favourites) == 24);
+    for (unsigned i = 0; i < DMR_FAV_NUM; i++)
+        REQUIRE(default_settings.dmr_favourites[i] == 0);
+    REQUIRE(DMR_FAV_PACK(31665, GROUP) == 31665u);
+    REQUIRE(DMR_FAV_PACK(2345678, PRIVATE) == (2345678u | (1u << 24)));
+    REQUIRE(DMR_FAV_ID(DMR_FAV_PACK(DMR_ID_MAX, ALL)) == DMR_ID_MAX);
+    REQUIRE(DMR_FAV_TYPE(DMR_FAV_PACK(DMR_ID_MAX, ALL)) == ALL);
+    REQUIRE(DMR_FAV_TYPE(DMR_FAV_PACK(9, 7)) == 3);
+}
+
+TEST_CASE("Boot validation empties malformed favourite slots", "[ui][dmr]")
+{
+    /*
+     * state_init() reads the settings back from the emulator's NVM file:
+     * write a record with two good slots and four malformed ones first.
+     */
+    settings_t s = default_settings;
+    s.dmr_favourites[0] = DMR_FAV_PACK(31665, GROUP);
+    s.dmr_favourites[1] = DMR_FAV_PACK(2345678, PRIVATE);
+    s.dmr_favourites[2] = DMR_FAV_PACK(9, 3);       /* unknown type      */
+    s.dmr_favourites[3] = (1u << 26) | 9;           /* bits above type   */
+    s.dmr_favourites[4] = DMR_FAV_PACK(0, PRIVATE); /* ID zero with type */
+    s.dmr_favourites[5] = 0xFFFFFFFF;
+    channel_t vfo = cps_getDefaultChannel();
+    nvm_init();
+    REQUIRE(nvm_writeSettingsAndVfo(&s, &vfo) == 0);
+
+    state_init();
+    REQUIRE(state.settings.dmr_favourites[0] == DMR_FAV_PACK(31665, GROUP));
+    REQUIRE(state.settings.dmr_favourites[1] == DMR_FAV_PACK(2345678, PRIVATE));
+    for (unsigned i = 2; i < DMR_FAV_NUM; i++)
+        REQUIRE(state.settings.dmr_favourites[i] == 0);
+    REQUIRE(state.dmr_destName[0] == '\0');
+
+    /* Leave a clean record behind for the other tests */
+    s = default_settings;
+    REQUIRE(nvm_writeSettingsAndVfo(&s, &vfo) == 0);
+    pthread_mutex_destroy(&state_mutex);
 }
 
 TEST_CASE("Macro key 5 cycles FM, DMR and M17", "[ui][dmr]")
@@ -751,7 +831,16 @@ TEST_CASE("The idle DMR line fits the destination and the channel", "[ui][dmr]")
 TEST_CASE("The RTX stage keeps the DMR receive report across a configuration",
           "[ui][dmr][rtx]")
 {
-    boot_dmr();
+    /*
+     * The RTX stage is shared by every test of this process: a call
+     * injected by another test leaves its report in place until the DMR
+     * handler is enabled again, so go through FM first.
+     */
+    boot();
+    sync_rtx_stage();
+    dmrEmu_reset();
+    press(KEY_MONI | KEY_5);
+    REQUIRE(state.channel.mode == OPMODE_DMR);
     rtxStatus_t status = sync_rtx_stage();
     REQUIRE(status.opMode == OPMODE_DMR);
     REQUIRE(status.dmr_callState == DMR_CALL_IDLE);
@@ -1587,4 +1676,543 @@ TEST_CASE("The main screen destination line says TX or WAKE", "[ui][dmr]")
     /* The busy marker of a rejected transmission, from the RTX flags */
     REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_BUSY), currentLanguage->dmrBusy)
             == 0);
+}
+
+/*
+ * Stage 6: contacts, favourites, last heard, the hang time display, the
+ * Short LC busy hints and the voice prompt of a received call.
+ */
+
+/* Run the RTX stage until the DMR call state reaches 'target' */
+static bool rtx_until(uint8_t target, unsigned limit = 400)
+{
+    for (unsigned i = 0; i < limit; i++) {
+        if (rtx_getCurrentStatus().dmr_callState == target)
+            return true;
+        rtx_task();
+    }
+    return rtx_getCurrentStatus().dmr_callState == target;
+}
+
+/* A system event carrying a Short LC as the chip would report it */
+static void inject_short_lc(uint32_t message, bool goodCrc = true)
+{
+    struct dmrbbSnapshot s;
+    memset(&s, 0x00, sizeof(s));
+    s.irq82 = DMR::R82_TX_END;
+    s.sub86 = DMR::R86_SHORT_LC;
+    DMR::FEC::ShortLc::toChipBytes(message, s.shortLc);
+    if (!goodCrc)
+        s.shortLc[4] ^= 0xFF;
+    dmrEmu_pushSys(&s);
+    rtx_task();
+}
+
+static uint32_t act_updt(uint8_t ts1, uint8_t ts2, uint32_t dst1, uint32_t dst2)
+{
+    DMR::ActivityUpdate au;
+    au.activity[0] = ts1;
+    au.activity[1] = ts2;
+    au.hash[0] = DMR::ActivityUpdate::hashAddress(dst1);
+    au.hash[1] = DMR::ActivityUpdate::hashAddress(dst2);
+    return au.pack();
+}
+
+/* A base-station terminator with LC for the given call, on the call's slot */
+static void inject_terminator(uint32_t src, uint32_t dst, uint8_t ts)
+{
+    DMR::FullLC lc;
+    lc.clear();
+    lc.flco = DMR::FLCO_GRP_V_CH_USR;
+    lc.fid = DMR::FID_STANDARD;
+    lc.src = src;
+    lc.dst = dst;
+
+    struct dmrbbSnapshot s;
+    memset(&s, 0x00, sizeof(s));
+    s.irq82 = DMR::R82_CTRL_FRAME;
+    s.r5f = DMR::R5F_SYNC_BS;
+    s.r52 = (uint8_t)((1 << 4) | ((ts == 2) ? DMR::R52_TC : 0));
+    s.r51 = (uint8_t)((DMR::DT_TERMINATOR_LC << 4) | DMR::R51_CLASS_HEADER);
+    lc.toChipLc(s.lc);
+    dmrEmu_pushSys(&s);
+    rtx_task();
+}
+
+/* From a main screen: Menu > Contacts */
+static void goto_contacts()
+{
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == MENU_TOP);
+    pressN(KEY_DOWN, M_CONTACTS);
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == MENU_CONTACTS);
+}
+
+TEST_CASE("Contacts: ENTER on a DMR contact sets the destination and its name",
+          "[ui][dmr][contacts]")
+{
+    boot_dmr();
+
+    /* The codeplug of the bench holds the two DMR contacts and an M17 one */
+    contact_t c;
+    REQUIRE(cps_readContact(&c, 0) == 0);
+    REQUIRE(strcmp(c.name, "BM Italy") == 0);
+    REQUIRE(cps_readContact(&c, 3) == -1);
+
+    SECTION("A group contact becomes a group call, named on the main screen")
+    {
+        goto_contacts();
+        bool sync = press(KEY_ENTER);
+        REQUIRE(sync == true);
+        REQUIRE(state.ui_screen == MAIN_VFO);
+        REQUIRE(state.settings.dmr_talkgroup == 2222);
+        REQUIRE(state.settings.dmr_callType == GROUP);
+        REQUIRE(strcmp(state.dmr_destName, "BM Italy") == 0);
+        render();
+
+        /* Typing a destination drops the name */
+        press(KEY_HASH);
+        typeNumber("31665");
+        press(KEY_ENTER);
+        REQUIRE(state.settings.dmr_talkgroup == 31665);
+        REQUIRE(state.dmr_destName[0] == '\0');
+    }
+
+    SECTION("A private contact becomes a private call, '*' drops the name")
+    {
+        goto_contacts();
+        press(KEY_DOWN);
+        press(KEY_ENTER);
+        REQUIRE(state.ui_screen == MAIN_VFO);
+        REQUIRE(state.settings.dmr_talkgroup == 2345678);
+        REQUIRE(state.settings.dmr_callType == PRIVATE);
+        REQUIRE(strcmp(state.dmr_destName, "IZ1ABC Mario") == 0);
+        render();
+
+        press(KEY_STAR);
+        REQUIRE(state.settings.dmr_callType == GROUP);
+        REQUIRE(state.dmr_destName[0] == '\0');
+    }
+
+    SECTION("An M17 contact is refused in DMR")
+    {
+        goto_contacts();
+        pressN(KEY_DOWN, 2);
+        press(KEY_ENTER);
+        REQUIRE(state.ui_screen == MENU_CONTACTS);
+        REQUIRE(state.settings.dmr_talkgroup == 9);
+        REQUIRE(state.dmr_destName[0] == '\0');
+    }
+
+    SECTION("Settings > DMR edits drop the name")
+    {
+        goto_contacts();
+        press(KEY_ENTER);
+        REQUIRE(strcmp(state.dmr_destName, "BM Italy") == 0);
+        goto_dmr_settings();
+        pressN(KEY_DOWN, DMR_CALLTYPE);
+        press(KEY_RIGHT);
+        REQUIRE(state.settings.dmr_callType == PRIVATE);
+        REQUIRE(state.dmr_destName[0] == '\0');
+    }
+}
+
+TEST_CASE("Contacts: ENTER on a DMR contact does nothing in FM",
+          "[ui][dmr][contacts]")
+{
+    boot();
+    REQUIRE(state.channel.mode == OPMODE_FM);
+    goto_contacts();
+    bool sync = press(KEY_ENTER);
+    REQUIRE(sync == false);
+    REQUIRE(state.ui_screen == MENU_CONTACTS);
+    REQUIRE(state.settings.dmr_talkgroup == 9);
+    REQUIRE(state.dmr_destName[0] == '\0');
+}
+
+TEST_CASE("Contact names are looked up and cached", "[ui][dmr][contacts]")
+{
+    boot();
+    char name[DMR_DEST_NAME_LEN];
+
+    REQUIRE(_ui_dmrContactName(2222, GROUP, name) == true);
+    REQUIRE(strcmp(name, "BM Italy") == 0);
+    REQUIRE(_ui_dmrContactName(2345678, PRIVATE, name) == true);
+    REQUIRE(strcmp(name, "IZ1ABC Mario") == 0);
+
+    /* The type is part of the key, an unknown ID is unknown */
+    REQUIRE(_ui_dmrContactName(2222, PRIVATE, name) == false);
+    REQUIRE(_ui_dmrContactName(1234567, PRIVATE, name) == false);
+
+    /* Cached answers survive the codeplug going away */
+    cps_close();
+    REQUIRE(_ui_dmrContactName(2222, GROUP, name) == true);
+    REQUIRE(strcmp(name, "BM Italy") == 0);
+    REQUIRE(_ui_dmrContactName(1234567, PRIVATE, name) == false);
+    REQUIRE(cps_open(cpsPath) == 0);
+}
+
+/* From a main screen: Menu > Settings > DMR > Favourites */
+static void goto_favourites()
+{
+    goto_dmr_settings();
+    pressN(KEY_DOWN, DMR_FAVOURITES_ENTRY);
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == DMR_FAVOURITES);
+}
+
+TEST_CASE("Settings > DMR > Favourites stores and recalls destinations",
+          "[ui][dmr][favourites]")
+{
+    boot_dmr();
+    char buf[MAX_ENTRY_LEN];
+
+    goto_favourites();
+    render();
+
+    /* All six slots empty */
+    for (unsigned i = 0; i < DMR_FAV_NUM; i++) {
+        REQUIRE(_ui_getFavouriteEntryName(buf, sizeof(buf), i) == 0);
+        REQUIRE(atoi(buf) == (int)(i + 1));
+        REQUIRE(_ui_getFavouriteValueName(buf, sizeof(buf), i) == 0);
+        REQUIRE(strcmp(buf, currentLanguage->empty) == 0);
+    }
+    REQUIRE(_ui_getFavouriteEntryName(buf, sizeof(buf), DMR_FAV_NUM) == -1);
+
+    /* ENTER on an empty slot changes nothing */
+    bool sync = press(KEY_ENTER);
+    REQUIRE(sync == false);
+    REQUIRE(state.ui_screen == DMR_FAVOURITES);
+
+    /* '*' stores the current destination (TG 9) in slot 1 */
+    press(KEY_STAR);
+    REQUIRE(state.settings.dmr_favourites[0] == DMR_FAV_PACK(9, GROUP));
+    REQUIRE(_ui_getFavouriteValueName(buf, sizeof(buf), 0) == 0);
+    REQUIRE(strcmp(buf, "TG 9") == 0);
+
+    /* A private destination into slot 2, a broadcast into slot 6 */
+    state.settings.dmr_talkgroup = 2345678;
+    state.settings.dmr_callType = PRIVATE;
+    ui_saveState();
+    press(KEY_DOWN);
+    press(KEY_STAR);
+    REQUIRE(state.settings.dmr_favourites[1] == DMR_FAV_PACK(2345678, PRIVATE));
+    REQUIRE(_ui_getFavouriteValueName(buf, sizeof(buf), 1) == 0);
+    REQUIRE(strcmp(buf, "PC 2345678") == 0);
+
+    state.settings.dmr_callType = ALL;
+    ui_saveState();
+    press(KEY_UP);
+    press(KEY_UP);
+    press(KEY_STAR);
+    REQUIRE(state.settings.dmr_favourites[5] == DMR_FAV_PACK(2345678, ALL));
+    REQUIRE(_ui_getFavouriteValueName(buf, sizeof(buf), 5) == 0);
+    REQUIRE(strcmp(buf, currentLanguage->broadcast) == 0);
+    render();
+
+    /* ENTER on slot 1 makes it the destination and returns to the VFO */
+    pressN(KEY_DOWN, 1);
+    sync = press(KEY_ENTER);
+    REQUIRE(sync == true);
+    REQUIRE(state.ui_screen == MAIN_VFO);
+    REQUIRE(state.settings.dmr_talkgroup == 9);
+    REQUIRE(state.settings.dmr_callType == GROUP);
+    REQUIRE(state.dmr_destName[0] == '\0');
+
+    /* '#' empties a slot, ESC goes back to the Favourites item */
+    goto_favourites();
+    press(KEY_DOWN);
+    press(KEY_HASH);
+    REQUIRE(state.settings.dmr_favourites[1] == 0);
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == SETTINGS_DMR);
+
+    /* A zero destination cannot be stored */
+    state.settings.dmr_talkgroup = 0;
+    ui_saveState();
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == DMR_FAVOURITES);
+    press(KEY_STAR);
+    REQUIRE(state.settings.dmr_favourites[0] == DMR_FAV_PACK(9, GROUP));
+}
+
+TEST_CASE("Last heard: injected calls fill the list, MONI+4 shows it",
+          "[ui][dmr][lastheard]")
+{
+    fresh_dmr_rtx();
+    state.settings.dmr_hangTime = 0;
+    state.settings.dmr_monitor = 1;
+    ui_saveState();
+    sync_rtx_stage();
+    for (unsigned i = 0; i < 6; i++) {
+        dmrEmu_pushTs();
+        rtx_task();
+    }
+
+    /* Empty list: the screen opens and closes */
+    REQUIRE(dmrLastHeard_count() == 0);
+    press(KEY_MONI | KEY_4);
+    REQUIRE(state.ui_screen == DMR_LAST_HEARD);
+    render();
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == DMR_LAST_HEARD);
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == MAIN_VFO);
+
+    /* Two calls, twelve bursts each: one entry per call */
+    dmrEmu_injectGroupCall(2345678, 31665, 1, 1, 12);
+    REQUIRE(rtx_until(DMR_CALL_RX));
+    REQUIRE(rtx_until(DMR_CALL_IDLE));
+    REQUIRE(dmrLastHeard_count() == 1);
+
+    dmrEmu_injectGroupCall(1234567, 9, 1, 1, 12);
+    REQUIRE(rtx_until(DMR_CALL_RX));
+    REQUIRE(rtx_until(DMR_CALL_IDLE));
+    REQUIRE(dmrLastHeard_count() == 2);
+
+    struct dmrLastHeardEntry e;
+    REQUIRE(dmrLastHeard_get(0, &e) == true);
+    REQUIRE(e.src == 1234567);
+    REQUIRE(e.dst == 9);
+    REQUIRE(e.flco == 0);
+    REQUIRE(dmrLastHeard_get(1, &e) == true);
+    REQUIRE(e.src == 2345678);
+    REQUIRE(e.dst == 31665);
+
+    /* The rows: newest first, the contact's name when known, and the age */
+    char buf[MAX_ENTRY_LEN];
+    REQUIRE(_ui_getLastHeardEntryName(buf, sizeof(buf), 0) == 0);
+    REQUIRE(strcmp(buf, "1234567 TG 9") == 0);
+    REQUIRE(_ui_getLastHeardEntryName(buf, sizeof(buf), 1) == 0);
+    REQUIRE(strncmp(buf, "IZ1ABC Mario TG 3", 17) == 0);
+    REQUIRE(_ui_getLastHeardEntryName(buf, sizeof(buf), 2) == -1);
+    REQUIRE(_ui_getLastHeardValueName(buf, sizeof(buf), 0) == 0);
+    REQUIRE(strcmp(buf, "0s") == 0);
+    REQUIRE(_ui_getLastHeardValueName(buf, sizeof(buf), 2) == -1);
+
+    /* MONI + 4 on the VFO screen opens the list, UP/DOWN browse it */
+    press(KEY_MONI | KEY_4);
+    REQUIRE(state.ui_screen == DMR_LAST_HEARD);
+    render();
+    press(KEY_DOWN);
+    press(KEY_DOWN);
+    press(KEY_UP);
+    render();
+
+    /* ENTER: private call to the selected source, named, back to the VFO */
+    bool sync = press(KEY_ENTER);
+    REQUIRE(sync == true);
+    REQUIRE(state.ui_screen == MAIN_VFO);
+    REQUIRE(state.settings.dmr_talkgroup == 2345678);
+    REQUIRE(state.settings.dmr_callType == PRIVATE);
+    REQUIRE(strcmp(state.dmr_destName, "IZ1ABC Mario") == 0);
+    render();
+
+    /* An unknown source has no name */
+    press(KEY_MONI | KEY_4);
+    press(KEY_ENTER);
+    REQUIRE(state.settings.dmr_talkgroup == 1234567);
+    REQUIRE(state.settings.dmr_callType == PRIVATE);
+    REQUIRE(state.dmr_destName[0] == '\0');
+
+    /* ESC leaves the destination alone; the MEM screen opens it too */
+    state.settings.dmr_talkgroup = 9;
+    state.settings.dmr_callType = GROUP;
+    state.ui_screen = MAIN_MEM;
+    ui_saveState();
+    press(KEY_MONI | KEY_4);
+    REQUIRE(state.ui_screen == DMR_LAST_HEARD);
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == MAIN_MEM);
+    REQUIRE(state.settings.dmr_talkgroup == 9);
+
+    /* Not from a menu, not in FM */
+    state.ui_screen = MAIN_VFO;
+    ui_saveState();
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == MENU_TOP);
+    press(KEY_MONI | KEY_4);
+    REQUIRE(state.ui_screen == MENU_TOP);
+    press(KEY_ESC);
+    pressN(KEY_MONI | KEY_5, 2);
+    REQUIRE(state.channel.mode == OPMODE_FM);
+    press(KEY_MONI | KEY_4);
+    REQUIRE(state.ui_screen == MAIN_VFO);
+
+    /* The same call again moves to the top, no new entry */
+    pressN(KEY_MONI | KEY_5, 1);
+    REQUIRE(state.channel.mode == OPMODE_DMR);
+    sync_rtx_stage();
+    for (unsigned i = 0; i < 6; i++) {
+        dmrEmu_pushTs();
+        rtx_task();
+    }
+    dmrEmu_injectGroupCall(2345678, 31665, 1, 1, 6);
+    REQUIRE(rtx_until(DMR_CALL_RX));
+    REQUIRE(rtx_until(DMR_CALL_IDLE));
+    REQUIRE(dmrLastHeard_count() == 2);
+    REQUIRE(dmrLastHeard_get(0, &e) == true);
+    REQUIRE(e.src == 2345678);
+}
+
+TEST_CASE("Hang time: the caller stays shown, hang terminators extend it",
+          "[ui][dmr][hang]")
+{
+    fresh_dmr_rtx();
+    state.settings.dmr_hangTime = 1;
+    state.settings.dmr_monitor = 1;
+    ui_saveState();
+    sync_rtx_stage();
+    for (unsigned i = 0; i < 6; i++) {
+        dmrEmu_pushTs();
+        rtx_task();
+    }
+
+    dmrEmu_injectGroupCall(2345678, 31665, 1, 1, 6);
+    REQUIRE(rtx_until(DMR_CALL_RX));
+    rtxStatus_t status = rtx_getCurrentStatus();
+    REQUIRE(_ui_dmrCallReceived(&status) == true);
+    render();
+
+    /* The terminator ends the call: the caller stays for the hang time */
+    REQUIRE(rtx_until(DMR_CALL_RX_HANG));
+    status = rtx_getCurrentStatus();
+    REQUIRE(_ui_dmrCallReceived(&status) == true);
+    REQUIRE(status.dmr_rxSrcId == 2345678);
+    REQUIRE(status.dmr_rxDstId == 31665);
+    render();
+
+    /* 600 ms in: a hang time terminator of the same call restarts it */
+    sleepFor(0, 600);
+    rtx_task();
+    REQUIRE(rtx_getCurrentStatus().dmr_callState == DMR_CALL_RX_HANG);
+    inject_terminator(2345678, 31665, 1);
+
+    /* 1.2 s after the call ended it is still shown */
+    sleepFor(0, 600);
+    rtx_task();
+    status = rtx_getCurrentStatus();
+    REQUIRE(status.dmr_callState == DMR_CALL_RX_HANG);
+    REQUIRE(_ui_dmrCallReceived(&status) == true);
+    REQUIRE(status.dmr_rxSrcId == 2345678);
+    render();
+
+    /* A terminator of another call does not extend it: 1.1 s later idle */
+    inject_terminator(1111111, 31665, 1);
+    sleepFor(0, 1100);
+    rtx_task();
+    status = rtx_getCurrentStatus();
+    REQUIRE(status.dmr_callState == DMR_CALL_IDLE);
+    REQUIRE(_ui_dmrCallReceived(&status) == false);
+    render();
+
+    /* The last heard list saw one call */
+    REQUIRE(dmrLastHeard_count() == 1);
+}
+
+TEST_CASE("Short LC: the Activity Update raises the TS busy hints",
+          "[ui][dmr][shortlc]")
+{
+    fresh_dmr_rtx();
+    char buf[MAX_ENTRY_LEN];
+
+    rtxStatus_t status = rtx_getCurrentStatus();
+    REQUIRE(status.dmr_tsBusy == 0);
+
+    /* Group voice on TS1 to 31665, nothing on TS2 */
+    uint32_t msg = act_updt(DMR::ACT_GROUP_VOICE, DMR::ACT_NONE, 31665, 0);
+    inject_short_lc(msg);
+    status = rtx_getCurrentStatus();
+    REQUIRE(status.dmr_tsBusy == 0x01);
+    REQUIRE(status.dmr_mon.shortLc == msg);
+    REQUIRE(status.dmr_mon.shortLcOk == 1);
+    REQUIRE(status.dmr_mon.shortLcBad == 0);
+
+    /* Main screen: "1*" next to the channel; both slots: "1* 2*" */
+    ui_state_t ui_state;
+    memset(&ui_state, 0, sizeof(ui_state));
+    render();
+    _ui_drawModeInfoDMR(&ui_state, &status);
+
+    msg = act_updt(DMR::ACT_INDIVIDUAL_DATA, DMR::ACT_GROUP_VOICE, 1234567, 9);
+    inject_short_lc(msg);
+    status = rtx_getCurrentStatus();
+    REQUIRE(status.dmr_tsBusy == 0x03);
+    REQUIRE(status.dmr_mon.shortLcOk == 2);
+    _ui_drawModeInfoDMR(&ui_state, &status);
+
+    /* Monitor screen rows */
+    goto_dmr_monitor();
+    render();
+    REQUIRE(_ui_getDMRMonitorEntryName(buf, sizeof(buf), DMRMON_SLC) == 0);
+    REQUIRE(strcmp(buf, "Short LC") == 0);
+    REQUIRE(_ui_getDMRMonitorValueName(buf, sizeof(buf), DMRMON_SLC) == 0);
+    char expected[MAX_ENTRY_LEN];
+    snprintf(expected, sizeof(expected), "%07lX 2/0", (unsigned long)msg);
+    REQUIRE(strcmp(buf, expected) == 0);
+    REQUIRE(_ui_getDMRMonitorEntryName(buf, sizeof(buf), DMRMON_TSBUSY) == 0);
+    REQUIRE(strcmp(buf, "TS busy") == 0);
+    REQUIRE(_ui_getDMRMonitorValueName(buf, sizeof(buf), DMRMON_TSBUSY) == 0);
+    REQUIRE(strcmp(buf, "TS1 TS2") == 0);
+
+    /* A bad CRC is counted and changes nothing else */
+    inject_short_lc(msg, false);
+    status = rtx_getCurrentStatus();
+    REQUIRE(status.dmr_tsBusy == 0x03);
+    REQUIRE(status.dmr_mon.shortLcOk == 2);
+    REQUIRE(status.dmr_mon.shortLcBad == 1);
+
+    /* No activity on either slot */
+    inject_short_lc(act_updt(DMR::ACT_NONE, DMR::ACT_NONE, 0, 0));
+    status = rtx_getCurrentStatus();
+    REQUIRE(status.dmr_tsBusy == 0);
+    render();
+    REQUIRE(_ui_getDMRMonitorValueName(buf, sizeof(buf), DMRMON_TSBUSY) == 0);
+    REQUIRE(strcmp(buf, "-") == 0);
+
+    /* A Null message leaves the hints as they are */
+    inject_short_lc(act_updt(DMR::ACT_GROUP_VOICE, DMR::ACT_NONE, 9, 0));
+    inject_short_lc(0x00000000);
+    REQUIRE(rtx_getCurrentStatus().dmr_tsBusy == 0x01);
+
+    /* Every language carries the new strings */
+    for (const stringsTable_t *lang = languages;
+         lang < languages + NUM_LANGUAGES; lang++) {
+        REQUIRE(lang->lastHeard != NULL);
+        REQUIRE(lang->favourites != NULL);
+        REQUIRE(lang->empty != NULL);
+    }
+}
+
+TEST_CASE("A received call is announced once by the voice prompts",
+          "[ui][dmr][vp]")
+{
+    fresh_dmr_rtx();
+    state.settings.dmr_hangTime = 0;
+    state.settings.dmr_monitor = 1;
+    state.settings.vpLevel = vpHigh;
+    ui_saveState();
+    sync_rtx_stage();
+    for (unsigned i = 0; i < 6; i++) {
+        dmrEmu_pushTs();
+        rtx_task();
+    }
+
+    /* Status events during the call: the announcement path runs */
+    dmrEmu_injectGroupCall(2345678, 31665, 1, 1, 12);
+    REQUIRE(rtx_until(DMR_CALL_RX));
+    render();
+    render();
+    REQUIRE(rtx_until(DMR_CALL_IDLE));
+    render();
+
+    /* The prompt itself, for every call type */
+    vp_announceDmrCall(2345678, 31665, GROUP, vpqInit);
+    vp_announceDmrCall(2345678, 1234567, PRIVATE,
+                       (enum vpQueueFlags)(vpqInit | vpqIncludeDescriptions));
+    vp_announceDmrCall(2345678, DMR_ID_MAX, ALL, vpqInit);
+    vp_flush();
+    state.settings.vpLevel = vpNone;
+    ui_saveState();
 }

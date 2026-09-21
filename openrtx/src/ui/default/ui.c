@@ -60,6 +60,7 @@
 #include "interfaces/delays.h"
 #ifdef CONFIG_DMR
 #include "interfaces/dmr_baseband.h"
+#include "core/dmr_lastheard.h"
 #endif
 #include <string.h>
 #include "core/battery.h"
@@ -211,6 +212,7 @@ const char *settings_dmr_items[] =
     "Access",
     "Hang time",
     "Test tone",
+    "Favourites",
     "DMR monitor"
 };
 #endif
@@ -1135,6 +1137,179 @@ static void _ui_dmr_changeCallType(int variation)
     uint8_t callType = (state.settings.dmr_callType + 3 + variation) % 3;
 
     state.settings.dmr_callType = callType;
+    state.dmr_destName[0] = '\0';
+}
+
+static void _ui_dmr_announceDestination(enum vpQueueFlags queueFlags);
+
+/*
+ * Set the destination of the next call: from the contacts (with the
+ * contact's name, shown on the main screen in place of the ID), from a
+ * favourite or from the last heard list (name looked up in the contacts,
+ * empty when unknown). Every other way of changing the destination clears
+ * the name.
+ */
+static void _ui_dmr_setDestination(uint32_t id, uint8_t type,
+                                   const char *name, bool *sync_rtx)
+{
+    if(type > ALL)
+        type = GROUP;
+
+    if((id != state.settings.dmr_talkgroup) ||
+       (type != state.settings.dmr_callType))
+        *sync_rtx = true;
+
+    state.settings.dmr_talkgroup = id & DMR_ID_MAX;
+    state.settings.dmr_callType = type;
+
+    if(name != NULL)
+    {
+        strncpy(state.dmr_destName, name, DMR_DEST_NAME_LEN - 1);
+        state.dmr_destName[DMR_DEST_NAME_LEN - 1] = '\0';
+    }
+    else
+    {
+        state.dmr_destName[0] = '\0';
+    }
+}
+
+/*
+ * Last heard: reached with MONI + 4 from the main screens, ENTER on an
+ * entry sets a private call to its source (named after the contact with
+ * that ID, when there is one) and comes back to the main screen.
+ */
+static void _ui_dmr_lastHeardOpen()
+{
+    ui_state.last_main_state = state.ui_screen;
+    ui_state.menu_selected = 0;
+    state.ui_screen = DMR_LAST_HEARD;
+    vp_announceText(currentLanguage->lastHeard, vpqInit);
+}
+
+static void _ui_dmr_lastHeardClose()
+{
+    ui_state.menu_selected = 0;
+    state.ui_screen = ui_state.last_main_state;
+    vp_playMenuBeepIfNeeded(true);
+}
+
+static void _ui_dmr_lastHeardCall(bool *sync_rtx, enum vpQueueFlags queueFlags)
+{
+    struct dmrLastHeardEntry entry;
+    char name[DMR_DEST_NAME_LEN];
+
+    if(dmrLastHeard_get(ui_state.menu_selected, &entry) == false)
+        return;
+
+    if(_ui_dmrContactName(entry.src, PRIVATE, name) == false)
+        name[0] = '\0';
+
+    _ui_dmr_setDestination(entry.src, PRIVATE, name, sync_rtx);
+    _ui_dmr_lastHeardClose();
+    _ui_dmr_announceDestination(queueFlags);
+}
+
+/*
+ * Favourites: Settings > DMR > Favourites. ENTER on a slot makes it the
+ * destination and comes back to the main screen, '*' stores the current
+ * destination into the slot, '#' empties it, ESC goes back to the
+ * settings.
+ */
+static void _ui_dmr_favouritesOpen()
+{
+    ui_state.menu_selected = 0;
+    ui_state.edit_mode = false;
+    state.ui_screen = DMR_FAVOURITES;
+    vp_announceText(currentLanguage->favourites, vpqInit);
+}
+
+static void _ui_dmr_favouritesClose()
+{
+    state.ui_screen = SETTINGS_DMR;
+    ui_state.menu_selected = DMR_FAVOURITES_ENTRY;
+    vp_playMenuBeepIfNeeded(true);
+}
+
+static void _ui_dmr_favouriteSelect(bool *sync_rtx,
+                                    enum vpQueueFlags queueFlags)
+{
+    uint32_t fav = state.settings.dmr_favourites[ui_state.menu_selected];
+
+    if(fav == 0)
+    {
+        vp_playMenuBeepIfNeeded(false);
+        return;
+    }
+
+    _ui_dmr_setDestination(DMR_FAV_ID(fav), DMR_FAV_TYPE(fav), NULL, sync_rtx);
+    ui_state.menu_selected = 0;
+    state.ui_screen = ui_state.last_main_state;
+    _ui_dmr_announceDestination(queueFlags);
+}
+
+static void _ui_dmr_favouriteStore()
+{
+    uint32_t id = state.settings.dmr_talkgroup;
+
+    // A destination of zero would read as an empty slot
+    if(id == 0)
+    {
+        vp_playMenuBeepIfNeeded(false);
+        return;
+    }
+
+    state.settings.dmr_favourites[ui_state.menu_selected] =
+        DMR_FAV_PACK(id, state.settings.dmr_callType);
+    _ui_dmr_announceDestination(vpqInit | vpqPlayImmediatelyAtMediumOrHigher);
+}
+
+static void _ui_dmr_favouriteClear()
+{
+    state.settings.dmr_favourites[ui_state.menu_selected] = 0;
+    vp_announceText(currentLanguage->empty,
+                    vpqInit | vpqPlayImmediatelyAtMediumOrHigher);
+}
+
+/*
+ * Voice prompt at the start of a received call: the caller and the
+ * destination, once per call (a call reopened after its hang time is a new
+ * one). Called on the status events while the VFO is in DMR.
+ */
+static uint32_t dmr_announcedSrc = 0;
+static uint32_t dmr_announcedDst = 0;
+static bool dmr_announcedCall = false;
+
+static void _ui_dmr_announceCall()
+{
+    rtxStatus_t status = rtx_getCurrentStatus();
+    bool rx = (status.opMode == OPMODE_DMR) &&
+              (status.dmr_callState == DMR_CALL_RX) && status.dmr_lcOk;
+
+    if(rx == false)
+    {
+        dmr_announcedCall = false;
+        return;
+    }
+
+    if(dmr_announcedCall && (status.dmr_rxSrcId == dmr_announcedSrc) &&
+       (status.dmr_rxDstId == dmr_announcedDst))
+        return;
+
+    dmr_announcedCall = true;
+    dmr_announcedSrc = status.dmr_rxSrcId;
+    dmr_announcedDst = status.dmr_rxDstId;
+
+    if(state.settings.vpLevel <= vpBeep)
+        return;
+
+    uint8_t callType = GROUP;
+    if(status.dmr_rxFlco == 3)
+        callType = PRIVATE;
+    else if(status.dmr_rxDstId == DMR_ID_MAX)
+        callType = ALL;
+
+    vp_announceDmrCall(status.dmr_rxSrcId, status.dmr_rxDstId, callType,
+                       vpqInit | vpqPlayImmediatelyAtMediumOrHigher);
 }
 
 static void _ui_dmr_changeMonitor(int variation)
@@ -1266,6 +1441,7 @@ static void _ui_dmr_destinationInput(kbd_msg_t msg, bool *sync_rtx,
            (ui_state.new_dmr_number != state.settings.dmr_talkgroup))
         {
             state.settings.dmr_talkgroup = ui_state.new_dmr_number;
+            state.dmr_destName[0] = '\0';
             *sync_rtx = true;
         }
 
@@ -1286,6 +1462,7 @@ static void _ui_dmr_toggleCallType(bool *sync_rtx, enum vpQueueFlags queueFlags)
     // A broadcast destination set in the menu goes back to a group call
     state.settings.dmr_callType = (state.settings.dmr_callType == GROUP)
                                 ? PRIVATE : GROUP;
+    state.dmr_destName[0] = '\0';
     *sync_rtx = true;
     _ui_dmr_announceDestination(queueFlags);
 }
@@ -1739,6 +1916,15 @@ static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
                 *sync_rtx = true;
                 vp_announceBandwidth(state.channel.bandwidth, queueFlags);
             }
+            #ifdef CONFIG_DMR
+            else if((state.channel.mode == OPMODE_DMR) &&
+                    ((state.ui_screen == MAIN_VFO) ||
+                     (state.ui_screen == MAIN_MEM)))
+            {
+                // Last heard list
+                _ui_dmr_lastHeardOpen();
+            }
+            #endif
             break;
         case 5:
             // Cycle through radio modes
@@ -2853,6 +3039,30 @@ void ui_updateFSM(bool *sync_rtx)
                         // Switch to MEM screen
                         state.ui_screen = MAIN_MEM;
                     }
+                    #ifdef CONFIG_DMR
+                    else if(state.ui_screen == MENU_CONTACTS)
+                    {
+                        // A DMR contact becomes the destination of the DMR
+                        // VFO or channel, its name goes to the main screen
+                        contact_t contact;
+                        uint16_t pos = ui_state.menu_selected;
+                        if((state.channel.mode == OPMODE_DMR) &&
+                           (cps_readContact(&contact, pos) != -1) &&
+                           (contact.mode == OPMODE_DMR))
+                        {
+                            _ui_dmr_setDestination(contact.info.dmr.id,
+                                                   contact.info.dmr.contactType,
+                                                   contact.name, sync_rtx);
+                            ui_state.menu_selected = 0;
+                            state.ui_screen = ui_state.last_main_state;
+                            _ui_dmr_announceDestination(queueFlags);
+                        }
+                        else
+                        {
+                            vp_playMenuBeepIfNeeded(false);
+                        }
+                    }
+                    #endif
                 }
                 else if(msg.keys & KEY_ESC)
                     _ui_menuBack(MENU_TOP);
@@ -3525,8 +3735,11 @@ void ui_updateFSM(bool *sync_rtx)
                         else
                         {
                             if(accepted)
+                            {
                                 state.settings.dmr_talkgroup =
                                     ui_state.new_dmr_number;
+                                state.dmr_destName[0] = '\0';
+                            }
                             _ui_dmr_announceDestination(queueFlags);
                         }
                     }
@@ -3600,6 +3813,10 @@ void ui_updateFSM(bool *sync_rtx)
                         ui_state.edit_mode = false;
                         _ui_dmr_monitorOpen();
                     }
+                    else if(ui_state.menu_selected == DMR_FAVOURITES_ENTRY)
+                    {
+                        _ui_dmr_favouritesOpen();
+                    }
                     else
                     {
                         ui_state.edit_mode = !ui_state.edit_mode;
@@ -3645,6 +3862,60 @@ void ui_updateFSM(bool *sync_rtx)
                                               sync_rtx);
                     else
                         _ui_dmr_monitorPage(+1);
+                }
+                break;
+
+            // DMR last heard list: UP/DOWN browse, ENTER calls the source
+            // back with a private call, ESC returns to the main screen
+            case DMR_LAST_HEARD:
+            {
+                uint8_t entries = dmrLastHeard_count();
+                if(ui_state.menu_selected >= entries)
+                    ui_state.menu_selected = (entries > 0) ? entries - 1 : 0;
+
+                if(msg.keys & KEY_ESC)
+                    _ui_dmr_lastHeardClose();
+                else if((msg.keys & KEY_UP || msg.keys & KNOB_LEFT) &&
+                        (entries > 0))
+                    _ui_menuUp(entries);
+                else if((msg.keys & KEY_DOWN || msg.keys & KNOB_RIGHT) &&
+                        (entries > 0))
+                    _ui_menuDown(entries);
+                else if(msg.keys & KEY_ENTER)
+                    _ui_dmr_lastHeardCall(sync_rtx, queueFlags);
+                else if(msg.keys & KEY_F1)
+                {
+                    if(state.settings.vpLevel > vpBeep)
+                    {
+                        vp_replayLastPrompt();
+                        f1Handled = true;
+                    }
+                }
+                break;
+            }
+
+            // DMR favourites: ENTER selects, '*' stores the current
+            // destination into the slot, '#' empties it, ESC goes back
+            case DMR_FAVOURITES:
+                if(msg.keys & KEY_ESC)
+                    _ui_dmr_favouritesClose();
+                else if(msg.keys & KEY_UP || msg.keys & KNOB_LEFT)
+                    _ui_menuUp(DMR_FAV_NUM);
+                else if(msg.keys & KEY_DOWN || msg.keys & KNOB_RIGHT)
+                    _ui_menuDown(DMR_FAV_NUM);
+                else if(msg.keys & KEY_ENTER)
+                    _ui_dmr_favouriteSelect(sync_rtx, queueFlags);
+                else if(msg.keys & KEY_STAR)
+                    _ui_dmr_favouriteStore();
+                else if(msg.keys & KEY_HASH)
+                    _ui_dmr_favouriteClear();
+                else if(msg.keys & KEY_F1)
+                {
+                    if(state.settings.vpLevel > vpBeep)
+                    {
+                        vp_replayLastPrompt();
+                        f1Handled = true;
+                    }
                 }
                 break;
 #endif
@@ -3779,6 +4050,12 @@ void ui_updateFSM(bool *sync_rtx)
             state.ui_screen = MAIN_FRS;
             state.txDisable = false;
         }
+
+        #ifdef CONFIG_DMR
+        // A DMR call opening is announced once, caller and destination
+        if (state.channel.mode == OPMODE_DMR)
+            _ui_dmr_announceCall();
+        #endif
 
         if (txOngoing || rtx_rxSquelchOpen() || (state.volume != last_state.volume))
         {
@@ -3918,6 +4195,14 @@ bool ui_updateGUI()
         // DMR monitor (bring-up) screen
         case DMR_MONITOR_SCREEN:
             _ui_drawDMRMonitor(&ui_state);
+            break;
+        // DMR last heard list
+        case DMR_LAST_HEARD:
+            _ui_drawDMRLastHeard(&ui_state);
+            break;
+        // DMR favourites
+        case DMR_FAVOURITES:
+            _ui_drawDMRFavourites(&ui_state);
             break;
 #endif
         case SETTINGS_ACCESSIBILITY:

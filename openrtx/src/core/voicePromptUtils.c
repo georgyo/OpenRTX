@@ -472,6 +472,44 @@ void vp_announceBank(const uint16_t bank, const enum vpQueueFlags flags)
     playIfNeeded(flags);
 }
 
+void vp_announceDmrCall(uint32_t src, uint32_t dst, uint8_t callType,
+                        const enum vpQueueFlags flags)
+{
+    clearCurrPromptIfNeeded(flags);
+
+    if (flags & vpqIncludeDescriptions)
+        vp_queuePrompt(PROMPT_SOURCE_ID);
+
+    /*
+     * vp_queueInteger() spells the number digit by digit, which is how a
+     * DMR ID is read out. The call type words come from the string table
+     * through vp_announceText(): "Private" and the broadcast word are
+     * spelled until the voice prompt pack carries them, as the FRS
+     * additions are.
+     */
+    vp_queueInteger((int)src);
+
+    switch (callType) {
+        case PRIVATE:
+            addSilenceIfNeeded(flags | vpqAddSeparatingSilence);
+            vp_announceText(currentLanguage->privateCall, vpqDefault);
+            vp_queueInteger((int)dst);
+            break;
+
+        case ALL:
+            addSilenceIfNeeded(flags | vpqAddSeparatingSilence);
+            vp_announceText(currentLanguage->broadcast, vpqDefault);
+            break;
+
+        default:
+            vp_queuePrompt(PROMPT_TALKGROUP);
+            vp_queueInteger((int)dst);
+            break;
+    }
+
+    playIfNeeded(flags);
+}
+
 void vp_announceM17Info(const channel_t *channel, bool isEditing,
                         const enum vpQueueFlags flags)
 {
