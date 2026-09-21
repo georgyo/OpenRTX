@@ -15,8 +15,8 @@ extern "C" {
 
 /*
  * The DMR last heard ring (core/dmr_lastheard.c): insertion order,
- * de-duplication, depth and the private call-back selection the UI makes
- * from it (settings.dmr_talkgroup = source, call type PRIVATE).
+ * de-duplication, depth and the fields the UI's call back and rows are
+ * built from.
  */
 
 static void fill(unsigned n, uint32_t base = 1000)
@@ -127,27 +127,56 @@ TEST_CASE("Last heard: a repeated call moves to the top", "[dmr][lastheard]")
     REQUIRE(e.src == 1001);
 }
 
-TEST_CASE("Last heard: call-back selection sets a private call",
+TEST_CASE("Last heard: an entry keeps the source, destination and FLCO the "
+          "call back and the rows are built from",
           "[dmr][lastheard]")
 {
     /*
-     * The UI's ENTER on an entry does what is checked here with the
-     * settings: the source of the entry becomes the destination of a
-     * private call. The screen itself is exercised in ui_dmr.cpp.
+     * The UI's ENTER on an entry makes a private call to the entry's
+     * source and the rows show its destination by call type (the FLCO
+     * tells a private call from a group call): a repeated call refreshes
+     * the FLCO with the timestamp, a full ring hands back every field of
+     * the entries it kept. The screen itself is exercised in ui_dmr.cpp.
      */
     dmrLastHeard_init();
     dmrLastHeard_insert(2345678, 31665, 0, 1000);
-    dmrLastHeard_insert(1234567, 9, 0, 2000);
-
-    state.settings = default_settings;
-    REQUIRE(state.settings.dmr_callType == GROUP);
+    dmrLastHeard_insert(1234567, 2345678, 3, 2000);
 
     struct dmrLastHeardEntry e;
     REQUIRE(dmrLastHeard_get(1, &e) == true);
-    state.settings.dmr_talkgroup = e.src;
-    state.settings.dmr_callType = PRIVATE;
+    REQUIRE(e.src == 2345678);
+    REQUIRE(e.dst == 31665);
+    REQUIRE(e.flco == 0);
+    REQUIRE(e.timestamp == 1000);
+    REQUIRE(dmrLastHeard_get(0, &e) == true);
+    REQUIRE(e.src == 1234567);
+    REQUIRE(e.dst == 2345678);
+    REQUIRE(e.flco == 3);
 
-    REQUIRE(state.settings.dmr_talkgroup == 2345678);
-    REQUIRE(state.settings.dmr_callType == PRIVATE);
-    REQUIRE(state.settings.dmr_talkgroup <= DMR_ID_MAX);
+    /* The same call heard again, the FLCO of the new header wins */
+    dmrLastHeard_insert(2345678, 31665, 3, 3000);
+    REQUIRE(dmrLastHeard_count() == 2);
+    REQUIRE(dmrLastHeard_get(0, &e) == true);
+    REQUIRE(e.src == 2345678);
+    REQUIRE(e.flco == 3);
+    REQUIRE(e.timestamp == 3000);
+
+    /* An index past the end fails and leaves the caller's entry alone */
+    memset(&e, 0x55, sizeof(e));
+    REQUIRE(dmrLastHeard_get(2, &e) == false);
+    REQUIRE(e.src == 0x55555555);
+    REQUIRE(dmrLastHeard_get(DMR_LASTHEARD_NUM, &e) == false);
+
+    /* A full ring: every entry comes back with its own fields */
+    dmrLastHeard_clear();
+    for (unsigned i = 0; i < DMR_LASTHEARD_NUM; i++)
+        dmrLastHeard_insert(1000 + i, 9 + i, (i & 1) ? 3 : 0, 100 * (i + 1));
+    for (unsigned i = 0; i < DMR_LASTHEARD_NUM; i++) {
+        unsigned n = DMR_LASTHEARD_NUM - 1 - i;
+        REQUIRE(dmrLastHeard_get(i, &e) == true);
+        REQUIRE(e.src == 1000 + n);
+        REQUIRE(e.dst == 9 + n);
+        REQUIRE(e.flco == ((n & 1) ? 3 : 0));
+        REQUIRE(e.timestamp == 100 * (n + 1));
+    }
 }
