@@ -125,6 +125,7 @@ void rtx_init(pthread_mutex_t *m)
     rtxStatus.dmr_monitor   = 0;
     rtxStatus.dmr_polite    = 1;
     rtxStatus.dmr_modeReg   = 0;
+    rtxStatus.dmr_lcssMode  = 0;
     rtxStatus.dmr_lcOk      = false;
     rtxStatus.dmr_rxSrcId   = 0;
     rtxStatus.dmr_rxDstId   = 0;
