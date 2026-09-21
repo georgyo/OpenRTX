@@ -806,6 +806,10 @@ TEST_CASE("The DMR top-bar marker follows the RTX marker flags", "[ui][dmr]")
     REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_WAKEUP_FAILED),
                    currentLanguage->dmrWakeupFailed)
             == 0);
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_RF_FAILED),
+                   currentLanguage->dmrRfFailed)
+            == 0);
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_RF_FAILED), "RF failed") == 0);
     REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_NOT_SUPPORTED),
                    currentLanguage->dmrNotSupported)
             == 0);
@@ -1376,6 +1380,30 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     render();
     REQUIRE(monitorValue(DMRMON_RB12) == "98");
 
+    /* With the two-point test tone on (bit6, 0xD8 as the Two-point action
+     * leaves it) the advance is toggled and the tone bit preserved, both
+     * in the value column and in the write; a register holding neither
+     * word of the pair gets the OEM one */
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0xD8);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "D8");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-55");
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, 0x55);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "55");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-D8");
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, 0xD8);
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x00);
+    render();
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-98");
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, DMRMON_R12_OEM);
+    REQUIRE(rec->regWrites == 30);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+
     /* The action page scrolls: the last action is drawn, selected */
     REQUIRE(_ui_dmrMonitorCurrentPage() == pages - 1);
 
@@ -1400,7 +1428,7 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     press(KEY_LEFT);
     render();
     REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
-    REQUIRE(rec->regWrites == 25);
+    REQUIRE(rec->regWrites == 30);
 
     /* Reopening the screen starts from the mode word in force */
     press(KEY_ESC);
@@ -1515,7 +1543,7 @@ TEST_CASE("The main screen destination line says TX or WAKE", "[ui][dmr]")
     REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX, false), "TX -> ") == 0);
     REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX, true), "TX->") == 0);
     REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX_WAKEUP, false), "WAKE ") == 0);
-    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX_WAKEUP, true), "WAKE ") == 0);
+    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX_WAKEUP, true), "WAKE:") == 0);
 
     /* Both render on the main screen with the longest destination */
     ui_state_t ui_state;
@@ -1529,16 +1557,32 @@ TEST_CASE("The main screen destination line says TX or WAKE", "[ui][dmr]")
     status.dmr_callState = DMR_CALL_TX;
     _ui_drawModeInfoDMR(&ui_state, &status);
 
-#if CONFIG_SCREEN_HEIGHT > 127
-    /* The longest line fits the width, see the idle line guard above */
+    /* The longest line fits the width of this layout, see the idle line
+     * guard above (the compact layout draws the prefix and destination
+     * alone, centred, while transmitting) */
     char line[32];
     sniprintf(line, sizeof(line), "%sPC %lu",
-              _ui_dmrTxPrefix(DMR_CALL_TX_WAKEUP, false),
+              _ui_dmrTxPrefix(DMR_CALL_TX_WAKEUP, CONFIG_SCREEN_HEIGHT < 128),
               (unsigned long)DMR_ID_MAX);
     uint16_t width = gfx_getTextWidth(layout.line2_font, line);
     INFO("line \"" << line << "\" is " << width << " px wide");
     REQUIRE(width <= CONFIG_SCREEN_WIDTH - 2 * layout.horizontal_pad);
-#endif
+
+    /*
+     * The compact layout, whatever this build's screen: 128 pixels wide, a
+     * 4 pixel padding on each side and FONT_SIZE_6PT on line 2 (the <= 64
+     * pixel layouts of ui.c). The channel string is dropped from the line
+     * while transmitting, so the widest forms are prefix + destination.
+     */
+    const char *compact[] = {
+        "TX->PC 16777215",  "TX->TG 16777215",  "TX->ALL",
+        "WAKE:PC 16777215", "WAKE:TG 16777215", "WAKE:ALL"
+    };
+    for (const char *l : compact) {
+        uint16_t w = gfx_getTextWidth(FONT_SIZE_6PT, l);
+        INFO("compact line \"" << l << "\" is " << w << " px wide");
+        REQUIRE(w <= 128 - 2 * 4);
+    }
 
     /* The busy marker of a rejected transmission, from the RTX flags */
     REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_BUSY), currentLanguage->dmrBusy)
