@@ -117,22 +117,6 @@ static constexpr uint8_t IRQ_RX_DATA = HR_C6000::IRQ_RX_DATA;
 static constexpr uint8_t IRQ_RX_INFO = HR_C6000::IRQ_RX_INFO;
 static constexpr uint8_t IRQ_ABNORMAL_EXIT = HR_C6000::IRQ_ABNORMAL_EXIT;
 
-/* Register 0x50 fields, manual Table 5.5 */
-static constexpr uint8_t R50_VOICE = 0x08;
-static constexpr uint8_t R50_TYPE_SHIFT = 4;
-static constexpr uint8_t R50_TYPE_MASK = 0x0F;
-
-/*
- * Register 0x50 values of the voice bursts A..F with the LCSS of the
- * embedded LC fragments filled in as the manual §5.4.5 example does: LCSS
- * 00 (A, single fragment or none), 01 (B, first), 11 (C, D, continuation),
- * 10 (E, last), 00 (F). UNVERIFIED on hardware, selected by
- * DMRBB_DRV_LCSS_MODE = DMRBB_LCSS_MANUAL.
- */
-static constexpr uint8_t VOICE_BURSTS = 6;
-static const uint8_t r50ManualLcss[VOICE_BURSTS] = { 0x08, 0x19, 0x2B,
-                                                     0x3B, 0x4A, 0x58 };
-
 /* Register 0x51 fields, G4EML table */
 static constexpr uint8_t R51_CRC_BAD = 0x04;
 static constexpr uint8_t R51_CLASS_MASK = 0x03;
@@ -185,7 +169,6 @@ static struct dmrbbConfig config;
 static bool active = false;
 static bool attached = false;
 static volatile uint8_t voicePath = VOICE_PATH_VSPI;
-static volatile uint8_t lcssMode = DMRBB_LCSS_PASSTHROUGH;
 
 /**
  * Interrupt callback shared by the four lines, interrupt context: latch and
@@ -474,17 +457,10 @@ void dmrbb_setTxFrameType(uint8_t r50)
         return;
 
     /*
-     * Voice burst with the manual's LCSS convention selected: the burst
-     * number in [7:4] picks the value of the §5.4.5 sequence. Everything
-     * else (headers, terminator, CSBK, the default OpenGD77 convention)
-     * goes through untouched.
+     * Written as given: the LCSS convention of the voice bursts (OpenGD77's
+     * 0x08 | seq << 4 or the manual's §5.4.5 sequence) is the call
+     * controller's choice, DMR::r50Voice(), UNVERIFIED on hardware.
      */
-    if ((lcssMode == DMRBB_LCSS_MANUAL) && ((r50 & R50_VOICE) != 0)) {
-        const uint8_t seq = (r50 >> R50_TYPE_SHIFT) & R50_TYPE_MASK;
-        if (seq < VOICE_BURSTS)
-            r50 = r50ManualLcss[seq];
-    }
-
     C6000.writeCfgRegister(0x50, r50);
 }
 
@@ -562,9 +538,6 @@ uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
         if (addr == DMRBB_DRV_VOICE_PATH)
             return voicePath;
 
-        if (addr == DMRBB_DRV_LCSS_MODE)
-            return lcssMode;
-
         if ((addr >= DMRBB_DRV_RFTX_TICK(0))
             && (addr <= DMRBB_DRV_RFTX_LEAD(1))) {
             uint32_t tick;
@@ -626,9 +599,6 @@ void dmrbb_writeRegister(uint8_t page, uint8_t addr, uint8_t v)
     if (page == DMRBB_PAGE_DRIVER) {
         if (addr == DMRBB_DRV_VOICE_PATH)
             voicePath = (v != 0) ? VOICE_PATH_RAM : VOICE_PATH_VSPI;
-
-        if (addr == DMRBB_DRV_LCSS_MODE)
-            lcssMode = (v != 0) ? DMRBB_LCSS_MANUAL : DMRBB_LCSS_PASSTHROUGH;
 
         return;
     }

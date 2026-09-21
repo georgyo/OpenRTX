@@ -316,7 +316,6 @@ static void resetAll()
 {
     dmrbb_terminate();
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 0);
-    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_LCSS_MODE, 0);
 
     uspi.reset();
     vspi.reset();
@@ -992,15 +991,13 @@ TEST_CASE("The OpenMusic DAC keeps the vocoder bits while DMR owns the chip",
     Cx000dac_terminate();
 }
 
-TEST_CASE("dmrbb_setTxFrameType translates voice bursts to the manual LCSS "
-          "sequence only when the knob is set",
+TEST_CASE("dmrbb_setTxFrameType writes register 0x50 as given, whatever "
+          "the LCSS convention",
           "[dmr_cs7000][tx]")
 {
     bringUp();
 
-    /* Default: pass-through of the OpenGD77 convention */
-    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_LCSS_MODE)
-            == DMRBB_LCSS_PASSTHROUGH);
+    /* The OpenGD77 convention: 0x08 | seq << 4, LCSS 00 */
     for (uint8_t seq = 0; seq < 6; seq++)
         dmrbb_setTxFrameType(0x08 | (seq << 4));
 
@@ -1008,45 +1005,28 @@ TEST_CASE("dmrbb_setTxFrameType translates voice bursts to the manual LCSS "
     for (uint8_t seq = 0; seq < 6; seq++)
         requireTx(uspi.log[seq], cfgWrite(0x50, 0x08 | (seq << 4)));
 
-    /* Manual convention: 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58 for A..F */
-    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_LCSS_MODE,
-                        DMRBB_LCSS_MANUAL);
-    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_LCSS_MODE)
-            == DMRBB_LCSS_MANUAL);
-
+    /* The manual's sequence, chosen by the call controller, goes through
+     * untouched: the driver holds no convention of its own */
+    const uint8_t manual[6] = { 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58 };
     uspi.log.clear();
     for (uint8_t seq = 0; seq < 6; seq++)
-        dmrbb_setTxFrameType(0x08 | (seq << 4));
+        dmrbb_setTxFrameType(manual[seq]);
 
-    const uint8_t manual[6] = { 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58 };
     REQUIRE(uspi.log.size() == 6);
     for (uint8_t seq = 0; seq < 6; seq++) {
         INFO("burst " << (int)seq);
         requireTx(uspi.log[seq], cfgWrite(0x50, manual[seq]));
     }
 
-    /* Header, terminator and CSBK go through untouched, so does a voice
-     * value outside A..F */
+    /* Header, terminator and CSBK likewise */
     uspi.log.clear();
     dmrbb_setTxFrameType(0x10);
     dmrbb_setTxFrameType(0x20);
     dmrbb_setTxFrameType(0x30);
-    dmrbb_setTxFrameType(0x68);
-    REQUIRE(uspi.log.size() == 4);
+    REQUIRE(uspi.log.size() == 3);
     requireTx(uspi.log[0], cfgWrite(0x50, 0x10));
     requireTx(uspi.log[1], cfgWrite(0x50, 0x20));
     requireTx(uspi.log[2], cfgWrite(0x50, 0x30));
-    requireTx(uspi.log[3], cfgWrite(0x50, 0x68));
-
-    /* The knob survives a reconfiguration and is cleared by writing 0 */
-    struct dmrbbConfig cfg = defaultConfig();
-    dmrbb_configure(&cfg);
-    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_LCSS_MODE)
-            == DMRBB_LCSS_MANUAL);
-    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_LCSS_MODE, 0);
-    uspi.log.clear();
-    dmrbb_setTxFrameType(0x18);
-    requireTx(uspi.log[0], cfgWrite(0x50, 0x18));
 
     dmrbb_terminate();
 }
