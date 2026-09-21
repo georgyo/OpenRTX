@@ -213,7 +213,7 @@ interrupt and EXTI line counters, the last 0x82/0x84/0x86 flags,
 0x51/0x52/0x5F/0x42, RSSI, FSK error, timecode, the last LC RAM with its
 decoded source, destination, FLCO, FID and CRC verdict) and, since stage 4,
 the audio layer counters `dmr_audio` (`struct dmrAudioStats` of
-`core/dmr_audio.h`, 16 bytes). The report, the block and the counters are
+`core/dmr_audio.h`, six 32-bit counters, 24 bytes). The report, the block and the counters are
 owned by the opMode handler: `rtx_task()` keeps them across the
 copy of a new configuration, together with `opStatus`. The call state is one
 of `DMR_CALL_IDLE`, `DMR_CALL_RX`, `DMR_CALL_RX_HANG`, `DMR_CALL_TX` and
@@ -375,10 +375,11 @@ counts of headers, voice bursts, terminators and driver calls);
   after, and by `disable()` mid-call), the "not supported" path, and the
   publication of the bring-up block (counters, registers, decoded LC, CRC
   verdict, the mode word override, the counters through the timeout
-  passes). It prints the sizes: `OpMode_DMR` is 424 bytes as a static
+  passes). It prints the sizes: `OpMode_DMR` is 440 bytes as a static
   object (344 in stage 2, plus the 64 byte `dmrMonitor_t` block and the
-  larger snapshot), `DMR::CallController` 176, `struct dmrbbSnapshot` 88
-  (72 plus the four `lineCount[]` counters).
+  larger snapshot of stage 3, the voice sink with its counters, the two
+  audio path IDs and the flags of stage 4), `DMR::CallController` 176,
+  `struct dmrbbSnapshot` 88 (72 plus the four `lineCount[]` counters).
 - Stack: the handler is a static object, so only the frames of `update()`
   and what it calls sit on the 512 byte rtx thread stack. Measured with
   `-fstack-usage` on the Cortex-M7 build (`arm-miosix-eabi-g++ -Os`,
@@ -430,10 +431,17 @@ the path and starts the audio thread; every voice burst the controller
 hands to the `VoiceSink` (`DmrAudioLink` in `OpMode_DMR.hpp`) goes to
 `dmrAudio_pushFrame()`. The thread pops one payload per 60 ms period of the
 stream, decodes it into the idle half of the double buffer and syncs; when
-no payload is queued it writes silence. When the call ends (terminator or
-voice timeout, `DMR_CALL_RX_HANG`) the thread is stopped and the stream
-released while the path stays open; a call opening during the hang time
-starts it again.
+no payload is queued it writes silence. The result of the sync is not a
+reason to quit, as in the M17 decoder: the Cx000 DAC driver answers false
+when the sync point had already passed on entry (the thread came one
+period late), a glitch to play through, and the thread only leaves when
+the path is no longer open or the stream is gone (no idle buffer). When
+the call ends (terminator or voice timeout, `DMR_CALL_RX_HANG`) the thread
+is stopped and the stream released while the path stays open; a call
+opening during the hang time starts it again. A reprogramming of the modem
+(`OpMode_DMR::reprogramModem()`: a colour code, timeslot, ID or access
+policy change, or the two-second watchdog) and `disable()` stop the thread
+before the driver rewrites the chip.
 
 The audio path manager can suspend the RX path under a higher priority one
 on the same sink, typically a voice prompt (`PRIO_PROMPT`) or a beep: the
@@ -450,16 +458,27 @@ path is requested anew.
 ### The transmit side
 
 The microphone path (`SOURCE_MIC -> SINK_MCU`, `PRIO_TX`) is requested for
-the whole transmission as in stage 2; stage 4 adds `dmrAudio_startTx()` on
-it: an 8 kHz input stream on the source (with the `CONFIG_MIC_OVERSAMPLE`
-decimation, DC block and `CONFIG_MIC_GAIN` of the M17 encoder), the thread
-encodes each 480-sample block through the backend and queues the payload;
-`DmrAudioLink::txVoiceFrameNeeded()` pops one per own voice burst and the
-controller writes it to the modem, or the AMBE+2 silence pattern when the
-queue is empty. With the null backend every payload is the silence pattern,
-so the air interface carries a well-formed call with silence; keying the PA
-for it is stage 5. On the emulator there is no microphone device, the start
-is refused and silence is sent.
+the whole transmission as in stage 2, wake-up included, so that the
+microphone is up before it is needed; stage 4 adds `dmrAudio_startTx()` on
+it once the controller reaches `TX_HEADER` (not during a repeater wake-up,
+whose hundreds of milliseconds would only fill the queue and drop payloads
+as overruns): an 8 kHz input stream on the source (with the
+`CONFIG_MIC_OVERSAMPLE` decimation, DC block and `CONFIG_MIC_GAIN` of the
+M17 encoder), the thread encodes each 480-sample block through the backend
+and queues the payload; `DmrAudioLink::txVoiceFrameNeeded()` pops one per
+own voice burst and the controller writes it to the modem, or the AMBE+2
+silence pattern when the queue is empty. When the controller enters
+`TX_VOICE` (on the last header, one own slot before the first voice burst)
+`followState()` calls `DmrAudioLink::startVoice()` -> `dmrAudio_flushTx()`
+once, which drops what the three headers left in the queue but the newest
+payload: the first voice burst carries the last 60 ms of microphone audio
+rather than what was said while the headers went out, and the queue runs
+at about one payload for the rest of the transmission instead of sitting
+full (three payloads, 180 ms of extra mouth-to-ear delay, no room for
+jitter). With the null backend every payload is the silence pattern, so
+the air interface carries a well-formed call with silence; keying the PA
+for it is stage 5. On the emulator there is no microphone device, the
+start is refused and silence is sent.
 
 ### The `dmr_audio` module
 
@@ -474,6 +493,7 @@ module modelled on `audio_codec.c`:
 | `dmrAudio_running()` | true while the thread runs; false once it quit on its own (path suspended, stream error) |
 | `dmrAudio_pushFrame(ambe)` | RX: queue a payload, never blocks; on a full queue the oldest is dropped and counted |
 | `dmrAudio_popFrame(ambe)` | TX: take the next encoded payload, false when empty or not encoding |
+| `dmrAudio_flushTx()` | TX: drop every queued payload but the newest one, not counted as overruns; called once when the voice bursts of a transmission begin |
 | `dmrAudio_getStats()` | copy of `struct dmrAudioStats` |
 | `dmrAudio_backendName()` | `dmrVocoder_get()->name` |
 
@@ -553,12 +573,15 @@ talkgroup (or `Settings > DMR > Monitor` set to accept it).
   microphone delivers). Covered: init/terminate reference counting;
   `startRx` then ten payloads played in order, 480 samples each; a missing
   payload played as 480 zeros and counted once voice resumes, but not
-  before the first payload nor after the last; a full queue dropping the
-  oldest payload; `stop` releasing the stream and joining; a path
-  suspended by a prompt making the thread quit and a restart resuming
-  playback; `startTx` pulling 480-sample blocks with `popFrame` returning
-  the encoded payloads in order and the queue overflow; a start refused on
-  a sink without a device; the TX path taking over the RX one and not the
+  before the first payload nor after the last; a late sync point (the
+  fake driver answering -1 once, as the Cx000 DAC does) played through
+  without stopping the stream; a full queue dropping the oldest payload;
+  `stop` releasing the stream and joining; a path suspended by a prompt
+  making the thread quit and a restart resuming playback; `startTx`
+  pulling 480-sample blocks with `popFrame` returning the encoded payloads
+  in order and the queue overflow; `flushTx` keeping the newest payload
+  only, not counting it as an overrun and leaving a receive queue alone; a
+  start refused on a sink without a device; the TX path taking over the RX one and not the
   reverse; two concurrent stops; a hundred start/stop rounds, half of them
   with the thread parked in the driver. `pthread_join()` is wrapped as in
   the audio threading test; the sanitizer build runs it too.
@@ -568,10 +591,14 @@ talkgroup (or `Settings > DMR > Monitor` set to accept it).
   flow while the call is up, every voice burst is pushed and counted, the
   thread stops at the hang time and restarts for a call during it, the
   path is released after; a transmission with no microphone device is
-  refused and sends the silence pattern; a voice prompt suspends the RX
-  path, the thread quits, the bursts meanwhile are lost, and playback
-  resumes after the prompt.
-- `ui_dmr_test`, extended: the audio section's rows, names and values.
+  refused and sends the silence pattern; the encoder queue is flushed once
+  per transmission, when the controller enters `TX_VOICE` and before the
+  first voice burst is requested; a voice prompt suspends the RX path, the
+  thread quits, the bursts meanwhile are lost, and playback resumes after
+  the prompt.
+- `ui_dmr_test`, extended: the audio section's rows, names and values,
+  the `Vocoder` row showing the backend the build links (`loopback` with
+  `CONFIG_DMR_VOCODER_LOOPBACK`, `null` otherwise, never `none`).
 
 ## Licensing
 
@@ -691,23 +718,28 @@ meson setup -Ddmr_vocoder=<auto|null|loopback|external> <build dir>
 | `auto` (default) | `null` | `loopback`: an injected call (`--dmr-call`) is audible as a tone |
 | `null` | `null` | `null` |
 | `loopback` | `null` compiled, `loopback` selected (a bench test of the V_SPI transfers between two OpenRTX radios, nothing else) | `loopback` |
-| `external` | neither backend compiled | neither backend compiled |
+| `external` | neither backend compiled: the out-of-tree object provides `dmrVocoder_get()` | `null` (the setting is a firmware one; the emulator and the host tests have no out-of-tree object to link) |
 
 The selection is a link-time one: `dmrVocoder_get()` is defined by
 `dmr_vocoder_null.c`, or by `dmr_vocoder_loopback.c` when
-`CONFIG_DMR_VOCODER_LOOPBACK` is defined, and by nobody with `external`. The
-null backend is still compiled next to the loopback one (the loopback
-`decode()` has no use for silence frames, the audio layer does) and both
-structs, `dmrVocoder_null` and `dmrVocoder_loopback`, are reachable by name
-for the tests whatever the option. The T-TWR Plus (Zephyr, `CMakeLists.txt`)
+`CONFIG_DMR_VOCODER_LOOPBACK` is defined, and by nobody in the firmware
+with `external`. The null backend is still compiled next to the loopback
+one (the loopback `decode()` has no use for silence frames, the audio layer
+does) and both structs, `dmrVocoder_null` and `dmrVocoder_loopback`, are
+reachable by name for the tests whatever the option. The T-TWR Plus (Zephyr, `CMakeLists.txt`)
 compiles `dmr_vocoder_null.c`, which is empty there because the board has no
 `CONFIG_DMR`.
 
 ### Linking an external backend
 
 With `-Ddmr_vocoder=external` the firmware references `dmrVocoder_get()` and
-nothing defines it: the link fails until an object providing it is added,
-which is the point. Whoever holds a licence for a real vocoder (DVSI's
+nothing defines it: the link of the radio targets fails until an object
+providing it is added, which is the point. The Linux target is not
+affected: `openrtx_linux` and the unit tests are built with the null
+backend under `external`, as under `null`, so that `meson test` on the host
+(and the emulator's `doCheck` of the flake) keep working from the same
+configuration; nothing in the tree links an out-of-tree object on the
+host. Whoever holds a licence for a real vocoder (DVSI's
 library, a hardware vocoder on a serial port, an implementation covered by
 a licence in their jurisdiction) writes, out of tree:
 
@@ -759,8 +791,12 @@ sample-to-sample step); the loopback backend round-trips a 1 kHz and a
 envelope and the phase across payloads, plays silence for the silence
 pattern, for zeros and for a corrupted payload of its own; every buffer
 handed to the backends sits between guard zones that must come back intact
-(and the sanitizer build catches what the guards do not). The test builds
-both backends whatever the `dmr_vocoder` option.
+(and the sanitizer build catches what the guards do not); a full-scale
+block holding -32768, whose magnitude does not fit an int16, keeps its
+level through the loopback round trip. The test builds both backends
+whatever the `dmr_vocoder` option (the null backend is in every host
+executable, the loopback one is added to this test when the option left
+it out).
 
 ## Hardware validation policy
 
