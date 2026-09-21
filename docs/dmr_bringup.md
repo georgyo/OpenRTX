@@ -120,11 +120,11 @@ rebuild. Nothing on it is needed for normal operation.
 
 Pages are flipped with LEFT and RIGHT (UP, DOWN and ENTER flip them too,
 except on the action page, where UP and DOWN select the action and ENTER runs
-it); ESC returns to `Settings > DMR`. The rows come in four sections of 12,
-13, 7 and 5 rows, each starting on a new page and spanning as many pages as
+it); ESC returns to `Settings > DMR`. The rows come in five sections of 12,
+13, 7, 7 and 5 rows, each starting on a new page and spanning as many pages as
 the screen height needs: six rows per page on the 160x128 displays, hence
-2 + 3 + 2 + 1 = 8 pages, five rows per page on 128x64, hence 3 + 3 + 2 + 1 =
-9 pages (`_ui_dmrMonitorPages()` in `ui_menu.c`; the title reads
+2 + 3 + 2 + 2 + 1 = 10 pages, five rows per page on 128x64, hence
+3 + 3 + 2 + 2 + 1 = 11 pages (`_ui_dmrMonitorPages()` in `ui_menu.c`; the title reads
 `DMR monitor n/N`):
 
 | Section | Rows | Source |
@@ -132,7 +132,8 @@ the screen height needs: six rows per page on the 160x128 displays, hence
 | 1. Counters | `TS`, `SYS`, `RFTX` interrupt counts; `PC0`..`PC3` EXTI pulses per line; `Lock` (0 none, 1 slots ticking, 2 timecode locked); `Timecode`; last `0x82`, `0x84`, `0x86` | `dmrbbSnapshot` counters and `lineCount[]`, refreshed on every pass of the opMode handler including the 30 ms timeouts (a line pulsing without raising an event, PC3 while the pinmap expects SYS on PC1, is counted all the same); flags of the last SYS event |
 | 2. Registers | last `0x51`, `0x52`, `0x5F`, `0x42`; `CC` (0x52[7:4]); `TC` (0x52 bit2); `Sync` (0x5F[1:0]: MS, BS, TDMA1, TDMA2); `RSSI` (0x43:0x44); `FSK err` (0x0F); `rd 0x10`, `rd 0x06`, `rd 0x12`, `rd 0x14-16` read back over U_SPI at every redraw | registers read in the TS/SYS passes; `dmrbb_readRegister()` |
 | 3. Link control | `LC 0-5`, `LC 6-11` (the 12 LC RAM octets in hex), `Src`, `Dst`, `FLCO`, `FID` decoded from them, `CRC` (`ok`/`bad` from 0x51 bit2, `*` appended when the 9 octets do not parse as a standard Full LC) | RX RAM of the last header, terminator or late entry |
-| 4. Actions | `Resync`, `Mode 0x10`, `Reg 0x06`, `BER test`, `Two-point`, the value column showing the register and the value the next ENTER writes | `dmrbb_writeRegister()` on the CONFIG page (U_SPI opmode 4) |
+| 4. Audio (stage 4) | `Vocoder` (backend name), `Aud RX` (payloads pushed to playback), `Aud vary` (of which differing from the previous one), `Aud out` (480-sample blocks written to the speaker), `Aud TX` (payloads encoded from the microphone), `Underrun` (silent blocks between two payloads of a call), `Overrun` (payloads dropped from a full queue) | `rtxStatus_t::dmr_audio`, `dmrAudio_getStats()` of `core/dmr_audio.c` |
+| 5. Actions | `Resync`, `Mode 0x10`, `Reg 0x06`, `BER test`, `Two-point`, the value column showing the register and the value the next ENTER writes | `dmrbb_writeRegister()` on the CONFIG page (U_SPI opmode 4) |
 
 The actions, all `UNVERIFIED on hardware` (`openrtx/src/ui/default/ui.c`,
 `_ui_dmr_monitorAction()`), are only run while the RTX stage is in DMR on a
@@ -166,7 +167,7 @@ Two things to keep in mind:
 ## 3. Hardware checks, in order
 
 Each check names the unknown, what to do, what is expected and what to change
-where if it fails. Record the outcome in the table of section 4.
+where if it fails. Record the outcome in the table of section 5.
 
 ### 3.1 Interrupt lines: which pin carries SYS_INTER (PC1 or PC3) and whether RF_TX_INTER reaches PC2
 
@@ -319,14 +320,10 @@ where if it fails. Record the outcome in the table of section 4.
   the `txAnalogPath*` pair may be the right one, or the calibration
   interpolation, in `radio_updateConfiguration()`.
 
-### 3.10 V_SPI voice payload (deferred to stage 4)
+### 3.10 V_SPI voice payload
 
-- Where: `dmrbb_waitEvent()` in the driver (V_SPI command 0x83, 27 bytes),
-  register 0x06.
-- Do: nothing observable on the monitor screen in stage 3: the `Reg 0x06`
-  action prepares the variants (0x21 V_SPI, 0x01 RAM) for the stage-4
-  `dmr_audio` experiment, which adds a "non-zero voice payload" count.
-- Expect / if wrong: stage 4.
+Moved to section 4.3: the monitor screen's `Aud RX` and `Aud vary` rows of
+stage 4 show whether the payloads arrive and whether they vary per burst.
 
 ### 3.11 Round trip and side effects
 
@@ -354,7 +351,151 @@ where if it fails. Record the outcome in the table of section 4.
   late entry: the embedded LC assembly is not enabled in the driver (0x82
   bit4 masked) or 3.4.
 
-## 4. Results
+## 4. Stage 4: the audio path (`openrtx/src/core/dmr_audio.c`, `Cx000_dac.cpp`)
+
+Stage 4 plays received voice payloads through the vocoder backend into the
+Cx000 "OpenMusic" DAC path. On a radio the backend is the null one: a
+received call produces silence, or the 1 kHz test tone of
+`Settings > DMR > Test tone`, for the 60 ms of every voice burst. The
+monitor screen's "Audio" section (`Vocoder`, `Aud RX`, `Aud vary`,
+`Aud out`, `Aud TX`, `Underrun`, `Overrun`) shows what the audio layer did.
+Nothing below has been run on a radio.
+
+### 4.1 Test tone on a received call: OpenMusic during DMR RX, AF_MUTE / amplifier sequencing, 0x26 / 0x25 / 0x36 gating
+
+- Where: `Cx000_dac.cpp` (`setOpenMusic()`, register 0x06 bit1
+  read-modify-write over the DMR value 0x21; the 0x88 bit0 FIFO poll),
+  `audio_CS7000.cpp` (`audio_connect(SOURCE_MCU, SINK_SPK)`: AUDIO_AMP_EN,
+  AF_MUTE, speaker mutes as for M17), `dmr_audio.c` (`dmrAudio_startRx()`
+  on the granted path).
+- Do: set `Settings > DMR > Test tone` on, receive a call from a hotspot
+  (or another radio) on the configured colour code, timeslot and talkgroup.
+  Open the monitor screen during the call (PTT is disabled there, reception
+  is not).
+- Expect: the tone comes out of the speaker for the whole call, continuous
+  from burst to burst (no 60 ms gaps, no clicks), the volume knob acts on
+  it, it stops at the terminator and the amplifier goes quiet through the
+  hang time; `Aud RX` counts one per burst (about 16.7 per second),
+  `Aud out` runs a little ahead of it (the silence before the first burst),
+  `Underrun` and `Overrun` stay at 0 or a handful, `TS` / `SYS` keep
+  running at the same rate as without audio (the 4 ms OpenMusic refill and
+  the slot passes share SPI2 without stealing interrupts).
+- If wrong:
+  - silence, `Aud RX` counting, `Aud out` counting: the DAC path is not
+    audible in DMR mode. Read `rd 0x06` on the monitor screen: it must be
+    0x23 (0x21 | OpenMusic) while the call plays; if it is 0x22 the
+    vocoder bits were overwritten (a wholesale write of 0x06 somewhere). If
+    0x23, the gating registers 0x26 / 0x25 / 0x36 (undocumented, set for FM
+    by `fmMode()` / `radio_enableAfOutput()`, not touched by
+    `dmrbb_configure()`) probably mute LINEOUT in DMR mode: write 0x26 =
+    0xFD, then 0x36 with bit1 toggled, from the monitor screen's raw writes
+    (`dmrbb_writeRegister()`, page 4) and listen. Record the combination
+    that works; the DMR table of `dmr_CS7000.cpp` gets it. As a last resort
+    the I2S3 path (H7 IOSWP / F4 I2S3ext) is the open question of the
+    design note.
+  - silence and `Aud RX` at 0 while the call is on screen: the payloads
+    never reach the audio layer, see 4.3 (V_SPI) first; `Aud out` counting
+    means the thread runs and plays silence.
+  - `Aud out` at 0: `dmrAudio_startRx()` failed on the granted path (no
+    output device on `SINK_SPK` in the target's `outputDevices[]`, or
+    `audioStream_start()` refused). Check `audio_CS7000.cpp`.
+  - gaps or clicks every 60 ms: the DAC FIFO underruns between blocks
+    (`Underrun` at 0 rules out the payload side). The 4 ms refill of
+    `Cx000_dac.cpp` competes with the slot passes on SPI2; measure the
+    `dmrbb_waitEvent()` SPI time and, if needed, raise the DAC thread's
+    priority or shorten the SYS pass.
+  - the tone continues after the terminator: the thread is not stopped at
+    the hang time (`OpMode_DMR::followState()`), or the DAC keeps playing
+    its last half; `audioStream_stop()` waits for the FIFO.
+  - `TS` / `SYS` stop or slow down while the tone plays: OpenMusic's 0x88
+    bit0 poll or the SOUND page writes interfere with the DMR interrupts
+    (the 0x88 register overlap of the design note). Try 0x06 = 0x21 with
+    OpenMusic off (tone off) to confirm, then look at `Cx000_dac.cpp`'s
+    write sequence.
+
+### 4.2 Internal-vocoder experiment: does the chip produce audio by itself?
+
+The premise of the original brief was that the HR_C6000 decodes AMBE
+internally. The manual (§4.6) and OpenGD77 say it does not; this experiment
+settles it on the CS7000. Documentation predicts silence in every
+combination.
+
+- Where: monitor screen actions `Reg 0x06` (cycles 0x21, 0x01, 0x24, 0x20,
+  0x00) and the raw writes `dmrbb_writeRegister(4, 0x22, v)` /
+  `dmrbb_writeRegister(4, 0x36, v)` (add them to the action list if the
+  screen does not offer them when the experiment is run).
+- Do: with `Test tone` off (null backend: the MCU plays silence, so
+  anything heard comes from the chip), receive a long call and, on the
+  monitor screen, sweep 0x06 over {0x21, 0x01, 0x24, 0x20, 0x00}, and for
+  each value 0x22 over {0x26, 0x20} and 0x36 over its bit1 variants; listen
+  on LINEOUT (test point after the TC75S51F, or the speaker with the volume
+  up). Remember that `dmrbb_configure()` rewrites the registers within 2 s
+  of a silent channel: run the sweep with the call up.
+- Expect: silence in every combination (`Aud out` counting, `Aud RX`
+  counting, nothing audible but the amplifier hiss).
+- If voice is heard in some combination: the chip does contain a decoder,
+  or IC611 "HR_V3000S" (I2C, PB8/PB9) is a vocoder companion driven through
+  it. Record the combination; the null backend is then bypassed by leaving
+  the chip in that configuration and not opening the MCU audio stream (a
+  `dmrbb` flag), which becomes the fast path of the design.
+
+### 4.3 V_SPI voice payload logging: the bytes must vary per burst
+
+- Where: `dmrbb_waitEvent()` of `dmr_CS7000.cpp` (V_SPI command 0x83, 27
+  bytes into `dmrbbSnapshot::voice`, `voiceValid` on a voice sync class
+  with a good CRC), register 0x06 (0x21 = V_SPI, 0x01 = RX RAM 0x30 over
+  U_SPI, the `DMRBB_DRV_VOICE_PATH` driver knob).
+- Do: receive a call from a hotspot running MMDVMHost with `Debug=1` in
+  the DMR section (it dumps the AMBE bytes of every burst) and watch
+  `Aud RX` and `Aud vary` on the monitor screen; with a debugger or a
+  `printf` on the USB serial, log the 27 bytes of a few consecutive
+  bursts.
+- Expect: `Aud vary` follows `Aud RX` within one or two (every burst
+  differs from the previous one: AMBE frames of speech never repeat), and
+  the logged bytes match the hotspot's dump for the same burst (same 27
+  bytes, MMDVMHost prints them in air order).
+- If wrong:
+  - `Aud RX` at 0 during a call: `voiceValid` is never set. The sync class
+    of 0x51 or the CRC bit is misread (3.5), or V_SPI returns nothing with
+    0x06 = 0x21 (SPIFrom, bit3, may need to be 0: try the `Reg 0x06`
+    variants and `DMRBB_DRV_VOICE_PATH` = 1, RX RAM 0x30 over U_SPI).
+  - `Aud RX` counting, `Aud vary` at 0 or 1: the same bytes every burst
+    (all zeros, or a stale buffer): the V_SPI read is wired to the wrong
+    port or clocked wrongly (VOC_* nets, PB3-PB6, C6000 slave), or reads
+    the TX buffer. Try the RX RAM path.
+  - bytes vary but do not match the hotspot dump: bit or byte order of
+    the V_SPI transfer, or the three 72-bit frames are interleaved by the
+    chip as the manual's Figure 6.2 (the payload is the 216 bits after
+    de-interleaving); with a real backend out of tree, the decoded audio
+    tells; without one, compare the position of the 49 bits of each frame.
+
+### 4.4 No rattle when the call ends and the DAC FIFO stalls; C6K_SLEEP
+
+- Where: `rxFunc()` of `dmr_audio.c` (`audioStream_stop()` on the way
+  out), `Cx000_dac.cpp` (stop: waits for the FIFO, clears OpenMusic),
+  `OpMode_DMR::followState()` (the thread is stopped at the hang time, the
+  path released after it; `disable()` stops the thread before releasing
+  the paths and terminating the modem driver).
+- Do: with the test tone on, let a call end normally (terminator), let one
+  end by voice loss (switch the hotspot off mid-call, 720 ms timeout),
+  leave DMR mode with the mode key during a call, and power the radio off
+  during a call.
+- Expect: the tone stops cleanly in all four cases, no rattle, buzz or
+  repeated last block from the speaker while the hang time runs or after
+  the mode switch; the C6K_SLEEP line (`platform/targets/CS7000*/pinmap.h`)
+  never toggles while an audio path is open (it is driven only by
+  `radio_init()` / `radio_terminate()` and the sleep sequence, never by the
+  DMR driver or the audio layer; a scope on the pin during a call stays
+  flat).
+- If wrong: a rattle at the end means the DAC keeps consuming the last
+  half after the stream was stopped without the FIFO being cleared; look
+  at the stop sequence of `Cx000_dac.cpp` (OpenMusic cleared before or
+  after the FIFO drains) and at the order in `followState()`. C6K_SLEEP
+  toggling with a path open means a sleep/wake sequence is triggered by
+  the mode switch while the DAC is streaming; `radio_disableRtx()` and the
+  DMR `dmrbb_terminate()` must not touch it.
+
+## 5. Results
 
 Fill one column per radio; leave a cell empty until the check was run.
 
@@ -372,10 +513,13 @@ Fill one column per radio; leave a cell empty until the check was run.
 | 3.7 | U_SPI 12.5 MHz readback | rd 0x10/0x06/0x12 as written | | | |
 | 3.8 | AK2365A IF path | BER frames, RSSI tracks level | | | |
 | 3.9 | Two-point / deviation | flat 40 Hz square, +/- 1.944 kHz | | | |
-| 3.10 | V_SPI payload | stage 4 | | | |
 | 3.11 | Round trip, beeps, late entry | FM/M17 beeps and audio as before, FM/M17 intact after DMR, TS unaffected, caller in 360 ms | | | |
+| 4.1 | Test tone on a received call | tone for the whole call, `Aud RX` counts, TS/SYS unaffected | | | |
+| 4.2 | Internal-vocoder experiment | silence in every 0x06 / 0x22 / 0x36 combination | | | |
+| 4.3 | V_SPI payload | `Aud vary` follows `Aud RX`, bytes match the hotspot dump | | | |
+| 4.4 | Call end, DAC FIFO stall, C6K_SLEEP | no rattle, C6K_SLEEP flat | | | |
 
-## 5. Flashing back to the OEM DMR firmware
+## 6. Flashing back to the OEM DMR firmware
 
 Connect Systems publishes, on the CS7000 M17 PLUS software page, the OEM
 bootloader (`M17PLUS_Bootloader_B7.06.dfu`) and the DMR + analog host
