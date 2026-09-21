@@ -9,6 +9,7 @@
 #ifdef CONFIG_DMR
 
 #include <math.h>
+#include <stdint.h>
 #include <string.h>
 #include "core/dmr_vocoder.h"
 
@@ -144,6 +145,10 @@ static bool loopbackEncode(const int16_t pcm[DMR_VOCODER_PCM_SAMPLES],
         for (size_t i = 0; i < LB_ENV_SAMPLES; i++) {
             int32_t s = pcm[b * LB_ENV_SAMPLES + i];
             int32_t a = (s < 0) ? -s : s;
+
+            /* |-32768| saturates to 32767: the envelope byte is 8 bits */
+            if (a > INT16_MAX)
+                a = INT16_MAX;
 
             energy += (uint64_t)(s * s);
             if (a > blockPeak)

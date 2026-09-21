@@ -327,6 +327,57 @@ TEST_CASE("Loopback backend round trip of a tone", "[dmr][vocoder]")
         REQUIRE(out.guardsIntact());
     }
 
+    SECTION("A full-scale block, -32768 included, is not silence")
+    {
+        /*
+         * 1 kHz at 8 kHz sampling hits the peaks of the sine exactly:
+         * clipped like the encoder path's dsp_saturate16() does, the block
+         * holds 32767 and -32768, whose magnitude does not fit an int16.
+         */
+        for (size_t i = 0; i < N; i++) {
+            double s = -32768.0 * sin(2.0 * M_PI * 1000.0 * (double)i / FS);
+            if (s > 32767.0)
+                s = 32767.0;
+            if (s < -32768.0)
+                s = -32768.0;
+            in.pcm[i] = (int16_t)lround(s);
+        }
+        bool hasMin = false;
+        bool hasMax = false;
+        for (size_t i = 0; i < N; i++) {
+            hasMin = hasMin || (in.pcm[i] == INT16_MIN);
+            hasMax = hasMax || (in.pcm[i] == INT16_MAX);
+        }
+        REQUIRE(hasMin);
+        REQUIRE(hasMax);
+
+        REQUIRE(v->encode(in.pcm, ambe.ambe) == true);
+        REQUIRE(ambe.guardsIntact());
+        for (size_t b = 6; b < 26; b++)
+            REQUIRE(ambe.ambe[b] == 0xFF);
+
+        REQUIRE(v->decode(ambe.ambe, out.pcm) == true);
+        REQUIRE(out.guardsIntact());
+        double rIn = rms(in.pcm, N);
+        double rOut = rms(out.pcm, N);
+        REQUIRE(rOut > 0.0);
+        REQUIRE(fabs(rOut - rIn) < 0.05 * rIn);
+        REQUIRE(dominantBin(out.pcm, N) == 1000.0);
+    }
+
+    SECTION("A full-scale 1 kHz square wave, half of it at -32768")
+    {
+        for (size_t i = 0; i < N; i++)
+            in.pcm[i] = (((i / 4) & 1) != 0) ? INT16_MIN : INT16_MAX;
+
+        REQUIRE(v->encode(in.pcm, ambe.ambe) == true);
+        for (size_t b = 6; b < 26; b++)
+            REQUIRE(ambe.ambe[b] == 0xFF);
+        REQUIRE(v->decode(ambe.ambe, out.pcm) == true);
+        REQUIRE(rms(out.pcm, N) > 20000.0);
+        REQUIRE(dominantBin(out.pcm, N) == 1000.0);
+    }
+
     SECTION("Silence encodes to something the decoder plays as silence")
     {
         memset(in.pcm, 0x00, sizeof(in.pcm));
