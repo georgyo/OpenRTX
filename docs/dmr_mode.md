@@ -144,10 +144,10 @@ timeslot and system passes, the last link control RAM with its decoded
 fields) and from `dmrbb_readRegister()` for a few registers read back at
 every redraw.
 
-The rows are grouped in four sections, each starting on a new page; a
-section spans as many pages as the display height needs (six rows per page
-on 160x128, five on 128x64: 7 and 8 pages), the top bar reading
-`DMR monitor n/N`:
+The rows are grouped in four sections of 12, 13, 7 and 5 rows, each
+starting on a new page; a section spans as many pages as the display height
+needs (six rows per page on 160x128: 2 + 3 + 2 + 1 = 8 pages; five on
+128x64: 3 + 3 + 2 + 1 = 9 pages), the top bar reading `DMR monitor n/N`:
 
 1. counters: `TS`, `SYS`, `RFTX` interrupts, `PC0`..`PC3` pulses per EXTI
    line, slot lock, timecode, last `0x82` / `0x84` / `0x86`;
@@ -156,12 +156,18 @@ on 160x128, five on 128x64: 7 and 8 pages), the top bar reading
    `0x06`, `0x12`, `0x14`-`0x16` read back;
 3. link control: the 12 LC RAM octets in hex, source, destination, FLCO, FID
    and the CRC verdict of the last header;
-4. actions: `Resync` (0x41 = 0x20), `Mode 0x10` (0x6E / 0x6A, also pushed
-   to the RTX stage as `rtxStatus_t::dmr_modeReg` so that it survives the
-   modem reconfigurations until power off), `Reg 0x06` (cycles 0x21, 0x01,
-   0x24, 0x20, 0x00), `BER test` (0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41) and
+4. actions: `Resync` (0x81 = 0xFE, the Layer-2 mask of `dmrMode()`, then
+   0x41 = 0x20), `Mode 0x10` (0x6E / 0x6A, also pushed to the RTX stage as
+   `rtxStatus_t::dmr_modeReg` so that it survives the modem reconfigurations
+   until power off), `Reg 0x06` (cycles 0x21, 0x01, 0x24, 0x20, 0x00),
+   `BER test` (0x83 = 0xFF and 0x81 = 0xFF to unmask the PHY-only interrupt
+   the test reports on, then 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41) and
    `Two-point` (0x12 bit6 toggled); the value column shows the register and
-   the value the next ENTER writes.
+   the value the next ENTER writes. The actions run only while the RTX stage
+   is in DMR on a working modem: elsewhere (the screen is reachable from
+   `Settings > DMR` in any mode) the column reads `DMR off` and ENTER writes
+   nothing, so that FM and M17 are never left with a chip taken out of FM
+   mode.
 
 LEFT and RIGHT flip the pages (UP, DOWN and ENTER do too, except on the
 action page where UP and DOWN select the action and ENTER runs it), ESC
@@ -228,7 +234,9 @@ register 0x50), the link control and voice payload of that burst, and a
 blocking `dmrbb_waitEvent()` returning the timeslot and system interrupts
 with a snapshot of the registers they refer to; the snapshot also carries
 the interrupt counters and, for the bring-up, one pulse counter per EXTI
-line PC0..PC3 (`lineCount[]`, zero on the emulator and the stub). The raw
+line PC0..PC3 (`lineCount[]`, refreshed on every wait, timeouts included;
+the emulator counts the pulses a test injects with `dmrEmu_pulseLine()`,
+the stub reports zero). The raw
 `dmrbb_readRegister()` / `dmrbb_writeRegister()` pair serves the monitor
 screen only. The register numbers are the
 HR_C6000 ones and every value that only the manual or another firmware
@@ -265,9 +273,11 @@ timeslot interrupts only after a time axis is established (HR_C6000 manual
 §5.4.4), so a silent channel in `RX_SEARCH` is left alone and the markers
 survive; likewise while waiting for a repeater's answer to a wake-up, where
 T_SyncWu bounds the wait on its own (evaluated on timeouts as well, since
-the silent channel gives no timeslot interrupt). Timeslot interrupts merged into one event by a late wake-up of the
-rtx thread are recovered from the ISR counter and timestamp carried by the
-snapshot, so the slot parity of a call or transmission does not flip.
+the silent channel gives no timeslot interrupt). Timeslot interrupts merged
+into one event by a late poll of the rtx thread (the CS7000 driver polls
+its interrupt mailbox every millisecond, the handlers only latch) are
+recovered from the ISR counter and timestamp carried by the snapshot, so
+the slot parity of a call or transmission does not flip.
 
 `OpMode_DMR` owns the controller, an adapter from `ModemPort` to
 `dmr_baseband.h` and an audio placeholder (`DmrAudioStub`, silence on TX,
@@ -356,8 +366,11 @@ counts of headers, voice bursts, terminators and driver calls);
   (requested for a call and its hang time / for a transmission, released
   after, and by `disable()` mid-call), the "not supported" path, and the
   publication of the bring-up block (counters, registers, decoded LC, CRC
-  verdict, the mode word override). It prints the sizes: `OpMode_DMR` is 344 bytes as a static object,
-  `DMR::CallController` 176, `struct dmrbbSnapshot` 72.
+  verdict, the mode word override, the counters through the timeout
+  passes). It prints the sizes: `OpMode_DMR` is 424 bytes as a static
+  object (344 in stage 2, plus the 64 byte `dmrMonitor_t` block and the
+  larger snapshot), `DMR::CallController` 176, `struct dmrbbSnapshot` 88
+  (72 plus the four `lineCount[]` counters).
 - Stack: the handler is a static object, so only the frames of `update()`
   and what it calls sit on the 512 byte rtx thread stack. Measured with
   `-fstack-usage` on the Cortex-M7 build (`arm-miosix-eabi-g++ -Os`,

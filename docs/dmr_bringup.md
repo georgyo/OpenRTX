@@ -17,9 +17,20 @@ The HR_C6000 signals the slot timing and the layer-2 events with ~300 ns
 active-low pulses on TIME_SLOT_INTER, SYS_INTER and RF_TX_INTER (manual: "the
 interrupt low pulse is valid, the pulse width is 3 system working clocks" of
 9.8304 MHz). They can only be caught with a falling-edge EXTI interrupt;
-polling is not viable. `gpioIrq_attach()` programs the STM32 EXTI for one
-callback per line, the interrupt handlers latch flags and wake a thread, and
-nothing touches the SPI bus in interrupt context.
+polling the pins is not viable. `gpioIrq_attach()` programs the STM32 EXTI
+for one callback per line. The handlers of the modem driver
+(`platform/drivers/baseband/dmr_CS7000.cpp`, `lineIsr()`) only latch: an
+event bit in a mailbox word, a counter per line and the tick of the slot
+interrupt. They do not wake anybody: Miosix in this tree has no timed
+`IRQwait()` and `Thread::sleep()` is not released by `IRQwakeup()`, so
+`dmrbb_waitEvent()` in the rtx thread polls the mailbox every millisecond
+and does all the register reads and writes there; nothing touches the SPI
+bus in interrupt context. On a logic analyser this shows as up to about
+2 ms (the 1 ms polling period plus the sleep granularity of the kernel
+tick) between the TIME_SLOT_INTER pulse and the 0x52 / 0x42 reads followed
+by the 0x41 write of the next slot, well inside the t2 = 27 ms the chip
+gives to program it; a measured latency of that order is the design, not a
+fault.
 
 ### 1.1 PC2_C / PC3_C reach the EXTI logic with SYSCFG_PMCR at reset
 
@@ -60,18 +71,30 @@ nothing touches the SPI bus in interrupt context.
 ### 1.3 NVIC priority 14 for the EXTI lines
 
 - Where: `EXTI_IRQ_PRIORITY` in `gpio_irq_stm32.cpp`.
-- Assumption: priority 14 (one above the Miosix tick at 15, same as the USB
-  and GPS drivers) is enough for the ~300 ns pulses, since the EXTI latches
-  the edge in hardware and the handler only records it; the timing budget of
-  the slot (t2 = 27 ms to program the next slot) tolerates the latency of the
-  SPI DMA interrupts and of the audio streams.
+- Facts, from the kernel in tree: Miosix calls `NVIC_SetPriorityGrouping(7)`
+  (`lib/miosix-kernel/miosix/arch/cortexM7/portability.cpp`, and the
+  Cortex-M4F port for the CS7000), which leaves no pre-emption bits: no
+  interrupt ever nests inside another, whatever its number, as
+  `platform/targets/CS7000-PLUS/hwconfig.h` already notes. In that flat 0-15
+  scheme SVC and SysTick (the kernel tick) are at 3, MemManage at 2, the
+  audio DMA streams at 10 (`stm32_dac.cpp`, `stm32_adc.cpp`), USB and GPS
+  at 14, the serial ports at 15. The number
+  therefore only decides which of several interrupts pending at the same
+  moment runs first; 14 puts the EXTI lines with the other peripherals, and
+  no value of it can make a callback pre-empt an SPI transfer or be
+  pre-empted by one.
+- Assumption: the ~300 ns pulses are never lost, because the EXTI pending
+  bit latches the edge in hardware and the handler only records it. What a
+  long-running handler ahead of the EXTI one (a display or audio DMA
+  completion) can do is delay the callback by its own length, never drop the
+  edge; the slot budget (t2 = 27 ms, section 1) absorbs that.
 - Check: the `TS` counter of the monitor screen must keep counting at 33 per
   second while the display refreshes and, from stage 4, while the OpenMusic
   DAC stream runs; a "TS lost" row is to be added once the modem driver
   tracks the 30 ms period.
-- If wrong: lower the number (higher priority), keeping it above the SPI DMA
-  streams so that a callback can never pre-empt a bus transfer that the rtx
-  thread will read right after.
+- If wrong: `TS` skipping while some other interrupt is busy means that
+  handler runs for longer than a slot: shorten it (or move its work to a
+  thread). Changing `EXTI_IRQ_PRIORITY` cannot help and is not the remedy.
 
 ### 1.4 The handler symbols
 
@@ -97,27 +120,33 @@ rebuild. Nothing on it is needed for normal operation.
 
 Pages are flipped with LEFT and RIGHT (UP, DOWN and ENTER flip them too,
 except on the action page, where UP and DOWN select the action and ENTER runs
-it); ESC returns to `Settings > DMR`. The rows come in four sections, each
-starting on a new page and spanning as many pages as the screen height needs
-(7 pages on the 160x128 displays, 8 on 128x64; the title reads
+it); ESC returns to `Settings > DMR`. The rows come in four sections of 12,
+13, 7 and 5 rows, each starting on a new page and spanning as many pages as
+the screen height needs: six rows per page on the 160x128 displays, hence
+2 + 3 + 2 + 1 = 8 pages, five rows per page on 128x64, hence 3 + 3 + 2 + 1 =
+9 pages (`_ui_dmrMonitorPages()` in `ui_menu.c`; the title reads
 `DMR monitor n/N`):
 
 | Section | Rows | Source |
 |---|---|---|
-| 1. Counters | `TS`, `SYS`, `RFTX` interrupt counts; `PC0`..`PC3` EXTI pulses per line; `Lock` (0 none, 1 slots ticking, 2 timecode locked); `Timecode`; last `0x82`, `0x84`, `0x86` | `dmrbbSnapshot` counters, `lineCount[]`, flags of the last SYS event |
+| 1. Counters | `TS`, `SYS`, `RFTX` interrupt counts; `PC0`..`PC3` EXTI pulses per line; `Lock` (0 none, 1 slots ticking, 2 timecode locked); `Timecode`; last `0x82`, `0x84`, `0x86` | `dmrbbSnapshot` counters and `lineCount[]`, refreshed on every pass of the opMode handler including the 30 ms timeouts (a line pulsing without raising an event, PC3 while the pinmap expects SYS on PC1, is counted all the same); flags of the last SYS event |
 | 2. Registers | last `0x51`, `0x52`, `0x5F`, `0x42`; `CC` (0x52[7:4]); `TC` (0x52 bit2); `Sync` (0x5F[1:0]: MS, BS, TDMA1, TDMA2); `RSSI` (0x43:0x44); `FSK err` (0x0F); `rd 0x10`, `rd 0x06`, `rd 0x12`, `rd 0x14-16` read back over U_SPI at every redraw | registers read in the TS/SYS passes; `dmrbb_readRegister()` |
 | 3. Link control | `LC 0-5`, `LC 6-11` (the 12 LC RAM octets in hex), `Src`, `Dst`, `FLCO`, `FID` decoded from them, `CRC` (`ok`/`bad` from 0x51 bit2, `*` appended when the 9 octets do not parse as a standard Full LC) | RX RAM of the last header, terminator or late entry |
 | 4. Actions | `Resync`, `Mode 0x10`, `Reg 0x06`, `BER test`, `Two-point`, the value column showing the register and the value the next ENTER writes | `dmrbb_writeRegister()` on the CONFIG page (U_SPI opmode 4) |
 
 The actions, all `UNVERIFIED on hardware` (`openrtx/src/ui/default/ui.c`,
-`_ui_dmr_monitorAction()`):
+`_ui_dmr_monitorAction()`), are only run while the RTX stage is in DMR on a
+working modem: in FM or M17 (`Settings > DMR` is reachable from any mode) or
+on a radio without a DMR modem the value column of the action page reads
+`DMR off` and ENTER writes nothing, since the chip is then in FM mode and
+`0x10 = 0x6A` or the two-point tone would silently take it out of it.
 
 | Action | Writes | Meaning |
 |---|---|---|
-| Resync | 0x41 = 0x20 | "SyncFail": drop the received timing, search for sync again (manual 5.4.5) |
+| Resync | 0x81 = 0xFE, 0x41 = 0x20 | "SyncFail": drop the received timing, search for sync again (manual 5.4.5). The Layer-2 interrupt mask of `dmrMode()` is written first, so that a Resync also ends the extra unmask of a `BER test` |
 | Mode 0x10 | 0x10 = 0x6A, then 0x6E, alternately | Mode word: 0x6E is the OpenGD77 value (DMR, Tier II, timeslot mode, Layer 2, repeater, aligned), 0x6A the manual's example. The chosen word is also pushed to the RTX stage (`rtxStatus_t::dmr_modeReg`), so the opMode handler reprograms the modem with it and keeps it through the watchdog reconfigurations; it is forgotten at power off |
 | Reg 0x06 | 0x06 = 0x21, 0x01, 0x24, 0x20, 0x00 in turn | Vocoder port variants: V_SPI under MCU control (OEM value), TX/RX RAM under MCU control, HR_V3000 hook-up value, V_SPI without MCU control, all off |
-| BER test | 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41 | PHY-layer BER test of manual 5.4.6: 36 raw bytes per frame in RX RAM 0x30, 0x82 bit0 per frame |
+| BER test | 0x83 = 0xFF, 0x81 = 0xFF, 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41 | PHY-layer BER test of manual 5.4.6: 36 raw bytes per frame in RX RAM 0x30, 0x82 bit0 per frame. Bit0 is the "PHY-only" interrupt `dmrMode()` masks with 0x81 = 0xFE, so the stale flags are cleared and the mask opened first; `Resync` or the next modem reconfiguration put 0xFE back |
 | Two-point | 0x12 bit6 toggled (read-modify-write) | 40 Hz square wave on MOD1/MOD2 to balance the two-point modulation |
 
 Two things to keep in mind:
@@ -258,7 +287,11 @@ where if it fails. Record the outcome in the table of section 4.
   `radio_enableRx()` in `platform/drivers/baseband/radio_CS7000.cpp`
   (BPF_6 + NARROW, AGC 0x02 = 0x1E, 0x0B, 0x0C as in FM).
 - Do: with a DMR signal generator (or a hotspot at high level) and no sync
-  after 3.2: `BER test`, then watch `SYS` and `0x82`.
+  after 3.2: `BER test` (which also unmasks 0x82 bit0 with 0x81 = 0xFF, the
+  PHY-only interrupt `dmrMode()` leaves masked), then watch `SYS` and
+  `0x82`. Without timeslot interrupts the opMode handler reprograms the
+  modem after 2 s, undoing the test: read the counters right away, or run
+  the action again.
 - Expect: in BER mode the chip raises 0x82 bit0 once per received frame:
   `SYS` counting and `0x82` = `01` means the IF path and the 4FSK demodulator
   work and the problem is in the Layer-2 configuration (3.2-3.5); `RSSI` and
@@ -266,7 +299,9 @@ where if it fails. Record the outcome in the table of section 4.
 - If wrong: no PHY frames: sweep the AK2365A AGC registers (0x02 step/time,
   0x0B, 0x0C gains) and confirm BPF_6 / NARROW are selected for DMR in
   `radio_enableRx()`; check the 450 kHz IF word (0x07-0x09 = 0x0B, 0xB8,
-  0x00) in the driver. Leave BER mode by switching to FM and back.
+  0x00) in the driver. `SYS` counts but `0x82` never shows bit0: the 0x81
+  polarity is inverted (3.4). Leave BER mode with `Resync` (mask back to
+  0xFE) or by switching to FM and back.
 
 ### 3.9 Two-point modulation balance and 4FSK deviation
 
@@ -295,17 +330,29 @@ where if it fails. Record the outcome in the table of section 4.
 
 ### 3.11 Round trip and side effects
 
-- Do: FM -> DMR -> FM and FM -> DMR -> M17 -> FM with the mode key; in DMR
-  press a key (beep) and check the counters keep running; late entry: start
-  listening in the middle of a call (Pi-Star with `EmbeddedLCOnly=1`).
-- Expect: FM RX audio, CTCSS and M17 working after the visit (registers
-  0x26 / 0x36 / 0x25 restored by `fmMode()`); `TS` / `SYS` unaffected by the
-  beep (0x06 bit1 read-modify-write in `Cx000_dac.cpp`); the caller shown
+- Do: on a freshly booted radio that has not entered DMR, press a key in
+  FM (beep) and receive M17 audio; then FM -> DMR -> FM and FM -> DMR ->
+  M17 -> FM with the mode key; in DMR press a key (beep) and check the
+  counters keep running; late entry: start listening in the middle of a
+  call (Pi-Star with `EmbeddedLCOnly=1`).
+- Expect: key beeps and M17 RX audio exactly as before the DMR series on the
+  radio that never entered DMR: in FM and M17 the OpenMusic driver
+  (`Cx000_dac.cpp`) writes register 0x06 wholesale, 0x22 / 0x20, and the
+  0x21 that `init()` leaves there on the CS7000 does not matter; only while
+  the DMR driver owns the chip (`Cx000dac_setVocoderBits(true)` from
+  `dmrbb_configure()`, cleared by `dmrbb_terminate()`) is the bit toggled
+  with a read-modify-write, 0x23 / 0x21, `UNVERIFIED on hardware` for the
+  playback. FM RX audio, CTCSS and M17 working after the visit (registers
+  0x26 / 0x36 / 0x25 restored by `fmMode()`, 0x06 back to the wholesale
+  writes); `TS` / `SYS` unaffected by the beep in DMR; the caller shown
   within 360 ms of the late entry through 0x82 bit4 (`0x82` = `10`).
 - If wrong: FM audio dead after DMR: compare `fmMode()` with the DMR table
-  for a register it does not restore. Beeps stop the interrupts: the DAC
-  driver still writes 0x06 wholesale. No late entry: the embedded LC
-  assembly is not enabled in the driver (0x82 bit4 masked) or 3.4.
+  for a register it does not restore, and check `rd 0x06` on the monitor
+  screen reads `20` or `22` after a beep in FM (the DMR driver was not
+  terminated before `fmMode()`, `radio_setOpmode()`). Beeps stop the
+  interrupts in DMR: `rd 0x06` reads `22` / `20`, the flag was not set. No
+  late entry: the embedded LC assembly is not enabled in the driver (0x82
+  bit4 masked) or 3.4.
 
 ## 4. Results
 
@@ -315,7 +362,7 @@ Fill one column per radio; leave a cell empty until the check was run.
 |---|---|---|---|---|---|
 | 1.1 | PC2_C / PC3_C reach EXTI | PC2 / PC3 count | | | |
 | 1.2 | SYS_INTER pin | PC1 or PC3 counts at 16/s | | | |
-| 1.3 | EXTI priority 14 | no TS skipped | | | |
+| 1.3 | EXTI latency behind other handlers | no TS skipped | | | |
 | 3.1 | RF_TX_INTER on PC2 | PC2 and RFTX count in TX | | | |
 | 3.2 | Mode word | 0x6E / 0x6A gives TS | | | |
 | 3.3 | 0x41 RX value | 0x51 cycles 10, 11..61, 20 | | | |
@@ -326,7 +373,7 @@ Fill one column per radio; leave a cell empty until the check was run.
 | 3.8 | AK2365A IF path | BER frames, RSSI tracks level | | | |
 | 3.9 | Two-point / deviation | flat 40 Hz square, +/- 1.944 kHz | | | |
 | 3.10 | V_SPI payload | stage 4 | | | |
-| 3.11 | Round trip, beeps, late entry | FM/M17 intact, TS unaffected, caller in 360 ms | | | |
+| 3.11 | Round trip, beeps, late entry | FM/M17 beeps and audio as before, FM/M17 intact after DMR, TS unaffected, caller in 360 ms | | | |
 
 ## 5. Flashing back to the OEM DMR firmware
 
