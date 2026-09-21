@@ -124,5 +124,7 @@ const stringsTable_t englishStrings =
     .resync            = "Resync",
     .berTest           = "BER test",
     .twoPointTest      = "Two-point",
+    .lcssMode          = "LCSS mode",
+    .rfAdvance         = "RF advance",
 };
 #endif  // ENGLISHSTRINGS_H

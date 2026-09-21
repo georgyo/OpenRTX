@@ -124,5 +124,7 @@ const stringsTable_t spanishStrings =
     .resync            = "Resincronizar",
     .berTest           = "Prueba BER",
     .twoPointTest      = "Dos puntos",
+    .lcssMode          = "Modo LCSS",
+    .rfAdvance         = "Avance RF",
 };
 #endif  // SPANISHSTRINGS_H
