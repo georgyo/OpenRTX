@@ -33,8 +33,9 @@ namespace FEC
  * CACH payload is bit 16 of its fragment.
  *
  * The HR_C6000 decodes the BPTC itself and hands the MCU the 28 bits and
- * the CRC in its RX RAM (manual, RAM map "Short LC 0x24-0x28"): see
- * fromChipBytes() for that layout.
+ * the CRC in its RX RAM, assumed at 0x24-0x28 like the "Short LC" entry of
+ * the manual's TX-side RAM map (Table 5.2; the RX-side table is omitted in
+ * the translation): see fromChipBytes() for that layout.
  */
 namespace ShortLc
 {
@@ -94,13 +95,16 @@ uint8_t crc(uint32_t message);
 /**
  * Read a Short LC from the HR_C6000 RX RAM layout: bytes 0x24, 0x25, 0x26
  * carry LC(27)..LC(4), the upper nibble of 0x27 LC(3)..LC(0) and 0x28 the
- * 8-bit CRC (HR_C6000 user manual, RAM map). The chip has already undone
- * the BPTC; the CRC is verified here.
+ * 8-bit CRC. The chip has already undone the BPTC; the CRC is verified
+ * here.
  *
- * UNVERIFIED on hardware: the manual gives this layout in its RAM map
- * table but its worked examples never read it back, and whether the chip
- * verifies the CRC on its own or leaves that to the MCU is not stated.
- * The bring-up check is listed in docs/dmr_bringup.md.
+ * UNVERIFIED on hardware: the layout is the "Short LC 0x24~0x28" entry of
+ * the manual's TX-side RAM allocation (Table 5.2), taken over on the
+ * assumption that the RX-side RAM (Table 5.3, omitted in the translated
+ * manual) mirrors it as it does for the LC at 0x00; the worked examples
+ * never read it back, and whether the chip verifies the CRC on its own or
+ * leaves that to the MCU is not stated. The bring-up check is listed in
+ * docs/dmr_bringup.md.
  *
  * @param bytes: the five RX RAM bytes 0x24..0x28.
  * @param message: destination for the 28-bit Short LC.
