@@ -26,6 +26,8 @@ OpMode_DMR::OpMode_DMR()
     , enabled(false)
     , cfgValid(false)
     , cfgPending(false)
+    , rxAudioFailed(false)
+    , txAudioFailed(false)
     , markerRaised(false)
     , markerMs(0)
     , rfState(RF_OFF)
@@ -36,7 +38,7 @@ OpMode_DMR::OpMode_DMR()
     memset(&mon, 0x00, sizeof(mon));
     cfg = ctrl.config();
     ctrl.setPort(&port);
-    ctrl.setVoiceSink(&audioStub);
+    ctrl.setVoiceSink(&audioLink);
 }
 
 OpMode_DMR::~OpMode_DMR()
@@ -55,10 +57,15 @@ void OpMode_DMR::enable()
     enabled = true;
     cfgValid = false;
     cfgPending = false;
+    rxAudioFailed = false;
+    txAudioFailed = false;
     markerRaised = false;
     rfState = RF_OFF;
     markers = ready ? 0 : DMR_MARK_NOT_SUPPORTED;
-    audioStub.reset();
+    audioLink.reset();
+
+    /* Vocoder backend up, counters cleared, no thread until a call */
+    dmrAudio_init();
 
     /* The controller keeps its markers across restarts: a fresh mode entry
      * starts without any. */
@@ -68,6 +75,8 @@ void OpMode_DMR::enable()
 
 void OpMode_DMR::disable()
 {
+    bool wasEnabled = enabled;
+
     if (enabled) {
         ctrl.disable();
         if (ready)
@@ -84,10 +93,15 @@ void OpMode_DMR::disable()
 
     platform_ledOff(GREEN);
     platform_ledOff(RED);
+
+    /* The audio thread goes before its path and its backend */
+    dmrAudio_stop();
     audioPath_release(rxAudioPath);
     audioPath_release(txAudioPath);
     rxAudioPath = -1;
     txAudioPath = -1;
+    if (wasEnabled)
+        dmrAudio_terminate();
     radio_disableRtx();
 }
 
@@ -228,22 +242,48 @@ void OpMode_DMR::followState(uint32_t nowMs)
     /*
      * Speaker path: opened when a call is received, kept through the hang
      * time (a repeater keeps the channel for the answer), released after.
+     * The playback thread runs while voice is being received: it is stopped
+     * when the call ends, so that the hang time is not silence "underruns",
+     * and started again by the call opening during the hang time. A path
+     * suspended by a higher priority one (a voice prompt) makes the thread
+     * quit on its own; it is restarted here once the path is open again. A
+     * start refused on an open path (no device) is not retried until the
+     * path is requested anew.
      */
     if (r.callState == DMR_CALL_RX) {
-        if (audioPath_getStatus(rxAudioPath) == PATH_CLOSED)
+        if (audioPath_getStatus(rxAudioPath) == PATH_CLOSED) {
             rxAudioPath = audioPath_request(SOURCE_MCU, SINK_SPK, PRIO_RX);
-    } else if (r.callState != DMR_CALL_RX_HANG) {
-        if (rxAudioPath >= 0) {
-            audioPath_release(rxAudioPath);
-            rxAudioPath = -1;
+            rxAudioFailed = false;
         }
+
+        if ((audioPath_getStatus(rxAudioPath) == PATH_OPEN) && !rxAudioFailed
+            && (dmrAudio_running() == false))
+            rxAudioFailed = !dmrAudio_startRx(rxAudioPath);
+    } else if (r.callState == DMR_CALL_RX_HANG) {
+        if ((rxAudioPath >= 0) && dmrAudio_running())
+            dmrAudio_stop();
+    } else if (rxAudioPath >= 0) {
+        dmrAudio_stop();
+        audioPath_release(rxAudioPath);
+        rxAudioPath = -1;
     }
 
-    /* Microphone path: for the whole transmission, wake-up included */
+    /*
+     * Microphone path: for the whole transmission, wake-up included; the
+     * encoder thread with it (its payloads go out from the first voice
+     * burst, the wake-up and the headers carry no voice).
+     */
     if (tx) {
-        if (audioPath_getStatus(txAudioPath) == PATH_CLOSED)
+        if (audioPath_getStatus(txAudioPath) == PATH_CLOSED) {
             txAudioPath = audioPath_request(SOURCE_MIC, SINK_MCU, PRIO_TX);
+            txAudioFailed = false;
+        }
+
+        if ((audioPath_getStatus(txAudioPath) == PATH_OPEN) && !txAudioFailed
+            && (dmrAudio_running() == false))
+            txAudioFailed = !dmrAudio_startTx(txAudioPath);
     } else if (txAudioPath >= 0) {
+        dmrAudio_stop();
         audioPath_release(txAudioPath);
         txAudioPath = -1;
     }
@@ -361,6 +401,7 @@ void OpMode_DMR::publish(rtxStatus_t *const status)
     status->dmr_slotLock = r.slotLock;
     status->dmr_markers = markers;
     status->dmr_mon = mon;
+    dmrAudio_getStats(&status->dmr_audio);
 }
 
 #endif /* CONFIG_DMR */

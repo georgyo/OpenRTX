@@ -10,6 +10,7 @@
 #include "core/datatypes.h"
 #include <stdint.h>
 #include "core/cps.h"
+#include "core/dmr_audio.h"
 #include <pthread.h>
 
 #ifdef __cplusplus
@@ -116,6 +117,7 @@ typedef struct
                                     2 timecode locked                      */
     uint8_t  dmr_markers;      /**< DMR top-bar markers, enum dmrMarker    */
     dmrMonitor_t dmr_mon;      /**< DMR bring-up counters, monitor screen  */
+    struct dmrAudioStats dmr_audio; /**< DMR audio layer counters          */
 }
 rtxStatus_t;
 
