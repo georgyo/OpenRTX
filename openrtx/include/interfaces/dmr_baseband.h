@@ -71,12 +71,13 @@ struct dmrbbSnapshot {
                         bit7 service transmission completely terminated
                         (voice and data), bit4 the Layer 2 per-slot "last
                         processing timing" interrupt (Rdy_lst_inter),
-                        bit2 "Short LC received" (G4EML table, manual
-                        §4.4: the chip raises 0x82 bit5 for it in
-                        reception as well, see shortLc[]), the rest data
-                        fragment / OACSU events (manual §5.1.1). Only
-                        bit7 ends a transmission. UNVERIFIED on hardware
-                        which bits the 0x87 mask lets through         */
+                        bit2 "Short LC received" (G4EML table; manual
+                        §5.1.1 files it under the 0x86 end-of-transmission
+                        sub-status, UNVERIFIED on hardware whether it
+                        fires on a receiving radio, see shortLc[]), the
+                        rest data fragment / OACSU events (manual §5.1.1).
+                        Only bit7 ends a transmission. UNVERIFIED on
+                        hardware which bits the 0x87 mask lets through  */
     uint8_t sub90; /**< 0x90, data message status, read when 0x82 bit2 */
     uint8_t sub98; /**< 0x98, abnormal exit cause, read when 0x82 bit1 */
 
@@ -121,14 +122,18 @@ struct dmrbbSnapshot {
      * RX RAM bytes 0x24-0x28 (U_SPI page DATA): the Short LC of the last
      * completed CACH cycle as the chip decodes it, i.e. after the BPTC of
      * TS 102 361-1 §B.2.3: the 28 message bits in 0x24-0x26 and the upper
-     * nibble of 0x27, the 8-bit CRC in 0x28 (HR_C6000 manual, RAM map
-     * "Short LC 0x24~0x28"). Read when 0x82 bit5 is set together with
-     * 0x86 bit2. UNVERIFIED on hardware: the layout (the manual's worked
-     * examples never read it back), the interrupt reporting, and whether
-     * the chip verifies the CRC itself: the opMode handler verifies it
-     * again (DMR::FEC::ShortLc::fromChipBytes()) and drops the message
-     * on a mismatch. Zero on the emulator unless a test injects one, and
-     * on the stub.
+     * nibble of 0x27, the 8-bit CRC in 0x28. The address comes from the
+     * TX-side RAM allocation of the HR_C6000 manual (Table 5.2, "Short LC
+     * 0x24~0x28", the RAM the MCU fills for the chip to transmit): the
+     * RX-side table (5.3) is omitted in the translation, so the RX RAM is
+     * assumed to mirror the TX map, as lc[] at 0x00 already assumes. Read
+     * when 0x82 bit5 is set together with 0x86 bit2. UNVERIFIED on
+     * hardware: the RX address and layout (the manual's worked examples
+     * never read it back), the interrupt reporting, and whether the chip
+     * verifies the CRC itself: the opMode handler verifies it again
+     * (DMR::FEC::ShortLc::fromChipBytes()) and drops the message on a
+     * mismatch. Zero on the emulator unless a test injects one, and on
+     * the stub.
      */
     uint8_t shortLc[5];
 
@@ -183,8 +188,10 @@ struct dmrbbConfig {
                             bit7 RF ramp smoothing, [5:0] x 100 us before
                             the own burst. 0 = driver default (0x98, the
                             OEM init word: 2.4 ms with smoothing); 0x15 is
-                            the OpenGD77 word. Written after the mode table
-                            so that the monitor screen's choice survives a
+                            the OpenGD77 word. The opMode handler fills it
+                            from rtxStatus_t::dmr_rfAdvance, the monitor
+                            screen's choice, and the driver writes it after
+                            the mode table so that the choice survives a
                             reconfiguration. UNVERIFIED on hardware       */
 };
 
@@ -199,7 +206,8 @@ struct dmrbbConfig {
 /**
  * Default value for dmrbbConfig::rfAdvance, register 0x12: RF ramp smoothing
  * on, RF_TX_INTER 24 x 100 us = 2.4 ms ahead of the own burst (OEM CS7000
- * init capture; OpenGD77 uses 0x15). UNVERIFIED on hardware.
+ * init capture; OpenGD77 uses 0x15). UNVERIFIED on hardware, selectable
+ * from the monitor screen ("RF advance").
  */
 #define DMRBB_RF_ADVANCE_DEFAULT 0x98
 
@@ -331,6 +339,22 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs);
 #define DMRBB_PAGE_DRIVER 0xFF
 #define DMRBB_DRV_VOICE_PATH 0x00
 #define DMRBB_DRV_LINE_COUNT(n) (0x10 + ((n) * 4))
+
+/*
+ * DMRBB_DRV_SYS_LINE (read/write): EXTI line (PC0..PC3 pin number) the
+ * CS7000 driver dispatches as SYS_INTER, a bring-up knob of the DMR monitor
+ * screen's "SYS line" action. DMRBB_SYS_LINE_PINMAP (1, PC1, the default:
+ * the pinmap constant DMR_SYS_INT from the reverse engineering of the F405
+ * CS7000 firmware) or DMRBB_SYS_LINE_SCHEMATIC (3, PC3_C: the CS7000-M17
+ * Plus schematic V01, pinmap constant DMR_SYS_INT_ALT); any other value is
+ * ignored. The choice survives a reconfiguration and is forgotten at power
+ * off. Drivers without selectable lines (emulator, stub) accept the write
+ * and do nothing with it. UNVERIFIED on hardware which line each board
+ * needs, see docs/dmr_bringup.md checks 1.2 and 3.1.
+ */
+#define DMRBB_DRV_SYS_LINE 0x02
+#define DMRBB_SYS_LINE_PINMAP 1
+#define DMRBB_SYS_LINE_SCHEMATIC 3
 
 /**
  * Raw register access for the DMR monitor screen only.
