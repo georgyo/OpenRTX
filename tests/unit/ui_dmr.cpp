@@ -981,9 +981,10 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
 
     uint8_t pages = _ui_dmrMonitorPages();
     REQUIRE(pages >= DMRMON_SECTION_NUM);
-    /* 12, 13, 7 and 5 rows in six per page: 2 + 3 + 2 + 1, as documented */
+    /* 12, 13, 7, 7 and 5 rows in six per page: 2 + 3 + 2 + 2 + 1, as
+     * documented */
     if ((CONFIG_SCREEN_WIDTH == 160) && (CONFIG_SCREEN_HEIGHT == 128))
-        REQUIRE(pages == 8);
+        REQUIRE(pages == 10);
     printf("DMR monitor: %u pages on %ux%u\n", pages, CONFIG_SCREEN_WIDTH,
            CONFIG_SCREEN_HEIGHT);
 
