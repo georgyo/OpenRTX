@@ -174,6 +174,19 @@ bool dmrAudio_popFrame(uint8_t ambe[27])
     return true;
 }
 
+void dmrAudio_flushTx(void)
+{
+    pthread_mutex_lock(&data_mutex);
+
+    /* Keep the newest payload: the next burst carries current audio */
+    if ((running == true) && (mode == MODE_TX) && (numElements > 1)) {
+        readPos = (readPos + numElements - 1) % DMR_AUDIO_QUEUE_DEPTH;
+        numElements = 1;
+    }
+
+    pthread_mutex_unlock(&data_mutex);
+}
+
 void dmrAudio_getStats(struct dmrAudioStats *s)
 {
     pthread_mutex_lock(&data_mutex);
@@ -198,7 +211,7 @@ static void *rxFunc(void *arg)
     pathId path = *((pathId *)arg);
     uint8_t frame[FRAME_BYTES];
     bool primed = false; /* a payload has been played in this run    */
-    uint16_t gap = 0;    /* silent blocks since the last payload     */
+    uint32_t gap = 0;    /* silent blocks since the last payload     */
 
     /*
      * Line up with the stream before writing into it, as the M17 decoder
@@ -246,8 +259,15 @@ static void *rxFunc(void *arg)
         }
         pthread_mutex_unlock(&data_mutex);
 
-        if (outputStream_sync(stream, true) == false)
-            break;
+        /*
+         * The return value is not a reason to quit, as in the M17 decoder:
+         * the Cx000 DAC driver answers false when the sync point had
+         * already passed on entry (the thread came one period late), a
+         * glitch to play through, not a dead stream. A stopped or suspended
+         * path is caught at the top of the loop, and a stream that is gone
+         * by outputStream_getIdleBuffer() returning NULL.
+         */
+        outputStream_sync(stream, true);
     }
 
     /* Stop the stream and wait for its effective termination */

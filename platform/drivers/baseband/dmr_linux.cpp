@@ -335,10 +335,11 @@ void reportAudio()
     struct dmrAudioStats a;
     dmrAudio_getStats(&a);
     printf("dmr_linux: audio %s: rx %lu, tx %lu, blocks out %lu, "
-           "underruns %u, overruns %u, varying %u\n",
+           "underruns %lu, overruns %lu, varying %lu\n",
            dmrAudio_backendName(), (unsigned long)a.framesRx,
-           (unsigned long)a.framesTx, (unsigned long)a.blocksOut, a.underruns,
-           a.overruns, a.varying);
+           (unsigned long)a.framesTx, (unsigned long)a.blocksOut,
+           (unsigned long)a.underruns, (unsigned long)a.overruns,
+           (unsigned long)a.varying);
 }
 
 void *clockLoop(void *arg)

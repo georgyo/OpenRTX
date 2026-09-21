@@ -53,7 +53,9 @@ extern "C" {
 /**
  * Counters of the audio layer, for the DMR monitor screen. Reset when the
  * layer is initialised for the first time (dmrAudio_init()), never wrapped
- * back to zero otherwise.
+ * back to zero otherwise: all of them are 32 bits wide, so that the ones
+ * the bring-up procedure compares with each other (framesRx and varying)
+ * count at the same pace for years of voice.
  */
 struct dmrAudioStats {
     uint32_t framesRx;  /**< Payloads handed to dmrAudio_pushFrame() while
@@ -61,13 +63,13 @@ struct dmrAudioStats {
     uint32_t framesTx;  /**< Payloads encoded from the input stream        */
     uint32_t blocksOut; /**< 480-sample blocks written to the output
                              stream, silence included                      */
-    uint16_t underruns; /**< Silent blocks played between two payloads of
+    uint32_t underruns; /**< Silent blocks played between two payloads of
                              the same reception: bursts lost or late. The
                              silence before the first payload and after the
                              last one is not counted                       */
-    uint16_t overruns;  /**< Payloads dropped from a full queue, either
+    uint32_t overruns;  /**< Payloads dropped from a full queue, either
                              direction                                     */
-    uint16_t varying;   /**< Received payloads differing from the one
+    uint32_t varying;   /**< Received payloads differing from the one
                              pushed before them: stays at zero when the
                              modem hands over the same bytes every burst,
                              what a dead V_SPI read would look like        */
@@ -139,6 +141,16 @@ bool dmrAudio_pushFrame(const uint8_t ambe[27]);
  * encoding is not running: the caller then transmits the silence pattern.
  */
 bool dmrAudio_popFrame(uint8_t ambe[27]);
+
+/**
+ * Drop every queued payload but the newest one. Called by the opMode
+ * handler when the voice bursts of a transmission begin, so that the first
+ * burst carries the audio of the last 60 ms and not what the microphone
+ * picked up while the wake-up and the headers went out; the payloads
+ * dropped here are not counted as overruns. Never blocks; a no-op while
+ * encoding is not running.
+ */
+void dmrAudio_flushTx(void);
 
 /**
  * Copy the counters.
