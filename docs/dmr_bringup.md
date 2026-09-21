@@ -387,12 +387,14 @@ Nothing below has been run on a radio.
     vocoder bits were overwritten (a wholesale write of 0x06 somewhere). If
     0x23, the gating registers 0x26 / 0x25 / 0x36 (undocumented, set for FM
     by `fmMode()` / `radio_enableAfOutput()`, not touched by
-    `dmrbb_configure()`) probably mute LINEOUT in DMR mode: write 0x26 =
-    0xFD, then 0x36 with bit1 toggled, from the monitor screen's raw writes
-    (`dmrbb_writeRegister()`, page 4) and listen. Record the combination
-    that works; the DMR table of `dmr_CS7000.cpp` gets it. As a last resort
-    the I2S3 path (H7 IOSWP / F4 I2S3ext) is the open question of the
-    design note.
+    `dmrbb_configure()`) probably mute LINEOUT in DMR mode. The monitor
+    screen has no raw write action (its actions are `Resync`, `Mode 0x10`,
+    `Reg 0x06`, `BER test` and `Two-point`, `_ui_dmr_monitorAction()` in
+    `ui.c`): add a `dmrbb_writeRegister(4, 0x26, 0xFD)` action and one
+    toggling bit1 of 0x36 to that list, as 4.2 does for its sweep (or write
+    them with a debugger), then listen. Record the combination that works;
+    the DMR table of `dmr_CS7000.cpp` gets it. As a last resort the I2S3
+    path (H7 IOSWP / F4 I2S3ext) is the open question of the design note.
   - silence and `Aud RX` at 0 while the call is on screen: the payloads
     never reach the audio layer, see 4.3 (V_SPI) first; `Aud out` counting
     means the thread runs and plays silence.
@@ -457,8 +459,13 @@ combination.
 - If wrong:
   - `Aud RX` at 0 during a call: `voiceValid` is never set. The sync class
     of 0x51 or the CRC bit is misread (3.5), or V_SPI returns nothing with
-    0x06 = 0x21 (SPIFrom, bit3, may need to be 0: try the `Reg 0x06`
-    variants and `DMRBB_DRV_VOICE_PATH` = 1, RX RAM 0x30 over U_SPI).
+    0x06 = 0x21. Bit3 of 0x06 (SPIFrom) is already 0 in 0x21, which the
+    manual gives as "V_SPI out = received DMR payload", and every value
+    the `Reg 0x06` action cycles (0x21, 0x01, 0x24, 0x20, 0x00) keeps it
+    at 0, so that sweep does not touch it. First try the other transport,
+    `DMRBB_DRV_VOICE_PATH` = 1 (RX RAM 0x30 over U_SPI, a rebuild of
+    `dmr_CS7000.cpp`); only if a bit3 = 1 experiment is wanted, add 0x29
+    to the `Reg 0x06` action values (`dmrMonR06Values` in `ui_menu.c`).
   - `Aud RX` counting, `Aud vary` at 0 or 1: the same bytes every burst
     (all zeros, or a stale buffer): the V_SPI read is wired to the wrong
     port or clocked wrongly (VOC_* nets, PB3-PB6, C6000 slave), or reads
@@ -474,8 +481,17 @@ combination.
 - Where: `rxFunc()` of `dmr_audio.c` (`audioStream_stop()` on the way
   out), `Cx000_dac.cpp` (stop: waits for the FIFO, clears OpenMusic),
   `OpMode_DMR::followState()` (the thread is stopped at the hang time, the
-  path released after it; `disable()` stops the thread before releasing
-  the paths and terminating the modem driver).
+  path released after it), `OpMode_DMR::disable()` and
+  `OpMode_DMR::reprogramModem()` (the thread is stopped first, then the
+  controller is disabled or restarted and `dmrbb_terminate()` /
+  `dmrbb_configure()` rewrite the chip, then the paths are released).
+  Mode-switch caveat: `rtx_task()` (`rtx.cpp`) calls `radio_setOpmode()`
+  before `disable()`, and on the CS7000 radios `radio_setOpmode()` already
+  runs `dmrbb_terminate()` and `C6000.fmMode()` (`radio_CS7000.cpp`), so
+  when DMR mode is left with the mode key the thread's drain runs on a chip
+  already back in FM mode with 0x06 rewritten, and the `dmrbb_terminate()`
+  of `disable()` is a no-op by then. A power-off goes through
+  `rtx_terminate()` -> `disable()` with the driver still in DMR mode.
 - Do: with the test tone on, let a call end normally (terminator), let one
   end by voice loss (switch the hotspot off mid-call, 720 ms timeout),
   leave DMR mode with the mode key during a call, and power the radio off
@@ -487,10 +503,15 @@ combination.
   `radio_init()` / `radio_terminate()` and the sleep sequence, never by the
   DMR driver or the audio layer; a scope on the pin during a call stays
   flat).
-- If wrong: a rattle at the end means the DAC keeps consuming the last
-  half after the stream was stopped without the FIFO being cleared; look
-  at the stop sequence of `Cx000_dac.cpp` (OpenMusic cleared before or
-  after the FIFO drains) and at the order in `followState()`. C6K_SLEEP
+- If wrong: a rattle at the end of a call means the DAC keeps consuming
+  the last half after the stream was stopped without the FIFO being
+  cleared; look at the stop sequence of `Cx000_dac.cpp` (OpenMusic cleared
+  before or after the FIFO drains) and at the order in `followState()`. A
+  rattle, or a stall of the rtx thread (the display freezes for up to
+  1.5 s, the DAC driver's stall fallback), only on the mode-key case means
+  the drain does not complete on a chip in FM mode: the fix is then in
+  `rtx.cpp` (call `disable()` before `radio_setOpmode()`) or in
+  `radio_CS7000.cpp`'s `radio_setOpmode()`, not in `disable()`. C6K_SLEEP
   toggling with a path open means a sleep/wake sequence is triggered by
   the mode switch while the DAC is streaming; `radio_disableRtx()` and the
   DMR `dmrbb_terminate()` must not touch it.
