@@ -981,6 +981,9 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
 
     uint8_t pages = _ui_dmrMonitorPages();
     REQUIRE(pages >= DMRMON_SECTION_NUM);
+    /* 12, 13, 7 and 5 rows in six per page: 2 + 3 + 2 + 1, as documented */
+    if ((CONFIG_SCREEN_WIDTH == 160) && (CONFIG_SCREEN_HEIGHT == 128))
+        REQUIRE(pages == 8);
     printf("DMR monitor: %u pages on %ux%u\n", pages, CONFIG_SCREEN_WIDTH,
            CONFIG_SCREEN_HEIGHT);
 
@@ -1140,7 +1143,7 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     REQUIRE(monitorValue(DMRMON_ACT_RESYNC) == "41<-20");
     REQUIRE(monitorValue(DMRMON_ACT_MODE) == "10<-6A");
     REQUIRE(monitorValue(DMRMON_ACT_R06) == "06<-21");
-    REQUIRE(monitorValue(DMRMON_ACT_BER) == "10 40 41");
+    REQUIRE(monitorValue(DMRMON_ACT_BER) == "81 10 40 41");
     REQUIRE(monitorValue(DMRMON_ACT_TWOPOINT) == "12^40");
 
     /* More slots: the screen follows on the next draw */
@@ -1186,9 +1189,10 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     REQUIRE(_ui_dmrMonitorCurrentPage() == pages - 1);
     REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
 
-    /* Resync: 0x41 = 0x20 */
+    /* Resync: the Layer-2 mask of dmrMode() back, then 0x41 = 0x20 */
     press(KEY_ENTER);
-    REQUIRE(rec->regWrites == 1);
+    REQUIRE(rec->regWrites == 2);
+    requireWrite(lastWrite(1), 0x81, 0xFE);
     requireWrite(lastWrite(), 0x41, 0x20);
     REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x41) == 0x20);
 
@@ -1198,7 +1202,7 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     REQUIRE(_ui_dmrMonitorSelectedAction() == 1);
     REQUIRE(monitorValue(DMRMON_RB10) == "00");
     bool sync = press(KEY_ENTER);
-    REQUIRE(rec->regWrites == 2);
+    REQUIRE(rec->regWrites == 3);
     requireWrite(lastWrite(), 0x10, 0x6A);
     render();
     REQUIRE(monitorValue(DMRMON_ACT_MODE) == "10<-6E");
@@ -1218,7 +1222,7 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
 
     sync = press(KEY_ENTER);
     requireWrite(lastWrite(), 0x10, 0x6E);
-    REQUIRE(rec->regWrites == 3);
+    REQUIRE(rec->regWrites == 4);
     REQUIRE(sync == true);
     REQUIRE(state.dmr_modeReg == 0x6E);
     sync_rtx_stage();
@@ -1235,17 +1239,34 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     }
     press(KEY_ENTER);
     requireWrite(lastWrite(), 0x06, 0x21);
-    REQUIRE(rec->regWrites == 9);
+    REQUIRE(rec->regWrites == 10);
     render();
     REQUIRE(monitorValue(DMRMON_RB06) == "21");
 
-    /* BER test: 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41 in this order */
+    /*
+     * BER test: the stale flags cleared and the PHY-only interrupt
+     * unmasked (0x83 = 0xFF, 0x81 = 0xFF), then 0x10 = 0x02, 0x40 = 0x40,
+     * 0x41 = 0x41 in this order
+     */
     press(KEY_DOWN);
     press(KEY_ENTER);
-    REQUIRE(rec->regWrites == 12);
+    REQUIRE(rec->regWrites == 15);
+    requireWrite(lastWrite(4), 0x83, 0xFF);
+    requireWrite(lastWrite(3), 0x81, 0xFF);
     requireWrite(lastWrite(2), 0x10, 0x02);
     requireWrite(lastWrite(1), 0x40, 0x40);
     requireWrite(lastWrite(0), 0x41, 0x41);
+    REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x81) == 0xFF);
+
+    /* Resync puts the Layer-2 mask back */
+    pressN(KEY_DOWN, 2);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
+    press(KEY_ENTER);
+    REQUIRE(rec->regWrites == 17);
+    requireWrite(lastWrite(1), 0x81, 0xFE);
+    REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x81) == 0xFE);
+    pressN(KEY_DOWN, 3);
 
     /* Two-point test: bit6 of 0x12 toggled from its current value */
     dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x98);
@@ -1257,7 +1278,7 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12) == 0xD8);
     press(KEY_ENTER);
     requireWrite(lastWrite(), 0x12, 0x98);
-    REQUIRE(rec->regWrites == 15);
+    REQUIRE(rec->regWrites == 20);
     render();
     REQUIRE(monitorValue(DMRMON_RB12) == "98");
 
@@ -1268,7 +1289,7 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     render();
     REQUIRE(monitorValue(DMRMON_RB14) == "CE CA 23");
     REQUIRE(monitorEntry(DMRMON_RB14) == "rd 0x14-16");
-    REQUIRE(rec->regWrites == 18);
+    REQUIRE(rec->regWrites == 23);
 
     /* UP and DOWN wrap over the actions, the knob works as well */
     press(KEY_DOWN);
@@ -1291,7 +1312,7 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     press(KEY_LEFT);
     render();
     REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
-    REQUIRE(rec->regWrites == 18);
+    REQUIRE(rec->regWrites == 23);
 
     /* Reopening the screen starts from the mode word in force */
     press(KEY_ESC);
@@ -1308,4 +1329,88 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     REQUIRE(state.ui_screen == SETTINGS_DMR);
     press(KEY_ESC);
     REQUIRE(state.ui_screen == MENU_SETTINGS);
+}
+
+/*
+ * On the action page every action is pressed once; the value column must
+ * carry the hint and the fake modem must see no register write.
+ */
+static void requireActionsRefused()
+{
+    const struct dmrEmuRecord *rec = dmrEmu_record();
+    uint32_t writes = rec->regWrites;
+    uint8_t pages = _ui_dmrMonitorPages();
+
+    press(KEY_LEFT);
+    render();
+    REQUIRE(_ui_dmrMonitorCurrentPage() == pages - 1);
+
+    for (unsigned i = 0; i < DMRMON_ACTION_NUM; i++) {
+        REQUIRE(_ui_dmrMonitorSelectedAction() == i);
+        REQUIRE(monitorValue(DMRMON_ACTION_FIRST + i) == "DMR off");
+        bool sync = press(KEY_ENTER);
+        REQUIRE(sync == false);
+        REQUIRE(rec->regWrites == writes);
+        press(KEY_DOWN);
+        render();
+    }
+
+    REQUIRE(state.dmr_modeReg == 0);
+}
+
+TEST_CASE("DMR monitor: the actions are refused unless the RTX runs DMR",
+          "[ui][dmr][monitor]")
+{
+    /*
+     * Settings > DMR, and the monitor with it, are reachable in FM: the
+     * screen opens and reads back, the actions do not write. The chip is
+     * in FM mode there and 0x10 = 0x6A or the two-point tone would take it
+     * out of it.
+     */
+    boot();
+    rtxStatus_t status = sync_rtx_stage();
+    REQUIRE(status.opMode == OPMODE_FM);
+    dmrEmu_reset();
+
+    goto_dmr_monitor();
+    render();
+    requireActionsRefused();
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == SETTINGS_DMR);
+    pressN(KEY_ESC, 3);
+    REQUIRE(state.ui_screen == MAIN_VFO);
+
+    /* A radio without a DMR modem, switched to DMR: refused as well */
+    dmrEmu_setInitResult(-1);
+    press(KEY_MONI | KEY_5);
+    REQUIRE(state.channel.mode == OPMODE_DMR);
+    status = sync_rtx_stage();
+    REQUIRE(status.opMode == OPMODE_DMR);
+    REQUIRE((status.dmr_markers & DMR_MARK_NOT_SUPPORTED) != 0);
+
+    goto_dmr_monitor();
+    render();
+    requireActionsRefused();
+    press(KEY_ESC);
+    pressN(KEY_ESC, 3);
+    REQUIRE(state.ui_screen == MAIN_VFO);
+
+    /* The modem is there again: the actions work as in the case above */
+    dmrEmu_setInitResult(0);
+    pressN(KEY_MONI | KEY_5, 2);
+    REQUIRE(state.channel.mode == OPMODE_FM);
+    sync_rtx_stage();
+    dmrEmu_reset();
+    press(KEY_MONI | KEY_5);
+    status = sync_rtx_stage();
+    REQUIRE(status.opMode == OPMODE_DMR);
+    REQUIRE(status.dmr_markers == 0);
+
+    goto_dmr_monitor();
+    press(KEY_LEFT);
+    render();
+    REQUIRE(monitorValue(DMRMON_ACT_RESYNC) == "41<-20");
+    press(KEY_ENTER);
+    REQUIRE(dmrEmu_record()->regWrites == 2);
+    press(KEY_ESC);
 }

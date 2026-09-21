@@ -1355,15 +1355,42 @@ static void _ui_dmr_monitorSelect(int variation)
                               + variation) % DMRMON_ACTION_NUM;
 }
 
+/*
+ * The actions write the HR_C6000 registers of the DMR configuration and are
+ * meaningful only while the RTX stage runs the DMR opMode handler on a
+ * working modem: Settings > DMR is reachable in any mode, and in FM or M17
+ * the same writes would silently take the chip out of the mode it is in
+ * (0x10 bit 7, the two-point test tone on MOD1/MOD2) until the next mode
+ * switch. The screen itself stays available, its readbacks are harmless.
+ */
+static bool _ui_dmr_monitorReady()
+{
+    rtxStatus_t status = rtx_getCurrentStatus();
+
+    return (status.opMode == OPMODE_DMR)
+        && ((status.dmr_markers & DMR_MARK_NOT_SUPPORTED) == 0);
+}
+
 static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
 {
     uint8_t value;
+
+    // Refused outside DMR: no register write, the value column of the
+    // action page reads "DMR off" instead of the registers
+    if(_ui_dmr_monitorReady() == false)
+    {
+        vp_playMenuBeepIfNeeded(false);
+        return;
+    }
 
     switch(DMRMON_ACTION_FIRST + action)
     {
         case DMRMON_ACT_RESYNC:
             // UNVERIFIED on hardware: 0x41 = 0x20 "SyncFail", drop the
-            // received timing and search for sync again (manual 5.4.5)
+            // received timing and search for sync again (manual 5.4.5).
+            // The Layer-2 interrupt mask of dmrMode() is put back first,
+            // a "BER test" leaves the PHY-only interrupt unmasked
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x81, 0xFE);
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x41, 0x20);
             break;
 
@@ -1390,7 +1417,13 @@ static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
 
         case DMRMON_ACT_BER:
             // UNVERIFIED on hardware: PHY-layer BER test of manual section
-            // 5.4.6, 36 raw bytes per frame in RX RAM 0x30 on 0x82 bit0
+            // 5.4.6, 36 raw bytes per frame in RX RAM 0x30 on 0x82 bit0.
+            // That bit is the PHY-only interrupt dmrMode() masks (0x81 =
+            // 0xFE): the stale flags are cleared and the mask opened
+            // (0x81 = 0xFF) first, otherwise SYS could never count the
+            // frames. "Resync" or the modem reconfiguration restore 0xFE
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x83, 0xFF);
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x81, 0xFF);
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x10, 0x02);
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x40, 0x40);
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x41, 0x41);
