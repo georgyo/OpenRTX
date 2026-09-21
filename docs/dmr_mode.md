@@ -95,10 +95,13 @@ BM Italy               C1T2
 a broadcast; `M` is shown while the monitor setting is not off. A
 destination picked from the contacts shows the contact's name instead (a
 name too wide to share the line with the channel string takes the line for
-itself). When a repeater announces activity in its CACH, `TS1*` / `TS2*`
-appear at the right of the line above (the line the idle screen leaves
-free), see [TS busy hints](#ts-busy-hints-from-the-short-lc). During a
-received call the frequency gives way to the caller and the destination:
+itself). When a repeater announces activity in its CACH, `1*` / `2*`
+(`1*2*` with both slots busy) appear in yellow at the left of the top bar,
+the one place the VFO and the MEM screen (whose line 1 holds the bank and
+channel name) leave free on both layouts; a DMR marker drawn over the top
+bar hides them for its three seconds. See
+[TS busy hints](#ts-busy-hints-from-the-short-lc). During a received call
+the frequency gives way to the caller and the destination:
 
 ```
   2345678          (caller ID, or the contact's name when known)
@@ -173,7 +176,7 @@ timeslot and system passes, the last link control RAM with its decoded
 fields) and from `dmrbb_readRegister()` for a few registers read back at
 every redraw.
 
-The rows are grouped in five sections of 12, 15, 7, 11 and 7 rows, each
+The rows are grouped in five sections of 12, 15, 7, 11 and 8 rows, each
 starting on a new page; a value section spans as many pages as the display
 height needs, the action section is always one page whose rows scroll
 behind the selection (six rows per page on 160x128: 2 + 3 + 2 + 2 + 1 = 10
@@ -208,11 +211,18 @@ pages; five on 128x64: 3 + 3 + 2 + 3 + 1 = 12 pages), the top bar reading
    register 0x50 convention of the voice bursts, `50 manual` / `50 chip`
    naming what the next ENTER selects; not a register write, the choice
    reaches the call controller through `rtxStatus_t::dmr_lcssMode` like the
-   mode word, see [Stage 5](#the-lcss-question-register-0x50)) and `RF
+   mode word, see [Stage 5](#the-lcss-question-register-0x50)), `RF
    advance` (register 0x12 alternating between the OEM init word 0x98 and
-   OpenGD77's 0x15, written at once and undone by the next modem
-   reconfiguration like `Reg 0x06`); the value column shows the register
-   and the value the next ENTER writes. The actions run only while the RTX stage
+   OpenGD77's 0x15, written at once with the two-point bit preserved and,
+   since stage 6, pushed to the RTX stage as `rtxStatus_t::dmr_rfAdvance`
+   so that the opMode handler reprograms the modem with it and keeps it
+   through the reconfigurations until power off, like the mode word) and,
+   since stage 6, `SYS line` (the EXTI line the CS7000 driver dispatches as
+   SYS_INTER, PC1 or PC3, a driver knob on the pseudo page 0xFF rather
+   than a chip register: `PC1->PC3` names the line in force and the one
+   the next ENTER selects, see [dmr_bringup.md](dmr_bringup.md) 6.3); the
+   value column shows the register and the value the next ENTER writes.
+   The actions run only while the RTX stage
    is in DMR on a working modem: elsewhere (the screen is reachable from
    `Settings > DMR` in any mode) the column reads `DMR off` and ENTER writes
    nothing, so that FM and M17 are never left with a chip taken out of FM
@@ -856,8 +866,8 @@ expected anywhere: silence is the payload by design, see
   of the destination line and its width guards for both layouts, the new
   monitor rows and actions (`LCSS mode` pushing `dmr_lcssMode` to the RTX
   stage, `RF advance` writing 0x12 = 0x15 / 0x98 with the two-point bit
-  preserved), the scrolling action page, and the marker text of a
-  rejection and of an RF failure.
+  preserved and, since stage 6, pushing `dmr_rfAdvance`), the scrolling
+  action page, and the marker text of a rejection and of an RF failure.
 
 ## Stage 6: contacts, favourites, last heard and the main screen polish
 
@@ -874,15 +884,19 @@ channel is in DMR, ENTER on a DMR contact makes it the destination
 (`settings.dmr_talkgroup` and `dmr_callType` from the contact's ID and
 type), remembers its name in `state.dmr_destName` for the main screen and
 comes back to the main screen. ENTER on an M17 contact, or in FM/M17, does
-nothing but beep. Every other way of setting the destination (`#`, `*`,
-`Settings > DMR`, a favourite, the last heard list) drops the name, so the
-screen never shows a name for an ID it does not belong to.
+nothing but beep. A favourite and the last heard list look the name up
+in the contacts (empty when the codeplug has no contact with that ID and
+type); every other way of setting the destination (`#`, `*`, `Settings >
+DMR`) drops the name, so the screen never shows a name for an ID it does
+not belong to.
 
 The caller of a received call and the sources in the last heard list are
 also shown by name when the codeplug has a private contact with their ID
 (`_ui_dmrContactName()`, `ui_menu.c`): the codeplug is scanned once per ID
 (the first 256 contacts at most) and the answer, found or not, is kept in
-a four-entry cache, so that the redraws cost nothing. On the CS7000 radios
+a cache of nine entries (the whole last heard ring plus the caller of the
+main screen, so that a redraw of either screen never rescans the
+codeplug; round-robin replacement beyond that). On the CS7000 radios
 `cps_io_stub` has no contacts: the first read fails and the lookup is
 free; the contacts browser is empty there and the favourites list below
 takes its place.
@@ -903,10 +917,13 @@ reads `TG 31665`, `PC 2345678`, `ALL` or `Empty`:
 | `#` | Empty the slot |
 | ESC | Back to `Settings > DMR`, on the `Favourites` item |
 
-A favourite has no name of its own; a slot filled from a contact shows
-the contact's name again once selected only if the codeplug still knows
-the ID (it is looked up, not stored). The slots are validated at boot,
-see [Persistence](#persistence).
+A favourite has no name of its own: once selected, the ID and type are
+looked up in the contacts (`_ui_dmrContactName()`) and the main screen
+shows the contact's name only if the codeplug still knows them; the name
+is not stored in the slot. ENTER also pushes the whole `Settings > DMR`
+state to the RTX stage, as ESC from that screen does, so a colour code or
+timeslot edited just before is not left behind. The slots are validated
+at boot, see [Persistence](#persistence).
 
 ### Last heard
 
@@ -921,13 +938,18 @@ Filtered calls (another colour code, another slot, another talkgroup with
 the monitor off) are not heard. The list is not saved and is empty after
 a power cycle; it survives mode switches.
 
-MONI + 4 on the VFO or MEM screen opens it. Each row reads
-`<contact name or source ID> <destination>` with the age of the call on
-the right (`12s`, `3m`, `1h`); `Empty` when nothing was heard yet. UP and
-DOWN browse, ENTER sets a private call to the selected source (named
-after the contact with that ID when there is one) and comes back to the
-main screen, ESC comes back without a change. The key is refused outside
-the main screens and outside DMR.
+MONI + 4 on the VFO or MEM screen opens it. Each call takes two lines:
+`<contact name or source ID>` with the age of the call on the right
+(`12s`, `3m`, `1h`), then `-> <destination>` below (`-> TG 31665`,
+`-> PC 2345678`, `-> ALL`); `Empty` when nothing was heard yet. The
+destination is never cut (a truncated ID would read as another
+talkgroup): an ID always fits next to the age, a contact name too wide
+for the room the age leaves is cut to fit (width guard in
+`tests/unit/ui_dmr.cpp`, both layouts). Three calls per page on 160x128,
+two on 128x64. UP and DOWN browse, ENTER sets a private call to the
+selected source (named after the contact with that ID when there is one)
+and comes back to the main screen, ESC comes back without a change. The
+key is refused outside the main screens and outside DMR.
 
 ### TS busy hints from the Short LC
 
@@ -941,16 +963,22 @@ the hashed destination of each slot, the CRC-8 of §B.3.7 over the 24-bit
 address.
 
 The HR_C6000 undoes the BPTC itself and hands the MCU the 28 bits and the
-CRC in its RX RAM bytes 0x24-0x28 (manual, RAM map); the driver copies
-them into `dmrbbSnapshot::shortLc[5]` when 0x82 bit5 arrives with 0x86
+CRC in its RX RAM, read at bytes 0x24-0x28: the address of the "Short LC"
+entry of the manual's TX-side RAM allocation (Table 5.2), assumed to be
+mirrored by the RX-side RAM whose table (5.3) is omitted in the translated
+manual, as the LC at 0x00 already assumes. The driver copies the five
+bytes into `dmrbbSnapshot::shortLc[5]` when 0x82 bit5 arrives with 0x86
 bit2 ("Short LC received", G4EML table). `OpMode_DMR::parseShortLc()`
 verifies the CRC again (`DMR::FEC::ShortLc::fromChipBytes()`), counts the
 good and bad messages in the monitor block, and on an Activity Update sets
 `rtxStatus_t::dmr_tsBusy` (bit0 TS1, bit1 TS2, any activity other than
 "none" counting as busy); the hints expire two seconds after the last
-Short LC, a repeater sending one every 120 ms while it is up. The main
-screen shows `TS1*` / `TS2*` at the right of the line above the
-destination, the monitor screen has the `Short LC` and `TS busy` rows.
+Short LC of any kind with a good CRC (a Null message keeps them alive, a
+repeater sending one every 120 ms while it is up), and are dropped at
+once on a retune or a modem reprogramming, together with the monitor's
+`Short LC` row, since the Activity Update describes the repeater whose
+CACH it came from. The main screen shows `1*` / `2*` at the left of the
+top bar, the monitor screen has the `Short LC` and `TS busy` rows.
 
 `openrtx/src/protocols/DMR/FEC/ShortLc.cpp` also carries the full
 encoder and decoder of the four 17-bit CACH fragments (single error per
@@ -1246,11 +1274,13 @@ the DMR settings, power cycle, and see them kept.
 The checklist for stage 6: store two favourites, power cycle, see them
 kept and select one (the LC a hotspot logs carries its ID and type); let
 a busy repeater fill the last heard list and call one of the sources back
-(the private call is confirmed on the other radio); see `TS1*` / `TS2*`
-follow the repeater's other-slot activity, with the `Short LC` row of the
-monitor screen counting good CRCs (a bad count that grows means the
-0x24-0x28 layout is not what the manual says); hear the caller announced
-at call start without the receive audio stopping for good.
+(the private call is confirmed on the other radio); see `1*` / `2*` in
+the top bar follow the repeater's other-slot activity, with the `Short
+LC` row of the monitor screen counting good CRCs (a bad count that grows
+means the RX RAM does not hold the Short LC at 0x24-0x28 the way the
+TX-side map suggests, see [dmr_bringup.md](dmr_bringup.md) 6.1); hear
+the caller announced at call start without the receive audio stopping
+for good.
 
 ## Testing on the Linux emulator
 
