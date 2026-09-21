@@ -100,9 +100,10 @@ static void setupStream()
     memset(&fakeC6000, 0, sizeof(fakeC6000));
     memset(&ctx, 0, sizeof(ctx));
 
-    // Register 0x06 as fmMode() leaves it: the driver's read-modify-write
-    // of the "OpenMusic" bit then writes 0x22 / 0x20 as before.
-    fakeC6000.reg06 = 0x20;
+    // Register 0x06 as the CS7000 init() leaves it in FM and M17 (0x21,
+    // fmMode() never touches it): without the DMR driver owning the chip
+    // the "OpenMusic" bit is written wholesale, 0x22 / 0x20 as always.
+    fakeC6000.reg06 = 0x21;
     ctx.buffer = buf;
     ctx.bufSize = 320;
     ctx.bufMode = BUF_CIRC_DOUBLE;
@@ -116,6 +117,7 @@ TEST_CASE("Cx000 DAC: sync() wakes up at the half-buffer sync point",
     Cx000dac_init(&dev);
     REQUIRE(Cx000_dac_audio_driver.start(0, NULL, &ctx) == 0);
     REQUIRE(ctx.running == 1);
+    REQUIRE(fakeC6000.reg06 == 0x22);
 
     Waiter w;
     startWaiter(&w);

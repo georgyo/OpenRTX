@@ -10,7 +10,10 @@
  * 0x06 holds the vocoder interface selection (0x21: V_SPI vocoder under MCU
  * control) and the "OpenMusic" bit 1 used for beeps and audio streams must be
  * set and cleared without touching the other bits, otherwise a key beep would
- * silently switch the vocoder port off.
+ * silently switch the vocoder port off. The DMR modem driver announces its
+ * ownership of the chip with Cx000dac_setVocoderBits(): set, the driver
+ * toggles the bit with a read-modify-write (0x23 / 0x21); clear, FM and M17
+ * keep the wholesale 0x22 / 0x20 they have always written.
  */
 
 #include <catch2/catch_test_macros.hpp>
@@ -37,8 +40,9 @@ static void setup()
     ctx.bufMode = BUF_CIRC_DOUBLE;
     ctx.sampleRate = 8000;
 
-    // Register 0x06 as dmrMode() leaves it
+    // Register 0x06 as dmrMode() leaves it, the DMR driver owning the chip
     fakeC6000.reg06 = 0x21;
+    Cx000dac_setVocoderBits(true);
 }
 
 /*
@@ -107,8 +111,8 @@ TEST_CASE("Cx000 DAC in DMR mode: an audio stream keeps the vocoder bits",
 TEST_CASE("Cx000 DAC in DMR mode: a stopped stream restores the FM value too",
           "[audio][cx000dac][dmr]")
 {
-    // Same driver, register 0x06 as fmMode() leaves it: nothing but bit 1
-    // changes in that case either.
+    // Same driver, register 0x06 as fmMode() would leave it on a chip that
+    // sets 0x20 there: nothing but bit 1 changes in that case either.
     setup();
     fakeC6000.reg06 = 0x20;
     Cx000dac_init(&dev);
@@ -117,6 +121,40 @@ TEST_CASE("Cx000 DAC in DMR mode: a stopped stream restores the FM value too",
     REQUIRE(fakeC6000.reg06 == 0x22);
     Cx000dac_stopBeep();
     REQUIRE(fakeC6000.reg06 == 0x20);
+
+    Cx000dac_terminate();
+}
+
+TEST_CASE("Cx000 DAC without the DMR driver writes 0x22 / 0x20 wholesale",
+          "[audio][cx000dac][dmr]")
+{
+    // The DMR driver terminated: FM and M17 on the CS7000 leave 0x21 in
+    // the register from init(), and the beep must write exactly what it
+    // wrote before the DMR series, whatever the register holds.
+    setup();
+    Cx000dac_setVocoderBits(false);
+    Cx000dac_init(&dev);
+
+    REQUIRE(Cx000dac_startBeep(1000) == 0);
+    REQUIRE(fakeC6000.reg06 == 0x22);
+    REQUIRE(writeOf06(0) == 0x22);
+    Cx000dac_stopBeep();
+    REQUIRE(fakeC6000.reg06 == 0x20);
+    REQUIRE(writeOf06(1) == 0x20);
+
+    REQUIRE(Cx000_dac_audio_driver.start(0, NULL, &ctx) == 0);
+    REQUIRE(fakeC6000.reg06 == 0x22);
+    Cx000_dac_audio_driver.terminate(&ctx);
+    REQUIRE(fakeC6000.reg06 == 0x20);
+    REQUIRE(writeOf06(4) == 0xFF);
+
+    // The flag set again: back to the read-modify-write
+    Cx000dac_setVocoderBits(true);
+    fakeC6000.reg06 = 0x21;
+    REQUIRE(Cx000dac_startBeep(1000) == 0);
+    REQUIRE(fakeC6000.reg06 == 0x23);
+    Cx000dac_stopBeep();
+    REQUIRE(fakeC6000.reg06 == 0x21);
 
     Cx000dac_terminate();
 }

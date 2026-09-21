@@ -62,23 +62,34 @@ static pthread_mutex_t  mutex;
 static pthread_cond_t   wakeup_cond;
 
 /*
- * Set or clear the "OpenMusic" bit, bit 1 of register 0x06, leaving the other
- * bits as they are: the rest of the register selects the vocoder interface
- * (0x21 in DMR mode: V_SPI vocoder, MCU controlled) and a beep must not switch
- * it off. Read-modify-write, the two SPI transactions being separately
- * serialised on the bus: a concurrent write of 0x06 by the mode switch of the
- * rtx thread could be lost, but the DMR driver reprograms the register at
- * every reconfiguration. UNVERIFIED on hardware: OpenMusic playback with the
- * vocoder bits set (0x23).
+ * Register 0x06 ownership. In FM and M17 the driver owns the register and
+ * writes it wholesale: 0x22 with the "OpenMusic" bit 1 set, 0x20 with it
+ * clear, the pair every Cx000 radio has run so far. While the DMR modem
+ * driver owns the chip the rest of the register selects the vocoder
+ * interface (0x21: V_SPI vocoder, MCU controlled) and a beep must not switch
+ * it off, so the bit is set and cleared with a read-modify-write instead,
+ * 0x23 / 0x21. The two SPI transactions of the read-modify-write are
+ * separately serialised on the bus: a concurrent write of 0x06 by the mode
+ * switch of the rtx thread could be lost, but the DMR driver reprograms the
+ * register at every reconfiguration. UNVERIFIED on hardware: OpenMusic
+ * playback with the vocoder bits set (0x23).
  */
+static volatile bool keepVocoderBits = false;
+
+void Cx000dac_setVocoderBits(const bool keep)
+{
+    keepVocoderBits = keep;
+}
+
 static inline void setOpenMusic(const bool enable)
 {
-    uint8_t reg = c6000->readCfgRegister(0x06);
+    uint8_t reg = 0x20;
+
+    if(keepVocoderBits)
+        reg = c6000->readCfgRegister(0x06) & ~0x02;
 
     if(enable)
         reg |= 0x02;
-    else
-        reg &= ~0x02;
 
     c6000->writeCfgRegister(0x06, reg);
 }

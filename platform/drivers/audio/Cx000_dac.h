@@ -36,8 +36,22 @@ int Cx000dac_startBeep(const uint16_t freq);
  */
 void Cx000dac_stopBeep();
 
+/**
+ * Select how the "OpenMusic" bit of register 0x06 is set and cleared. By
+ * default the register is written wholesale (0x22 / 0x20, the FM and M17
+ * value). While the DMR modem driver owns the HR_C6000 the other bits of the
+ * register select the vocoder interface and must survive a beep: the DMR
+ * driver sets this flag when it configures the chip and clears it when it
+ * terminates, the bit is then toggled with a read-modify-write.
+ *
+ * @param keep: true to preserve the other bits of register 0x06.
+ */
+void Cx000dac_setVocoderBits(const bool keep);
+
 #ifdef __cplusplus
 }   // extern "C"
+
+class HR_C6000;
 
 /**
  * Initialize the driver.

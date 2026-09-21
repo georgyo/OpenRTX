@@ -57,13 +57,17 @@
  *    because rtx.cpp calls radio_setOpmode() for the new mode (fmMode())
  *    before disabling the old one: radio_CS7000.cpp terminates this driver
  *    before fmMode() and the later dmrbb_idle()/dmrbb_terminate() of
- *    OpMode_DMR::disable() must not touch the FM configuration.
+ *    OpMode_DMR::disable() must not touch the FM configuration. The same
+ *    two calls tell the OpenMusic DAC driver (Cx000_dac.cpp) whether the
+ *    vocoder bits of register 0x06 must survive a beep: only while this
+ *    driver owns the chip, FM and M17 keep their wholesale 0x22 / 0x20.
  */
 
 #include <miosix.h>
 #include <stdint.h>
 #include <string.h>
 #include "drivers/SPI/spi_bitbang.h"
+#include "drivers/audio/Cx000_dac.h"
 #include "drivers/baseband/HR_C6000.h"
 #include "hwconfig.h"
 #include "interfaces/delays.h"
@@ -344,6 +348,8 @@ void dmrbb_terminate(void)
         C6000.dmrIdle();
         active = false;
     }
+
+    Cx000dac_setVocoderBits(false);
 }
 
 void dmrbb_configure(const struct dmrbbConfig *cfg)
@@ -362,6 +368,9 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
     C6000.setColorCode(cfg->colorCode);
     C6000.setLocalAddress(cfg->ownId);
     C6000.setAccessPolicy(cfg->polite);
+
+    /* Beeps and audio streams must leave the vocoder bits of 0x06 alone */
+    Cx000dac_setVocoderBits(true);
 
     attachLines();
     active = true;

@@ -1407,6 +1407,7 @@ cx000_dac_dmr_test = executable('cx000_dac_dmr_test',
 # comes from the fake in tests/unit/fake_stm32.
 hr_c6000_dmr_test = executable('hr_c6000_dmr_test',
                                sources : ['tests/unit/hr_c6000_dmr.cpp',
+                                          'platform/drivers/audio/Cx000_dac.cpp',
                                           'platform/drivers/baseband/HR_Cx000.cpp',
                                           'platform/drivers/baseband/HR_C6000.cpp',
                                           'platform/drivers/baseband/HR_C6000_CS7000.cpp',
@@ -1414,7 +1415,7 @@ hr_c6000_dmr_test = executable('hr_c6000_dmr_test',
                                cpp_args            : linux_cpp_args,
                                include_directories : ['tests/unit/fake/cs7000',
                                                       'tests/unit/fake_stm32'] + openrtx_inc,
-                               dependencies        : [catch2_dep],
+                               dependencies        : [threads_dep, catch2_dep],
                                link_args           : linux_l_args)
 # Compiles the STM32H7 clock tree setup against fake registers, see
 # tests/unit/stubs/stm32h7xx/stm32h7xx.h
