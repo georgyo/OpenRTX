@@ -7,7 +7,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <pthread.h>
+#include <unistd.h>
 #include <string>
 
 extern "C" {
@@ -43,8 +45,25 @@ extern "C" {
 
 static const freq_t VFO_FREQ = 430000000;
 
-/* Codeplug of the bench, see boot() */
-static char cpsPath[] = "/tmp/ui_dmr_test.rtxc";
+/*
+ * Scratch directory of the bench: the codeplug and, through XDG_STATE_HOME,
+ * the emulator's NVM file, so that the test never touches $HOME (unwritable
+ * in a build sandbox) and two runs never share a file.
+ */
+static char scratchDir[] = "/tmp/ui_dmr_test.XXXXXX";
+static char cpsPath[64];
+
+static void bench_scratch()
+{
+    static bool ready = false;
+    if (ready)
+        return;
+
+    REQUIRE(mkdtemp(scratchDir) != NULL);
+    snprintf(cpsPath, sizeof(cpsPath), "%s/codeplug.rtxc", scratchDir);
+    setenv("XDG_STATE_HOME", scratchDir, 1);
+    ready = true;
+}
 
 /* Press (and release) a key combination, return the RTX sync request. */
 static bool press(uint32_t keys)
@@ -90,6 +109,7 @@ static void boot(const settings_t &settings)
     static pthread_mutex_t rtxMutex = PTHREAD_MUTEX_INITIALIZER;
 
     if (!rtxReady) {
+        bench_scratch();
         rtx_init(&rtxMutex);
         rtxReady = true;
 
@@ -235,6 +255,7 @@ TEST_CASE("Boot validation empties malformed favourite slots", "[ui][dmr]")
     s.dmr_favourites[4] = DMR_FAV_PACK(0, PRIVATE); /* ID zero with type */
     s.dmr_favourites[5] = 0xFFFFFFFF;
     channel_t vfo = cps_getDefaultChannel();
+    bench_scratch();
     nvm_init();
     REQUIRE(nvm_writeSettingsAndVfo(&s, &vfo) == 0);
 
