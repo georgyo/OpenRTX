@@ -5,6 +5,7 @@
  */
 
 #include "core/audio_path.h"
+#include <pthread.h>
 #include <map>
 #include <set>
 
@@ -95,9 +96,56 @@ struct Route
 };
 
 
+/**
+ * \internal
+ * Scoped lock for a pthread mutex, the mutex is released when the object goes
+ * out of scope.
+ */
+class LockGuard
+{
+public:
+
+    LockGuard(pthread_mutex_t& m) : mutex(m)
+    {
+        pthread_mutex_lock(&mutex);
+    }
+
+    ~LockGuard()
+    {
+        pthread_mutex_unlock(&mutex);
+    }
+
+    LockGuard(const LockGuard&) = delete;
+    LockGuard& operator=(const LockGuard&) = delete;
+
+private:
+
+    pthread_mutex_t& mutex;
+};
+
+
 static std::set< int >        activePaths;      // IDs of currently active paths.
 static std::map< int, Route > routes;           // Route data of currently active paths.
 static int                    pathCounter = 1;  // Counter for path ID generation.
+
+/*
+ * Paths are requested and released by the rtx, UI and codec threads while the
+ * codec threads and the audio streams poll their status: the route tables are
+ * therefore protected by two mutexes.
+ *
+ * - opMutex serialises audioPath_request() and audioPath_release(), the only
+ *   functions modifying the tables, and is held also while the hardware audio
+ *   paths are switched, so that the hardware state always matches the tables.
+ * - tableMutex protects the tables themselves and is held only while they are
+ *   being read or modified, never across audio_connect()/audio_disconnect()
+ *   which may sleep: this keeps audioPath_getStatus() and audioPath_getInfo()
+ *   fast enough to be polled by the audio threads.
+ *
+ * With opMutex held, reading the tables without tableMutex is safe because no
+ * other thread can modify them.
+ */
+static pthread_mutex_t opMutex    = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t tableMutex = PTHREAD_MUTEX_INITIALIZER;
 
 
 pathId audioPath_request(enum AudioSource source, enum AudioSink sink,
@@ -107,6 +155,7 @@ pathId audioPath_request(enum AudioSource source, enum AudioSink sink,
     if (!path.isValid())
         return -1;
 
+    LockGuard opLock(opMutex);
     std::set< int > pathsToSuspend;
 
     // Check if this new path can be activated, otherwise return -1
@@ -129,18 +178,24 @@ pathId audioPath_request(enum AudioSource source, enum AudioSink sink,
     pathCounter += 1;
     const Route newRoute{path, pathsToSuspend, {}};
 
-    // Move active paths that should be suspended to the suspend-list and
-    // close them to free resources for the new path.
+    // Move active paths that should be suspended to the suspend-list and set
+    // this new path as active.
+    pthread_mutex_lock(&tableMutex);
     for(const auto& id : pathsToSuspend)
     {
         activePaths.erase(id);
         routes.at(id).suspendedBy.insert(newPathId);
-        routes.at(id).path.close();
     }
 
-    // Set this new path as active and open it
     routes.insert(std::make_pair(newPathId, newRoute));
     activePaths.insert(newPathId);
+    pthread_mutex_unlock(&tableMutex);
+
+    // Close the suspended paths to free resources for the new path, then open
+    // the new one.
+    for(const auto& id : pathsToSuspend)
+        routes.at(id).path.close();
+
     path.open();
 
     return newPathId;
@@ -150,6 +205,7 @@ pathInfo_t audioPath_getInfo(const pathId id)
 {
     pathInfo_t info = {0, 0, 0, 0};
 
+    LockGuard tableLock(tableMutex);
     const auto it = routes.find(id);
     if(it == routes.end())
     {
@@ -170,6 +226,7 @@ pathInfo_t audioPath_getInfo(const pathId id)
 
 enum PathStatus audioPath_getStatus(const pathId id)
 {
+    LockGuard tableLock(tableMutex);
     const auto it = routes.find(id);
 
     if(it == routes.end())
@@ -183,17 +240,18 @@ enum PathStatus audioPath_getStatus(const pathId id)
 
 void audioPath_release(const pathId id)
 {
+    LockGuard opLock(opMutex);
+
     auto it = routes.find(id);
     if(it == routes.end())  // Does not exists
         return;
 
     Route routeToRemove = it->second;
+    std::set< int > pathsToResume;
+
+    pthread_mutex_lock(&tableMutex);
     routes.erase(it);
     activePaths.erase(id);
-
-    // If path is active, close it
-    if(routeToRemove.isActive())
-        routeToRemove.path.close();
 
     /*
      * For each path that suspended the one to be removed:
@@ -234,8 +292,16 @@ void audioPath_release(const pathId id)
             if(suspendedBy.empty())
             {
                 activePaths.insert(i);
-                routes.at(i).path.open();
+                pathsToResume.insert(i);
             }
         }
     }
+    pthread_mutex_unlock(&tableMutex);
+
+    // If path was active, close it. Then reopen the paths it was suspending.
+    if(routeToRemove.isActive())
+        routeToRemove.path.close();
+
+    for(const auto& i : pathsToResume)
+        routes.at(i).path.open();
 }
