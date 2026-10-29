@@ -51,7 +51,7 @@ MEMORY
 {
     flash(rx)   : ORIGIN = 0x08100000, LENGTH = 1M
 
-    /* NOTE: for now wer support only the AXI SRAM */
+    /* Main general-purpose RAM: the AXI SRAM (D1 domain) */
     ram(wx)     : ORIGIN = 0x24000200, LENGTH =  512K-0x200
 }
 

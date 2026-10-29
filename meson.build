@@ -141,6 +141,16 @@ endif
 # XPowersLib, library for x-powers power management series
 xpowerslib_proj = subproject('XPowersLib')
 
+# tinyUSB, embedded USB device stack. Only the STM32H7 (Cortex-M7) targets
+# use it: building it for the host or for the Cortex-M4 radios would compile
+# a USB driver for the wrong hardware.
+if meson.is_cross_build() and host_machine.cpu() == 'cortex-m7'
+  tinyusb_proj = subproject('tinyusb')
+  tinyusb_dep  = tinyusb_proj.get_variable('tinyusb_dep')
+else
+  tinyusb_dep  = disabler()
+endif
+
 ##
 ## RTOS
 ##
@@ -585,9 +595,12 @@ cs7000p_src = ['platform/drivers/NVM/nvmem_CS7000.c',
                'platform/drivers/SPI/spi_custom.c',
                'platform/drivers/SPI/spi_bitbang.c',
                'platform/targets/CS7000-PLUS/hwconfig.c',
-               'platform/targets/CS7000-PLUS/platform.c']
+               'platform/targets/CS7000-PLUS/platform.c',
+               'platform/drivers/USB/usb_serial_stm32h7.c',
+               'platform/drivers/USB/usb_descriptors.c']
 
-cs7000p_inc = ['platform/targets/CS7000-PLUS']
+cs7000p_inc = ['platform/targets/CS7000-PLUS',
+               'platform/drivers/USB']
 cs7000p_def = {'PLATFORM_CS7000P': '', 'timegm': 'mktime'}
 
 cs7000p_src += openrtx_src + stm32h743_src + miosix_cm7_src + ui_src_default
@@ -882,7 +895,7 @@ cs7000_opts = {
 cs7000p_opts = {
   'sources'            : cs7000p_src,
   'include_directories': cs7000p_inc,
-  'dependencies'       : [codec2_dep],
+  'dependencies'       : [codec2_dep, tinyusb_dep],
   'c_args'             : cs7000p_args,
   'cpp_args'           : cs7000p_args,
   'link_args'          : ['-Wl,-T../platform/mcu/STM32H7xx/linker_script_cs7000p.ld',

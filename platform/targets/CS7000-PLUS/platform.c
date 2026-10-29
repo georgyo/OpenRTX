@@ -17,6 +17,10 @@
 #include <string.h>
 #include "core/gps.h"
 
+#ifdef CONFIG_USB_SERIAL
+#include "interfaces/usb_serial.h"
+#endif
+
 static const hwInfo_t hwInfo =
 {
     .name        = "CS7000P",
@@ -56,6 +60,10 @@ void platform_init()
 
 void platform_terminate()
 {
+    #ifdef CONFIG_USB_SERIAL
+    usb_serial_terminate();
+    #endif
+
     adcStm32_terminate(&adc1);
     gpsStm32_terminate();
 

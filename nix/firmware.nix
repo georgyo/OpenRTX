@@ -58,7 +58,7 @@ stdenv.mkDerivation {
     (python3.withPackages (ps: [ ps.intelhex ]))
   ];
 
-  # Offline resolution of the codec2 / XPowersLib wrap subprojects.
+  # Offline resolution of the codec2 / XPowersLib / tinyusb wrap subprojects.
   MESON_PACKAGE_CACHE_DIR = subprojects.packageCache;
 
   postPatch = ''
