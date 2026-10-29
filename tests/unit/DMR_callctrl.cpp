@@ -317,10 +317,11 @@ public:
         sys(s);
     }
 
-    void flags(uint8_t irq)
+    void flags(uint8_t irq, uint8_t sub86 = 0)
     {
         dmrbbSnapshot s = blank();
         s.irq82 = irq;
+        s.sub86 = sub86;
         sys(s);
     }
 
@@ -1690,4 +1691,464 @@ TEST_CASE("DMR hang time zero goes straight to idle", "[dmr][callctrl]")
     b.terminator(R5F_SYNC_BS, 2, 1);
     REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
     REQUIRE(b.ctrl.report().hangActive == false);
+}
+
+/*
+ * Stage 5: LCSS convention of the voice bursts, RF keying report and the
+ * timeslot alignment of a repeater mode transmission.
+ */
+
+TEST_CASE("DMR TX: LCSS mode 1 emits the manual's 0x50 sequence",
+          "[dmr][callctrl]")
+{
+    /*
+     * HR_C6000 manual §5.4.5 "Voice transmission" steps 5, 7 and 8: 0x08
+     * for A, 0x19 for B, then 0x2B, 0x3B, 0x4A, 0x58 for C to F. Mode 0 is
+     * the OpenGD77 convention, 0x08 | seq << 4, checked by the direct mode
+     * test above.
+     */
+    REQUIRE(r50Voice(0, LCSS_MODE_MANUAL) == 0x08);
+    REQUIRE(r50Voice(1, LCSS_MODE_MANUAL) == 0x19);
+    REQUIRE(r50Voice(2, LCSS_MODE_MANUAL) == 0x2B);
+    REQUIRE(r50Voice(3, LCSS_MODE_MANUAL) == 0x3B);
+    REQUIRE(r50Voice(4, LCSS_MODE_MANUAL) == 0x4A);
+    REQUIRE(r50Voice(5, LCSS_MODE_MANUAL) == 0x58);
+    REQUIRE(r50Voice(6, LCSS_MODE_MANUAL) == 0x08);
+    for (uint8_t seq = 0; seq < 6; seq++) {
+        REQUIRE(r50Voice(seq) == (R50_VOICE | (seq << 4)));
+        REQUIRE(r50Voice(seq, LCSS_MODE_CHIP) == r50Voice(seq));
+        /* Both conventions flag a voice burst for the fake modem */
+        REQUIRE((r50Voice(seq, LCSS_MODE_MANUAL) & R50_VOICE) != 0);
+        /* The manual's LCSS: 00 A, 01 B, 11 C, 11 D, 10 E, 00 F */
+        static const uint8_t lcss[6] = { 0, 1, 3, 3, 2, 0 };
+        REQUIRE((r50Voice(seq, LCSS_MODE_MANUAL) & 0x03) == lcss[seq]);
+        REQUIRE((r50Voice(seq, LCSS_MODE_MANUAL) >> 4) == seq);
+    }
+
+    Bench b;
+    b.cfg.lcssMode = LCSS_MODE_MANUAL;
+    b.settle();
+    REQUIRE(b.ctrl.config().lcssMode == LCSS_MODE_MANUAL);
+
+    b.ctrl.setPtt(true, b.now);
+    unsigned n = 0;
+    while (b.ctrl.state() != CallController::TX_VOICE) {
+        b.ts();
+        REQUIRE(++n < 10);
+    }
+    b.port.clear();
+    b.tsN(24);
+    std::vector<uint8_t> r50 = b.port.values(W_R50);
+    REQUIRE(r50.size() == 12);
+    for (size_t i = 0; i < r50.size(); i++)
+        REQUIRE(r50[i] == R50_VOICE_MANUAL[i % 6]);
+
+    /* Release after F: the terminator follows a complete superframe */
+    b.ctrl.setPtt(false, b.now);
+    b.port.clear();
+    b.ts();
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::TX_TERM);
+    REQUIRE(b.port.values(W_R50) == std::vector<uint8_t>{ R50_TERMINATOR });
+
+    /* An out of range mode falls back to the chip-filled convention */
+    b.cfg.lcssMode = 7;
+    b.ctrl.configure(b.cfg);
+    REQUIRE(b.ctrl.config().lcssMode == LCSS_MODE_CHIP);
+}
+
+TEST_CASE("DMR TX RF keying: keyed at arm, released the slot after the "
+          "terminator",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+    REQUIRE(b.ctrl.report().rfKey == false);
+
+    /* Armed on the PTT press, before any slot is programmed */
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    REQUIRE(b.port.count(W_R41) == 0);
+
+    /* Keyed through the headers and the voice */
+    unsigned n = 0;
+    while (b.ctrl.state() != CallController::TX_VOICE) {
+        b.ts();
+        REQUIRE(b.ctrl.report().rfKey == true);
+        REQUIRE(++n < 10);
+    }
+    b.tsN(12);
+    REQUIRE(b.ctrl.report().rfKey == true);
+
+    /* Release: still keyed while the terminator is programmed ... */
+    b.ctrl.setPtt(false, b.now);
+    n = 0;
+    while (b.ctrl.state() != CallController::TX_TERM) {
+        b.ts();
+        REQUIRE(b.ctrl.report().rfKey == true);
+        REQUIRE(++n < 14);
+    }
+
+    /* ... and while it goes out: the slot after TX_TERM is back in RX with
+     * the RF still keyed, the following timeslot releases it */
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+    REQUIRE(b.ctrl.report().rfKey == false);
+    b.tsN(4);
+    REQUIRE(b.ctrl.report().rfKey == false);
+}
+
+TEST_CASE("DMR TX RF keying: the TX-end report or the timer release it",
+          "[dmr][callctrl]")
+{
+    /* Same transmission up to the terminator slot */
+    auto toTerminatorSlot = [](Bench &b) {
+        b.settle();
+        b.ctrl.setPtt(true, b.now);
+        b.tsN(6);
+        REQUIRE(b.ctrl.state() == CallController::TX_VOICE);
+        b.ctrl.setPtt(false, b.now);
+        unsigned n = 0;
+        while (b.ctrl.state() != CallController::TX_TERM) {
+            b.ts();
+            REQUIRE(++n < 14);
+        }
+        b.ts();
+        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        REQUIRE(b.ctrl.report().rfKey == true);
+    };
+
+    /* 0x82 bit5 with the 0x86 bit7 "service transmission completely
+     * terminated" sub-status, before the next timeslot */
+    {
+        Bench b;
+        toTerminatorSlot(b);
+        b.flags(R82_TX_END, R86_TX_COMPLETE);
+        REQUIRE(b.ctrl.report().rfKey == false);
+        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        b.ts();
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* The same bit5 raised by the per-slot Layer 2 deadline interrupt
+     * (0x86 bit4, Rdy_lst_inter) lands while the terminator is still on
+     * the air: it does not release the RF, the next timeslot does */
+    {
+        Bench b;
+        toTerminatorSlot(b);
+        b.flags(R82_TX_END, R86_RDY_LST);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        b.ts();
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* Nor do the data events or an empty sub-status; bit7 next to them
+     * does, whatever else is set */
+    {
+        Bench b;
+        toTerminatorSlot(b);
+        b.flags(R82_TX_END, 0x40);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.flags(R82_TX_END, 0x00);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.flags(R82_TX_END, 0x08);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.flags(R82_TX_END, R86_TX_COMPLETE | R86_RDY_LST);
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* Other flags do not release it, even with the sub-status set */
+    {
+        Bench b;
+        toTerminatorSlot(b);
+        b.flags(R82_TX_START, R86_TX_COMPLETE);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.ts();
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* No timeslot interrupt nor report: released once the burst is over */
+    {
+        Bench b;
+        toTerminatorSlot(b);
+        b.timeout(BURST_MS - 1);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.timeout(CallController::RF_UNKEY_MS);
+        REQUIRE(b.ctrl.report().rfKey == false);
+        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+    }
+
+    /* A TX-end report outside a transmission is ignored */
+    {
+        Bench b;
+        b.settle();
+        b.flags(R82_TX_END, R86_TX_COMPLETE);
+        REQUIRE(b.ctrl.report().rfKey == false);
+        REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    }
+}
+
+TEST_CASE("DMR TX RF keying: an RF stage that refuses to key aborts the "
+          "transmission with the rfFailed marker",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+    REQUIRE(b.ctrl.report().rfFailed == false);
+
+    /* Ignored while receiving */
+    b.ctrl.rfFailed(b.now);
+    REQUIRE(b.ctrl.report().rfFailed == false);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+
+    /* Armed, the RF asked for: the owner reports the failure at once */
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    b.ctrl.rfFailed(b.now);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.report().rfKey == false);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    REQUIRE(b.ctrl.report().busy == false);
+    REQUIRE(b.port.last(W_R40)->value == R40_RX);
+
+    /* Nothing goes out, the PTT is latched until released */
+    b.tsN(4);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.port.count(W_R41, R41_TX) == 0);
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+
+    /* The next press clears the marker and tries again */
+    b.ctrl.setPtt(false, b.now);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    REQUIRE(b.ctrl.report().rfFailed == false);
+    REQUIRE(b.ctrl.report().rfKey == true);
+
+    /* The marker survives a restart, clearMarkers() drops it */
+    b.ctrl.rfFailed(b.now);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    b.ctrl.enable(b.now);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    b.ctrl.clearMarkers();
+    REQUIRE(b.ctrl.report().rfFailed == false);
+}
+
+TEST_CASE("DMR TX RF keying: rejected, aborted and failed transmissions "
+          "release it at once",
+          "[dmr][callctrl]")
+{
+    /* Channel busy */
+    {
+        Bench b;
+        b.settle();
+        b.ctrl.setPtt(true, b.now);
+        b.tsN(3);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.flags(R82_TX_REJECTED);
+        REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+        REQUIRE(b.ctrl.report().busy == true);
+        REQUIRE(b.ctrl.report().rfKey == false);
+        b.ts();
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* PTT released before the header */
+    {
+        Bench b;
+        b.settle();
+        b.ctrl.setPtt(true, b.now);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.ctrl.setPtt(false, b.now);
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* Timeslot watchdog during the transmission */
+    {
+        Bench b;
+        b.settle();
+        b.ctrl.setPtt(true, b.now);
+        b.tsN(3);
+        REQUIRE(b.ctrl.report().rfKey == true);
+        b.timeout(CallController::TS_WATCHDOG_MS);
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* disable() */
+    {
+        Bench b;
+        b.settle();
+        b.ctrl.setPtt(true, b.now);
+        b.tsN(3);
+        b.ctrl.disable();
+        REQUIRE(b.ctrl.report().rfKey == false);
+    }
+
+    /* Repeater mode waiting for the timecode lock: nothing keyed yet */
+    {
+        Bench b;
+        b.settle();
+        b.ts();
+        b.dataBurst(R5F_SYNC_BS, 1, 1, DT_IDLE);
+        b.ts(false);
+        b.ts(false);
+        b.ts(false);
+        b.ts(false);
+        b.timecode ^= 1;
+        REQUIRE(b.ctrl.report().slotLock == 1);
+        b.cfg.repeater = true;
+        b.ctrl.configure(b.cfg);
+        b.ctrl.setPtt(true, b.now);
+        REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+        REQUIRE(b.ctrl.report().rfKey == false);
+        for (unsigned i = 0; i < 6; i++) {
+            b.ts();
+            b.dataBurst(R5F_SYNC_BS, 1, 1, DT_IDLE);
+        }
+        REQUIRE(b.ctrl.report().slotLock == 2);
+        REQUIRE(b.ctrl.report().rfKey == true);
+    }
+}
+
+TEST_CASE("DMR TX RF keying through a repeater wake-up", "[dmr][callctrl]")
+{
+    /*
+     * The wake-up CSBK is a burst of its own: keyed for it, released once
+     * it has gone out so that the repeater's answer can be received, keyed
+     * again for the next attempt or for the call. On a silent channel the
+     * modem gives no timeslot interrupt after the CSBK (passive timing),
+     * the release relies on the RF timer.
+     */
+    Bench b;
+    b.cfg.repeater = true;
+    b.settle();
+    b.tsN(22);
+
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+    REQUIRE(b.ctrl.report().rfKey == true);
+
+    unsigned n = 0;
+    while (b.port.count(W_R50, R50_CSBK) == 0) {
+        b.ts();
+        REQUIRE(b.ctrl.report().rfKey == true);
+        REQUIRE(++n < 4);
+    }
+
+    /* CSBK going out during this slot: back to RX, still keyed */
+    b.ts();
+    REQUIRE(b.port.last(W_R40)->value == R40_RX);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    uint32_t sent = b.now;
+
+    /* Silent channel: the timer releases it one slot later */
+    b.timeout(BURST_MS - 1);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    b.timeout(CallController::RF_UNKEY_MS);
+    REQUIRE(b.ctrl.report().rfKey == false);
+    REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+
+    /* T_SyncWu: second attempt keys again */
+    while (b.now < sent + b.cfg.syncWuMs)
+        b.timeout(30);
+    REQUIRE(b.ctrl.state() == CallController::TX_WAKEUP);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    REQUIRE(b.port.count(W_R40, R40_TX_DMO) == 2);
+
+    n = 0;
+    while (b.port.count(W_R50, R50_CSBK) < 2) {
+        b.ts();
+        REQUIRE(++n < 4);
+    }
+    b.ts();
+    REQUIRE(b.ctrl.report().rfKey == true);
+
+    /* A timeslot interrupt (the repeater came up) releases it as well */
+    b.ts();
+    REQUIRE(b.ctrl.report().rfKey == false);
+
+    /* The repeater answers: keyed again for the headers, in passive timing */
+    for (unsigned i = 0; i < 6; i++) {
+        b.ts();
+        b.dataBurst(R5F_SYNC_BS, 1, 1, DT_IDLE);
+    }
+    REQUIRE(b.ctrl.report().slotLock == 2);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    REQUIRE(b.port.last(W_R40)->value == R40_TX_RMO);
+    n = 0;
+    while (b.ctrl.state() != CallController::TX_VOICE) {
+        b.ts();
+        REQUIRE(++n < 10);
+    }
+    REQUIRE(b.ctrl.report().rfKey == true);
+
+    /* Wake-up given up: released with the marker */
+    Bench f;
+    f.cfg.repeater = true;
+    f.settle();
+    f.tsN(22);
+    f.ctrl.setPtt(true, f.now);
+    n = 0;
+    while (f.ctrl.state() == CallController::TX_WAKEUP) {
+        f.ts();
+        REQUIRE(++n < 60);
+    }
+    REQUIRE(f.ctrl.report().wakeupFailed == true);
+    REQUIRE(f.ctrl.report().rfKey == false);
+}
+
+TEST_CASE("DMR TX repeater mode: every own burst is programmed for the "
+          "configured timeslot",
+          "[dmr][callctrl]")
+{
+    /*
+     * Passive timing: the bursts must land in the repeater's inbound slot
+     * matching the configured timeslot (TS 102 361-1 §5.1.1: the MS
+     * inbound slot follows the timecode of the outbound CACH). At every
+     * timeslot interrupt the controller programs the slot that starts at
+     * the next one, whose timecode is the complement of the current one.
+     */
+    for (uint8_t ts = 1; ts <= 2; ts++) {
+        Bench b;
+        b.cfg.timeslot = ts;
+        b.cfg.repeater = true;
+        b.settle();
+        b.repeaterCarrier();
+        REQUIRE(b.ctrl.report().slotLock == 2);
+        b.port.clear();
+
+        b.ctrl.setPtt(true, b.now);
+        REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_TX_RMO });
+
+        unsigned txSlots = 0;
+        unsigned idleSlots = 0;
+        for (unsigned i = 0; i < 40; i++) {
+            size_t before = b.port.count(W_R41);
+            b.ts();
+            REQUIRE(b.port.count(W_R41) == before + 1);
+            /* b.timecode is now the timecode of the slot just programmed */
+            uint8_t r41 = b.port.last(W_R41)->value;
+            if (r41 == R41_TX) {
+                REQUIRE(b.timecode == (uint8_t)(ts - 1));
+                txSlots++;
+            } else {
+                REQUIRE(r41 == R41_IDLE);
+                REQUIRE(b.timecode != (uint8_t)(ts - 1));
+                idleSlots++;
+            }
+        }
+        REQUIRE(txSlots == 20);
+        REQUIRE(idleSlots == 20);
+        REQUIRE(b.port.count(W_R50, R50_VOICE_LC_HEADER) == 3);
+        REQUIRE(b.ctrl.state() == CallController::TX_VOICE);
+    }
 }

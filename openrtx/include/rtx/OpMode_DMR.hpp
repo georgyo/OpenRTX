@@ -95,7 +95,12 @@ class DmrAudioLink : public DMR::VoiceSink
 {
 public:
     DmrAudioLink()
-        : rxFrames(0), rxQueued(0), txRequests(0), txFrames(0), txFlushes(0)
+        : rxFrames(0)
+        , rxQueued(0)
+        , txRequests(0)
+        , txFrames(0)
+        , txFlushes(0)
+        , txUnderruns(0)
     {
     }
 
@@ -106,14 +111,26 @@ public:
             rxQueued++;
     }
 
+    /*
+     * One payload per own voice burst: taken from the encoder queue when
+     * there is one, otherwise the controller sends the AMBE silence
+     * pattern. Nothing queued while the encoder thread runs is an underrun
+     * (the microphone stream fell behind the 60 ms cadence); with no
+     * encoder at all (path refused, no microphone on the emulator) every
+     * burst is silence by design and not counted as such.
+     */
     bool txVoiceFrameNeeded(uint8_t ambe[DMR::VOICE_PAYLOAD_BYTES]) override
     {
         txRequests++;
-        if (dmrAudio_popFrame(ambe) == false)
-            return false;
+        if (dmrAudio_popFrame(ambe)) {
+            txFrames++;
+            return true;
+        }
 
-        txFrames++;
-        return true;
+        if (dmrAudio_running())
+            txUnderruns++;
+
+        return false;
     }
 
     /**
@@ -133,13 +150,15 @@ public:
         txRequests = 0;
         txFrames = 0;
         txFlushes = 0;
+        txUnderruns = 0;
     }
 
-    uint32_t rxFrames;   /**< Voice bursts received since reset()          */
-    uint32_t rxQueued;   /**< Of which taken by the audio layer            */
-    uint32_t txRequests; /**< Voice bursts requested since reset()         */
-    uint32_t txFrames;   /**< Of which filled by the audio layer           */
-    uint32_t txFlushes;  /**< Transmissions whose voice bursts began       */
+    uint32_t rxFrames;    /**< Voice bursts received since reset()         */
+    uint32_t rxQueued;    /**< Of which taken by the audio layer           */
+    uint32_t txRequests;  /**< Voice bursts requested since reset()        */
+    uint32_t txFrames;    /**< Of which filled by the audio layer          */
+    uint32_t txFlushes;   /**< Transmissions whose voice bursts began      */
+    uint32_t txUnderruns; /**< Silence sent while the encoder was running  */
 };
 
 /**
@@ -154,8 +173,8 @@ class OpMode_DMR : public OpMode
 {
 public:
     /**
-     * How long the noId / busy / wakeupFailed markers stay raised, unless a
-     * new PTT press clears them first.
+     * How long the noId / busy / wakeupFailed / rfFailed markers stay
+     * raised, unless a new PTT press clears them first.
      */
     static constexpr uint32_t MARKER_TIME_MS = 3000;
 
@@ -222,6 +241,19 @@ public:
     }
 
     /**
+     * Set the transmit timeout T_TO (TS 102 361-2 §6.1: designer's choice
+     * up to 180 s for Tier II), applied to the next transmission. The
+     * default is DMR::T_TO_S; the tests shorten it, a settings item may
+     * drive it later.
+     *
+     * @param ms: timeout in milliseconds, 0 to disable.
+     */
+    void setTxTimeout(uint32_t ms)
+    {
+        txTimeoutMs = ms;
+    }
+
+    /**
      * @return the voice sink, for the tests.
      */
     const DmrAudioLink &audio() const
@@ -235,6 +267,15 @@ public:
     bool modemReady() const
     {
         return ready;
+    }
+
+    /**
+     * @return true while the RF stage is keyed for transmission; for the
+     * tests.
+     */
+    bool rfKeyed() const
+    {
+        return rfState == RF_TX;
     }
 
     /**
@@ -287,6 +328,18 @@ private:
     void followState(uint32_t nowMs);
 
     /**
+     * Key or release the RF stage as the controller's report asks: one
+     * radio_enableTx() when the modem is armed, one radio_disableRtx()
+     * followed by radio_enableRx() once the last burst has gone out. A
+     * driver that refuses to key (PLL not locked, radio_getStatus() not
+     * TX) aborts the transmission through CallController::rfFailed().
+     *
+     * @param key: true to transmit, false to receive.
+     * @param nowMs: current time.
+     */
+    void keyRf(bool key, uint32_t nowMs);
+
+    /**
      * Update the bring-up monitor block from the last modem event: the
      * interrupt counters, the registers the event refers to and the link
      * control RAM of the last header. Published by publish().
@@ -321,6 +374,7 @@ private:
     bool txVoiceStarted;             ///< Controller seen in TX_VOICE
     bool markerRaised;               ///< A clearable marker is shown
     uint32_t markerMs;               ///< When the marker was raised
+    uint32_t txTimeoutMs;            ///< T_TO for the next transmission
     uint8_t rfState;                 ///< RfState of the RF stage
     uint8_t markers;                 ///< Markers published to the UI
 };

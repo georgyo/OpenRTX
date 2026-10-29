@@ -207,6 +207,93 @@ public:
         writeCfgRegister(0x83, flags);
     }
 
+    /*
+     * Register 0x82 flag bits, manual §5.1.1 and G4EML table: bit 7 TX
+     * request rejected (channel busy per the 0x20/0x21 access policy), bit 6
+     * TX started (sub-status 0x84, bit 7 = voice TX start), bit 5 TX ended
+     * (sub-status 0x86, bit 7 = voice and data TX complete), bit 4 late
+     * entry into an ongoing call, bit 3 control frame parsed (LC/CSBK/EMB
+     * in RX RAM), bit 2 service data message (sub-status 0x90), bit 1
+     * abnormal voice exit (sub-status 0x98), bit 0 PHY-only receive.
+     */
+    enum Irq82 : uint8_t
+    {
+        IRQ_TX_REJECTED   = 0x80,
+        IRQ_TX_START      = 0x40,
+        IRQ_TX_END        = 0x20,
+        IRQ_LATE_ENTRY    = 0x10,
+        IRQ_RX_DATA       = 0x08,
+        IRQ_RX_INFO       = 0x04,
+        IRQ_ABNORMAL_EXIT = 0x02,
+        IRQ_PHY_ONLY      = 0x01
+    };
+
+    /*
+     * Sub-status bits read with the TX flags: register 0x84 bit 7 "voice
+     * TX start" and register 0x86 bit 7 "TX complete, voice and data"
+     * (G4EML table). UNVERIFIED on hardware: the remaining bits of both
+     * registers describe the external AMBE3000 hook-up and data
+     * retransmission, which this driver does not use.
+     */
+    static constexpr uint8_t SUB84_VOICE_TX_START = 0x80;
+    static constexpr uint8_t SUB86_TX_COMPLETE    = 0x80;
+
+    /**
+     * Test the "TX request rejected" flag of a register 0x82 value: the
+     * chip refused to transmit because the channel is busy under the
+     * configured access policy (0x21 = 0xA2, polite to own colour code).
+     *
+     * @param irq82: value read from register 0x82.
+     * @return true if the transmission request was rejected.
+     */
+    static inline bool txRejected(const uint8_t irq82)
+    {
+        return (irq82 & IRQ_TX_REJECTED) != 0;
+    }
+
+    /**
+     * Test the "TX started" flag of a register 0x82 value, register 0x84
+     * carries the sub-status.
+     *
+     * @param irq82: value read from register 0x82.
+     * @return true if a transmission started.
+     */
+    static inline bool txStarted(const uint8_t irq82)
+    {
+        return (irq82 & IRQ_TX_START) != 0;
+    }
+
+    /**
+     * Test the "TX ended" flag of a register 0x82 value, register 0x86
+     * carries the sub-status.
+     *
+     * @param irq82: value read from register 0x82.
+     * @return true if a transmission ended.
+     */
+    static inline bool txEnded(const uint8_t irq82)
+    {
+        return (irq82 & IRQ_TX_END) != 0;
+    }
+
+    /**
+     * Arm DMR transmission: register 0x21 = 0xA2 (polite to own colour
+     * code, bit 1 "clear the vocoder encode buffer", self-clearing) or 0x02
+     * (impolite), then register 0x40 = 0xE3 (TxEn + RxEn, active timing:
+     * direct mode, the chip generates the 30ms time axis) or 0xC3 (TxEn +
+     * RxEn, passive timing: repeater mode, bursts aligned to the received
+     * sync). Nothing is radiated until register 0x41 = 0x80 selects a TX
+     * slot. G4EML table and OpenGD77 values; UNVERIFIED on hardware: manual
+     * §5.4.5 arms with 0x40 = 0xA3 (TxEn without RxEn).
+     *
+     * @param activeTiming: true for direct mode, false for repeater mode.
+     * @param polite: true for polite to own colour code, false for impolite.
+     */
+    inline void dmrTxStart(const bool activeTiming, const bool polite)
+    {
+        writeCfgRegister(0x21, polite ? 0xA2 : 0x02);
+        writeCfgRegister(0x40, activeTiming ? 0xE3 : 0xC3);
+    }
+
     /**
      * Start DMR reception with passive timing: register 0x40 = 0xC3 (TxEn +
      * RxEn, timing derived from the received sync), then 0x41 = 0x20

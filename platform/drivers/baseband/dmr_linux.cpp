@@ -460,6 +460,7 @@ void dmrbb_terminate(void)
 {
     pthread_mutex_lock(&mtx);
     rec.terminateCount++;
+    rec.keyedAtTerminate = radioEmu_record()->keyed;
     rec.r40 = R40_IDLE;
     running = false;
     stopClock();
@@ -471,6 +472,7 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
 {
     pthread_mutex_lock(&mtx);
     rec.configureCount++;
+    rec.keyedAtConfigure = radioEmu_record()->keyed;
     rec.config = *cfg;
     rec.r40 = R40_IDLE;
     rec.r41 = R41_IDLE;

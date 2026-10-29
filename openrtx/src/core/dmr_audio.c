@@ -117,6 +117,10 @@ bool dmrAudio_startTx(const pathId path)
 
 void dmrAudio_stop(void)
 {
+    pthread_mutex_lock(&data_mutex);
+    stats.stops += 1;
+    pthread_mutex_unlock(&data_mutex);
+
     pthread_mutex_lock(&init_mutex);
     stopThread();
     pthread_mutex_unlock(&init_mutex);

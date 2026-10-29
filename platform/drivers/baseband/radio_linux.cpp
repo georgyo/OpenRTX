@@ -7,7 +7,29 @@
 #include "emulator/emulator.h"
 #include "interfaces/radio.h"
 #include <cstdio>
+#include <cstring>
 #include <string>
+
+static struct radioEmuRecord record = { 0, 0, 0, false };
+static enum opstatus status = OFF;
+static bool txFails = false;
+
+const struct radioEmuRecord *radioEmu_record()
+{
+    return &record;
+}
+
+void radioEmu_reset()
+{
+    memset(&record, 0x00, sizeof(record));
+    status = OFF;
+    txFails = false;
+}
+
+void radioEmu_setTxFails(bool fail)
+{
+    txFails = fail;
+}
 
 void radio_init(const rtxStatus_t *rtxState)
 {
@@ -39,16 +61,35 @@ bool radio_checkRxDigitalSquelch()
 
 void radio_enableRx()
 {
+    record.enableRx++;
+    record.keyed = false;
+    status = RX;
     puts("radio_linux: enableRx() called");
 }
 
 void radio_enableTx()
 {
+    record.enableTx++;
+
+    /* As the CS7000 driver on a PLL lock failure: nothing keyed, OFF */
+    if(txFails)
+    {
+        record.keyed = false;
+        status = OFF;
+        puts("radio_linux: enableTx() called, refused");
+        return;
+    }
+
+    record.keyed = true;
+    status = TX;
     puts("radio_linux: enableTx() called");
 }
 
 void radio_disableRtx()
 {
+    record.disableRtx++;
+    record.keyed = false;
+    status = OFF;
     puts("radio_linux: disableRtx() called");
 }
 
@@ -66,5 +107,5 @@ rssi_t radio_getRssi()
 
 enum opstatus radio_getStatus()
 {
-    return OFF;
+    return status;
 }

@@ -1483,6 +1483,25 @@ hr_c6000_dmr_test = executable('hr_c6000_dmr_test',
                                                       'tests/unit/fake_stm32'] + openrtx_inc,
                                dependencies        : [threads_dep, catch2_dep],
                                link_args           : linux_l_args)
+
+# CS7000 / CS7000-PLUS RF driver around its DMR branches: the real
+# radio_CS7000.cpp and HR_C6000 baseband driver against a recording fake SPI
+# bus, a fake gpio expander and fake synthesizer / detector / DMR modem
+# drivers; the fake hwconfig.h in tests/unit/fake/cs7000_radio shadows the
+# target one and its stm32h7xx.h.
+radio_cs7000_src = ['tests/unit/radio_cs7000.cpp',
+                    'platform/drivers/baseband/HR_Cx000.cpp',
+                    'platform/drivers/baseband/HR_C6000.cpp',
+                    'platform/drivers/baseband/HR_C6000_CS7000.cpp',
+                    'platform/drivers/baseband/radio_CS7000.cpp']
+radio_cs7000_inc = ['tests/unit/fake/cs7000_radio'] + openrtx_inc
+radio_cs7000_test = executable('radio_cs7000_test',
+                               sources : radio_cs7000_src,
+                               cpp_args            : linux_cpp_args,
+                               include_directories : radio_cs7000_inc,
+                               dependencies        : [threads_dep, catch2_dep],
+                               link_args           : linux_l_args)
+
 # Compiles the STM32H7 clock tree setup against fake registers, see
 # tests/unit/stubs/stm32h7xx/stm32h7xx.h
 stm32h7_clock_tree_test = executable('stm32h7_clock_tree_test',
@@ -1542,6 +1561,7 @@ endif
 test('Cx000 DAC Test',       cx000_dac_test)
 test('Cx000 DAC DMR Test',   cx000_dac_dmr_test)
 test('HR_C6000 DMR Driver Test', hr_c6000_dmr_test)
+test('CS7000 Radio Driver Test', radio_cs7000_test)
 
 ##
 ## Host tests of the register-level STM32 drivers, compiled against the fake

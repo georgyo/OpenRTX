@@ -1330,6 +1330,7 @@ static void _ui_dmr_monitorOpen()
     ui_state.menu_selected = 0;
     ui_state.dmr_mon_modeReg = (state.dmr_modeReg != 0)
                              ? state.dmr_modeReg : DMRBB_MODE_REG_DEFAULT;
+    ui_state.dmr_mon_lcss = state.dmr_lcssMode;
     state.ui_screen = DMR_MONITOR_SCREEN;
     vp_announceText(currentLanguage->dmrMonitor, vpqInit);
 }
@@ -1432,7 +1433,37 @@ static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
         case DMRMON_ACT_TWOPOINT:
             // UNVERIFIED on hardware: 0x12 bit6 puts a 40 Hz square wave on
             // MOD1/MOD2 to balance the two-point modulation, toggled
-            value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12) ^ 0x40;
+            value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12)
+                  ^ DMRMON_R12_TWOPOINT;
+            dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, value);
+            break;
+
+        case DMRMON_ACT_LCSS:
+            // UNVERIFIED on hardware: LCSS convention of the voice bursts
+            // in register 0x50, 0 = 0x08 | seq << 4 with the chip filling
+            // the embedded LC (OpenGD77), 1 = the manual's 0x08, 0x19,
+            // 0x2B, 0x3B, 0x4A, 0x58 sequence (HR_C6000 manual 5.4.5,
+            // "Voice transmission" steps 5 to 8). Not a register write:
+            // 0x50 is programmed per burst by the call controller, which
+            // takes the convention from the RTX status like the mode word
+            value = (ui_state.dmr_mon_lcss != 0) ? 0 : 1;
+            ui_state.dmr_mon_lcss = value;
+            state.dmr_lcssMode = value;
+            *sync_rtx = true;
+            break;
+
+        case DMRMON_ACT_RFADV:
+            // UNVERIFIED on hardware: register 0x12, RF_TX_INTER advance in
+            // [5:0] x 100 us with bit7 the RF ramp smoothing: the OEM init
+            // word 0x98 (2.4 ms, smoothing) when the register holds
+            // anything else, OpenGD77's 0x15 (2.1 ms) when it holds 0x98.
+            // Bit6, the two-point test tone of the action above, is left
+            // as it is. Written at once and undone by the next modem
+            // reconfiguration, like 0x06
+            value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12);
+            value = (value & DMRMON_R12_TWOPOINT)
+                  | (((value & ~DMRMON_R12_TWOPOINT) == DMRMON_R12_OEM)
+                     ? DMRMON_R12_GD77 : DMRMON_R12_OEM);
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, value);
             break;
 

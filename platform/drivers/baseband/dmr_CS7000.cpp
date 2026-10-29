@@ -51,6 +51,22 @@
  *    0x30 / RX RAM 0x30 transport over the "user" SPI as the selectable
  *    alternative (DMRBB_PAGE_DRIVER / DMRBB_DRV_VOICE_PATH).
  *
+ *  - Transmission. The RF chain (TX VCO, PLL lock, APC, PA) is keyed by
+ *    radio_enableTx() of radio_CS7000.cpp, which in DMR mode writes nothing
+ *    to the chip; the modem side is armed by dmrbb_startTx() (0x21, 0x40)
+ *    on the request of the call controller and bursts go out only when
+ *    dmrbb_setNextSlot(0x80) selects a TX slot at a later slot tick. The
+ *    two are called by the DMR opMode handler in the same pass, modem
+ *    first, RF right after: the arming write radiates nothing by itself,
+ *    so the first burst always finds the PA keyed and the PLL locked (or
+ *    the PA left off when the lock failed). Ending: the controller idles
+ *    the slot after the terminator (0x41 = 0x00) and calls dmrbb_startRx(),
+ *    then radio_enableRx() drops the PA and retunes; radio_disableRtx()
+ *    idles the modem before dropping the PA. The PA stays keyed for the
+ *    whole call in direct mode, RF_TX_INTER is only counted and
+ *    timestamped (DMRBB_DRV_RFTX_TICK / _LEAD), see radio_CS7000.cpp for
+ *    the per-slot keying alternative.
+ *
  *  - Ownership of the chip. dmrbb_configure() puts the C6000 in DMR mode and
  *    marks the driver active; dmrbb_terminate() idles the chip and marks it
  *    inactive, after which the slot/mode writes are no-ops. This matters
@@ -69,6 +85,7 @@
 #include "drivers/SPI/spi_bitbang.h"
 #include "drivers/audio/Cx000_dac.h"
 #include "drivers/baseband/HR_C6000.h"
+#include "drivers/baseband/dmr_CS7000.h"
 #include "hwconfig.h"
 #include "interfaces/delays.h"
 #include "interfaces/dmr_baseband.h"
@@ -92,13 +109,13 @@ static constexpr uint8_t VSPI_ADDR = 0x00;
 static constexpr uint8_t RAM_VOICE_ADDR = 0x30;
 static constexpr uint8_t RAM_LC_ADDR = 0x00;
 
-/* Register 0x82 flags, manual §5.1.1 */
-static constexpr uint8_t IRQ_TX_START = 0x40;
-static constexpr uint8_t IRQ_TX_END = 0x20;
-static constexpr uint8_t IRQ_LATE_ENTRY = 0x10;
-static constexpr uint8_t IRQ_RX_DATA = 0x08;
-static constexpr uint8_t IRQ_RX_INFO = 0x04;
-static constexpr uint8_t IRQ_ABNORMAL_EXIT = 0x02;
+/* Register 0x82 flags, manual §5.1.1, see HR_C6000::Irq82 */
+static constexpr uint8_t IRQ_TX_START = HR_C6000::IRQ_TX_START;
+static constexpr uint8_t IRQ_TX_END = HR_C6000::IRQ_TX_END;
+static constexpr uint8_t IRQ_LATE_ENTRY = HR_C6000::IRQ_LATE_ENTRY;
+static constexpr uint8_t IRQ_RX_DATA = HR_C6000::IRQ_RX_DATA;
+static constexpr uint8_t IRQ_RX_INFO = HR_C6000::IRQ_RX_INFO;
+static constexpr uint8_t IRQ_ABNORMAL_EXIT = HR_C6000::IRQ_ABNORMAL_EXIT;
 
 /* Register 0x51 fields, G4EML table */
 static constexpr uint8_t R51_CRC_BAD = 0x04;
@@ -144,6 +161,8 @@ static volatile uint32_t sysCount = 0;
 static volatile uint32_t rftxCount = 0;
 static volatile uint32_t lineCount[NUM_LINES] = { 0, 0, 0, 0 };
 static volatile uint32_t tsTick = 0;
+static volatile uint32_t rftxTick = 0;
+static volatile uint16_t rftxLead = 0;
 
 /* Driver state, rtx thread only */
 static struct dmrbbConfig config;
@@ -171,7 +190,14 @@ static void lineIsr(void *arg)
         sysCount += 1;
         pending |= DMRBB_EV_SYS;
     } else if (line == TX_LINE) {
+        /*
+         * Own burst imminent, 0x12[5:0] x 100us ahead: timestamped for the
+         * check of the advance against the slot tick, nothing is keyed
+         * from here (the PA is on for the whole call).
+         */
         rftxCount += 1;
+        rftxTick = static_cast<uint32_t>(getTick());
+        rftxLead = static_cast<uint16_t>(rftxTick - tsTick);
         pending |= DMRBB_EV_RFTX;
     }
 
@@ -333,6 +359,8 @@ int dmrbb_init(void)
         sysCount = 0;
         rftxCount = 0;
         tsTick = 0;
+        rftxTick = 0;
+        rftxLead = 0;
         for (unsigned i = 0; i < NUM_LINES; i++)
             lineCount[i] = 0;
     }
@@ -396,9 +424,15 @@ void dmrbb_startTx(bool activeTiming)
      * active timing (0xE3, direct mode: the chip generates the 30ms time
      * axis) or passive timing (0xC3, repeater mode: bursts aligned to the
      * received sync). UNVERIFIED on hardware: manual §5.4.5 uses 0xA3.
+     *
+     * The RF chain is keyed separately by radio_enableTx(): this only arms
+     * the modem, the first burst needs a later dmrbb_setNextSlot(0x80). A
+     * transmission refused by the chip (channel busy under the polite
+     * policy) shows up as bit 7 of register 0x82 in the next snapshot,
+     * HR_C6000::txRejected(); TX start and end as bits 6 and 5 with the
+     * sub-status registers 0x84 / 0x86 (sub84 / sub86 of the snapshot).
      */
-    C6000.writeCfgRegister(0x21, config.polite ? 0xA2 : 0x02);
-    C6000.writeCfgRegister(0x40, activeTiming ? 0xE3 : 0xC3);
+    C6000.dmrTxStart(activeTiming, config.polite);
 }
 
 void dmrbb_idle(void)
@@ -422,6 +456,11 @@ void dmrbb_setTxFrameType(uint8_t r50)
     if (active == false)
         return;
 
+    /*
+     * Written as given: the LCSS convention of the voice bursts (OpenGD77's
+     * 0x08 | seq << 4 or the manual's §5.4.5 sequence) is the call
+     * controller's choice, DMR::r50Voice(), UNVERIFIED on hardware.
+     */
     C6000.writeCfgRegister(0x50, r50);
 }
 
@@ -498,6 +537,25 @@ uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
     if (page == DMRBB_PAGE_DRIVER) {
         if (addr == DMRBB_DRV_VOICE_PATH)
             return voicePath;
+
+        if ((addr >= DMRBB_DRV_RFTX_TICK(0))
+            && (addr <= DMRBB_DRV_RFTX_LEAD(1))) {
+            uint32_t tick;
+            uint16_t lead;
+            {
+                miosix::FastInterruptDisableLock dLock;
+                tick = rftxTick;
+                lead = rftxLead;
+            }
+
+            if (addr < DMRBB_DRV_RFTX_LEAD(0)) {
+                const unsigned b = addr - DMRBB_DRV_RFTX_TICK(0);
+                return static_cast<uint8_t>(tick >> (8 * b));
+            }
+
+            const unsigned b = addr - DMRBB_DRV_RFTX_LEAD(0);
+            return static_cast<uint8_t>(lead >> (8 * b));
+        }
 
         for (unsigned i = 0; i < NUM_LINES; i++) {
             const uint8_t base = static_cast<uint8_t>(DMRBB_DRV_LINE_COUNT(i));

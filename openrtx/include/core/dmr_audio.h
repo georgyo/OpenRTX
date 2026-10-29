@@ -73,6 +73,10 @@ struct dmrAudioStats {
                              pushed before them: stays at zero when the
                              modem hands over the same bytes every burst,
                              what a dead V_SPI read would look like        */
+    uint32_t stops;     /**< dmrAudio_stop() calls, thread running or not:
+                             where the opMode handler stops the thread is
+                             timing-sensitive (a join on the microphone
+                             stream), the tests check it from here        */
 };
 
 /**
