@@ -9,18 +9,22 @@
 
 /*
  * Host-side stand-in for the CMSIS "stm32h7xx.h" device header, used to
- * compile platform/mcu/STM32H7xx/drivers/rcc.cpp in the unit tests.
+ * compile platform/mcu/STM32H7xx/drivers/rcc.cpp and
+ * platform/drivers/GPIO/gpio_irq_stm32.cpp in the unit tests.
  *
  * Only the RCC, PWR and FLASH register blocks touched by the clock tree setup
- * are provided. Register layouts, bit positions and peripheral base addresses
- * are copied verbatim from stm32h743xx.h, so a test decoding the values that
- * startPll() writes sees exactly what the real hardware would.
+ * and the SYSCFG, EXTI, GPIO and NVIC pieces touched by the gpio interrupt
+ * driver are provided. Register layouts, bit positions and peripheral base
+ * addresses are copied verbatim from stm32h743xx.h, so a test decoding the
+ * values that startPll() writes sees exactly what the real hardware would.
  *
  * The register blocks are ordinary RAM: nothing ever sets a "ready" flag. To
  * let the busy-wait loops in startPll() terminate, every ready flag is
  * defined as the enable bit it depends on (a clock is "ready" the instant it
  * is switched on) and the SWS status field mirrors the SW selection field.
- * Tests must never rely on those flags.
+ * Tests must never rely on those flags. Likewise the EXTI pending register
+ * is plain memory, not "write 1 to clear": the value a handler leaves in it
+ * is the set of lines it acknowledged.
  */
 
 #include <stdint.h>
@@ -269,8 +273,206 @@ extern FLASH_TypeDef stm32h7FakeFlash;
 #define RCC_D2CCIP2R_USART16SEL_Msk (0x7UL << RCC_D2CCIP2R_USART16SEL_Pos)
 #define RCC_D2CCIP2R_USART16SEL RCC_D2CCIP2R_USART16SEL_Msk
 
+/* RCC_APB4ENR */
+#define RCC_APB4ENR_SYSCFGEN_Pos (1U)
+#define RCC_APB4ENR_SYSCFGEN_Msk (0x1UL << RCC_APB4ENR_SYSCFGEN_Pos)
+#define RCC_APB4ENR_SYSCFGEN RCC_APB4ENR_SYSCFGEN_Msk
+
+/*
+ * System configuration controller (prefix of the CMSIS layout, up to the
+ * registers the drivers use).
+ */
+typedef struct {
+    uint32_t RESERVED1;
+    volatile uint32_t PMCR;
+    volatile uint32_t EXTICR[4];
+    volatile uint32_t CFGR;
+    uint32_t RESERVED2;
+    volatile uint32_t CCCSR;
+    volatile uint32_t CCVR;
+    volatile uint32_t CCCR;
+    volatile uint32_t PWRCR;
+} SYSCFG_TypeDef;
+
+#define SYSCFG_PMCR_PC2SO_Pos (26U)
+#define SYSCFG_PMCR_PC2SO_Msk (0x1UL << SYSCFG_PMCR_PC2SO_Pos)
+#define SYSCFG_PMCR_PC2SO SYSCFG_PMCR_PC2SO_Msk
+#define SYSCFG_PMCR_PC3SO_Pos (27U)
+#define SYSCFG_PMCR_PC3SO_Msk (0x1UL << SYSCFG_PMCR_PC3SO_Pos)
+#define SYSCFG_PMCR_PC3SO SYSCFG_PMCR_PC3SO_Msk
+
+#define SYSCFG_EXTICR1_EXTI0_Pos (0U)
+#define SYSCFG_EXTICR1_EXTI0_Msk (0xFUL << SYSCFG_EXTICR1_EXTI0_Pos)
+#define SYSCFG_EXTICR1_EXTI0 SYSCFG_EXTICR1_EXTI0_Msk
+#define SYSCFG_EXTICR1_EXTI0_PA (0x00000000U)
+#define SYSCFG_EXTICR1_EXTI0_PB (0x00000001U)
+#define SYSCFG_EXTICR1_EXTI0_PC (0x00000002U)
+#define SYSCFG_EXTICR2_EXTI5_PC (0x00000020U)
+#define SYSCFG_EXTICR3_EXTI11_PB (0x00001000U)
+
+/*
+ * External interrupt/event controller: the full block, and the CPU1 view
+ * (IMR1/EMR1/PR1 and following) at offset 0x80 into it, as EXTI_D1 is on
+ * the real chip.
+ */
+typedef struct {
+    volatile uint32_t RTSR1;
+    volatile uint32_t FTSR1;
+    volatile uint32_t SWIER1;
+    volatile uint32_t D3PMR1;
+    volatile uint32_t D3PCR1L;
+    volatile uint32_t D3PCR1H;
+    uint32_t RESERVED1[2];
+    volatile uint32_t RTSR2;
+    volatile uint32_t FTSR2;
+    volatile uint32_t SWIER2;
+    volatile uint32_t D3PMR2;
+    volatile uint32_t D3PCR2L;
+    volatile uint32_t D3PCR2H;
+    uint32_t RESERVED2[2];
+    volatile uint32_t RTSR3;
+    volatile uint32_t FTSR3;
+    volatile uint32_t SWIER3;
+    volatile uint32_t D3PMR3;
+    volatile uint32_t D3PCR3L;
+    volatile uint32_t D3PCR3H;
+    uint32_t RESERVED3[10];
+    volatile uint32_t IMR1;
+    volatile uint32_t EMR1;
+    volatile uint32_t PR1;
+    uint32_t RESERVED4;
+    volatile uint32_t IMR2;
+    volatile uint32_t EMR2;
+    volatile uint32_t PR2;
+    uint32_t RESERVED5;
+    volatile uint32_t IMR3;
+    volatile uint32_t EMR3;
+    volatile uint32_t PR3;
+} EXTI_TypeDef;
+
+typedef struct {
+    volatile uint32_t IMR1;
+    volatile uint32_t EMR1;
+    volatile uint32_t PR1;
+    uint32_t RESERVED1;
+    volatile uint32_t IMR2;
+    volatile uint32_t EMR2;
+    volatile uint32_t PR2;
+    uint32_t RESERVED2;
+    volatile uint32_t IMR3;
+    volatile uint32_t EMR3;
+    volatile uint32_t PR3;
+} EXTI_Core_TypeDef;
+
+#define EXTI_IMR1_IM0 (0x1UL << 0U)
+#define EXTI_PR1_PR0 (0x1UL << 0U)
+#define EXTI_FTSR1_TR0 (0x1UL << 0U)
+#define EXTI_RTSR1_TR0 (0x1UL << 0U)
+
+/*
+ * General purpose I/O: only the addresses of the port blocks matter to the
+ * gpio interrupt driver, the layout is there for gpio_stm32.h.
+ */
+typedef struct {
+    volatile uint32_t MODER;
+    volatile uint32_t OTYPER;
+    volatile uint32_t OSPEEDR;
+    volatile uint32_t PUPDR;
+    volatile uint32_t IDR;
+    volatile uint32_t ODR;
+    volatile uint32_t BSRR;
+    volatile uint32_t LCKR;
+    volatile uint32_t AFR[2];
+} GPIO_TypeDef;
+
+#define EXTI_BASE (D3_APB1PERIPH_BASE + 0x0000UL)
+#define EXTI_D1_BASE (EXTI_BASE + 0x0080UL)
+#define SYSCFG_BASE (D3_APB1PERIPH_BASE + 0x0400UL)
+#define GPIOA_BASE (D3_AHB1PERIPH_BASE + 0x0000UL)
+#define GPIOB_BASE (D3_AHB1PERIPH_BASE + 0x0400UL)
+#define GPIOC_BASE (D3_AHB1PERIPH_BASE + 0x0800UL)
+#define GPIOD_BASE (D3_AHB1PERIPH_BASE + 0x0C00UL)
+#define GPIOE_BASE (D3_AHB1PERIPH_BASE + 0x1000UL)
+#define GPIOF_BASE (D3_AHB1PERIPH_BASE + 0x1400UL)
+#define GPIOG_BASE (D3_AHB1PERIPH_BASE + 0x1800UL)
+#define GPIOH_BASE (D3_AHB1PERIPH_BASE + 0x1C00UL)
+#define GPIOI_BASE (D3_AHB1PERIPH_BASE + 0x2000UL)
+#define GPIOJ_BASE (D3_AHB1PERIPH_BASE + 0x2400UL)
+#define GPIOK_BASE (D3_AHB1PERIPH_BASE + 0x2800UL)
+
+/* Fake register blocks, defined by the test executable. */
+extern SYSCFG_TypeDef stm32h7FakeSyscfg;
+extern EXTI_TypeDef stm32h7FakeExti;
+
+#define SYSCFG (&stm32h7FakeSyscfg)
+#define EXTI (&stm32h7FakeExti)
+#define EXTI_D1 ((EXTI_Core_TypeDef *)(&stm32h7FakeExti.IMR1))
+
+/* The gpio ports are never dereferenced by the drivers under test. */
+#define GPIOA ((GPIO_TypeDef *)GPIOA_BASE)
+#define GPIOB ((GPIO_TypeDef *)GPIOB_BASE)
+#define GPIOC ((GPIO_TypeDef *)GPIOC_BASE)
+#define GPIOD ((GPIO_TypeDef *)GPIOD_BASE)
+#define GPIOE ((GPIO_TypeDef *)GPIOE_BASE)
+
+/*
+ * Interrupt controller
+ */
+typedef enum {
+    EXTI0_IRQn = 6,
+    EXTI1_IRQn = 7,
+    EXTI2_IRQn = 8,
+    EXTI3_IRQn = 9,
+    EXTI4_IRQn = 10,
+    EXTI9_5_IRQn = 23,
+    EXTI15_10_IRQn = 40,
+} IRQn_Type;
+
 #ifdef __cplusplus
 }
 #endif
+
+/**
+ * Fake NVIC: records what the drivers do with every interrupt number.
+ */
+struct FakeNvic {
+    static constexpr unsigned NUM_IRQ = 160;
+
+    bool enabled[NUM_IRQ] = {};
+    uint32_t priority[NUM_IRQ] = {};
+    unsigned pendingCleared[NUM_IRQ] = {};
+    unsigned pendingSet[NUM_IRQ] = {};
+};
+
+inline FakeNvic &fakeNvic()
+{
+    static FakeNvic nvic;
+    return nvic;
+}
+
+static inline void NVIC_EnableIRQ(IRQn_Type irq)
+{
+    fakeNvic().enabled[irq] = true;
+}
+
+static inline void NVIC_DisableIRQ(IRQn_Type irq)
+{
+    fakeNvic().enabled[irq] = false;
+}
+
+static inline void NVIC_ClearPendingIRQ(IRQn_Type irq)
+{
+    fakeNvic().pendingCleared[irq] += 1;
+}
+
+static inline void NVIC_SetPendingIRQ(IRQn_Type irq)
+{
+    fakeNvic().pendingSet[irq] += 1;
+}
+
+static inline void NVIC_SetPriority(IRQn_Type irq, uint32_t prio)
+{
+    fakeNvic().priority[irq] = prio;
+}
 
 #endif /* STM32H7XX_FAKE_H */

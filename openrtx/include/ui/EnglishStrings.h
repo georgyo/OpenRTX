@@ -119,5 +119,10 @@ const stringsTable_t englishStrings =
     .dmrBusy           = "Busy",
     .dmrWakeupFailed   = "Wake-up failed",
     .dmrNotSupported   = "DMR not supported",
+    .dmrMonitor        = "DMR monitor",
+    .testTone          = "Test tone",
+    .resync            = "Resync",
+    .berTest           = "BER test",
+    .twoPointTest      = "Two-point",
 };
 #endif  // ENGLISHSTRINGS_H

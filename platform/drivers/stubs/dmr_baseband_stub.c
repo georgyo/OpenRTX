@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+#include <string.h>
 #include "interfaces/delays.h"
 #include "interfaces/dmr_baseband.h"
 
@@ -64,7 +65,8 @@ void dmrbb_writeVoice(const uint8_t ambe[27])
 
 uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
 {
-    (void)s;
+    /* No interrupt lines: the bring-up counters stay at zero */
+    memset(s->lineCount, 0x00, sizeof(s->lineCount));
 
     /* Nothing will ever happen: pace the caller like a silent modem */
     sleepFor(0u, timeoutMs);

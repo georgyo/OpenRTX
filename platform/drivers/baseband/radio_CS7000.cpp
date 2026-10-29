@@ -19,6 +19,7 @@
 #include "drivers/baseband/HR_C6000.h"
 #include "drivers/baseband/SKY72310.h"
 #include "drivers/baseband/AK2365A.h"
+#include "interfaces/dmr_baseband.h"
 
 #ifdef PLATFORM_CS7000P
 #define DAC     DAC1
@@ -262,17 +263,48 @@ void radio_terminate()
 
 void radio_setOpmode(const enum opmode mode)
 {
+    /*
+     * rtx.cpp calls this function for the new mode before disabling the old
+     * one: leaving DMR, the modem driver is shut down here, before fmMode()
+     * reprograms the chip, so that the dmrbb_idle()/dmrbb_terminate() calls
+     * of OpMode_DMR::disable() arriving later find the driver inactive and do
+     * not touch the FM configuration. Coming from FM or M17 the driver is
+     * already inactive and dmrbb_terminate() does nothing.
+     */
     switch(mode)
     {
         case OPMODE_FM:
+            dmrbb_terminate();
             C6000.fmMode();             // HR_C5000 in FM mode
             C6000.setInputGain(+3);     // Input gain in dB, as per TYT firmware
             break;
 
         case OPMODE_M17:
+            dmrbb_terminate();
             C6000.fmMode();             // HR_C5000 in FM mode
             C6000.setInputGain(+9);     // Input gain in dB, found experimentally
             C6000.setModFactor(0x25);
+            break;
+
+        case OPMODE_DMR:
+        {
+            /*
+             * HR_C6000 in DMR mode with the configuration of the channel; the
+             * DMR opMode handler reprograms it through the same call whenever
+             * colour code, ID or access policy change.
+             */
+            struct dmrbbConfig cfg;
+            cfg.colorCode = config->dmr_txColorCode & 0x0F;
+            cfg.timeslot  = config->dmr_timeslot;
+            cfg.ownId     = config->dmr_srcId & 0xFFFFFF;
+            cfg.polite    = (config->dmr_polite != 0);
+            cfg.modeReg   = DMRBB_MODE_REG_DEFAULT;
+            dmrbb_configure(&cfg);
+
+            // Table 4.1 row 0xE4: microphone gain as in FM, kept for the
+            // built-in codec even though the PCM is taken from PA7.
+            C6000.setInputGain(+3);
+        }
             break;
 
         default:
@@ -284,6 +316,14 @@ bool radio_checkRxDigitalSquelch()
 {
     int16_t *data;
     size_t len;
+
+    /*
+     * DMR: the "digital squelch" is the call state reported by the DMR opMode
+     * handler into the rtx status (rxSquelchOpen() of OpMode_DMR), no tone is
+     * involved. FM and M17 keep the CTCSS detector below.
+     */
+    if(config->opMode == OPMODE_DMR)
+        return (config->dmr_callState == DMR_CALL_RX);
 
     // CTCSS sampling stream is stopped, cannot detect the tone
     if(ctcssCtx.running == 0)
@@ -302,6 +342,11 @@ bool radio_checkRxDigitalSquelch()
 
 void radio_enableAfOutput()
 {
+    // In DMR mode register 0x26 is owned by dmrMode() (UNVERIFIED on
+    // hardware: 0xFD, see HR_C6000_CS7000.cpp), the FM audio path is not used.
+    if(config->opMode == OPMODE_DMR)
+        return;
+
     // Undocumented register, bits [1:0] seem to enable/disable FM audio RX.
     // 0xFD enable FM receive.
     C6000.writeCfgRegister(0x26, 0xFD);
@@ -309,6 +354,9 @@ void radio_enableAfOutput()
 
 void radio_disableAfOutput()
 {
+    if(config->opMode == OPMODE_DMR)
+        return;
+
     // Undocumented register, disable FM receive
     C6000.writeCfgRegister(0x26, 0xFE);
 }
@@ -364,6 +412,19 @@ void radio_enableRx()
     }
 
     /*
+     * DMR: the HR_C6000 demodulates the 4FSK from the 450kHz IF of the
+     * AK2365A (narrow filter selected above), the FM RX filter, the CTCSS
+     * stream and the FM AF output are not involved. Start the modem
+     * reception: passive timing, resync, receive the next slots.
+     */
+    if(config->opMode == OPMODE_DMR)
+    {
+        dmrbb_startRx();
+        radioStatus = RX;
+        return;
+    }
+
+    /*
      * HR_C6000 FM receive path: register 0x34 bit 2 selects the RX audio
      * low-pass filter (0: 12.5kHz, 1: 25kHz channel spacing). Always
      * rewrite the register: the base value is the one set by fmMode() and
@@ -387,6 +448,22 @@ void radio_enableTx()
 {
     if(config->txDisable == 1)
         return;
+
+    /*
+     * TODO(stage 5): DMR transmission RF path. The modem side (0x40/0x41/0x50
+     * sequencing, TX RAM, voice payload) is driven by the DMR opMode handler
+     * through dmr_baseband.h, but the RF chain for DMR (TX VCO, PLL lock, APC,
+     * PA keying, whether the PA is keyed per slot from RF_TX_INTER or for the
+     * whole call, 4FSK deviation check) has not been brought up: until then a
+     * PTT in DMR mode must not radiate anything. Nothing is keyed, the RX
+     * stage is left as it is.
+     */
+    if(config->opMode == OPMODE_DMR)
+    {
+        gpioDev_clear(TX_PWR_EN);   // Keep the TX PA off
+        radioStatus = OFF;
+        return;
+    }
 
     /*
      * This function is called again by radio_updateConfiguration() while
@@ -473,7 +550,9 @@ void radio_disableRtx()
     gpioDev_clear(TX_PWR_EN);   // Disable TX PA
     gpioDev_clear(RX_PWR_EN);   // Disable RX LNA
 
-    if(radioStatus == TX)
+    if(config->opMode == OPMODE_DMR)
+        dmrbb_idle();           // Stop the DMR modem, TS interrupts stop
+    else if(radioStatus == TX)
         C6000.stopAnalogTx();   // Stop HR_C6000 Tx
 
     // Shut down CTCSS ADC sampling and reset tone detector
@@ -496,8 +575,31 @@ void radio_updateConfiguration()
     txpwr_hi = interpParameter(config->txFrequency, calData.txCalFreq, calData.txHighPwr);
 
     // HR_C6000 modulation amplitude
-    uint8_t qAmp = interpParameter(config->txFrequency, calData.txCalFreq, calData.txDigitalPathQ);
-    uint8_t iAmp = interpParameter(config->txFrequency, calData.txCalFreq, calData.txAnalogPathI);
+    uint8_t qAmp;
+    uint8_t iAmp;
+    if(config->opMode == OPMODE_DMR)
+    {
+        /*
+         * UNVERIFIED on hardware: which calibration pair drives the 4FSK
+         * deviation. The OEM calibration carries a "digital" and an "analog"
+         * pair of I/Q amplitudes (calibInfo_CS7000.h); FM has always mixed
+         * the analog I with the digital Q, here DMR takes the digital pair
+         * for both two-point outputs. Target: +-1.944kHz symbol deviation,
+         * to be measured on a deviation meter or a DMR test set.
+         */
+        qAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                               calData.txDigitalPathQ);
+        iAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                               calData.txDigitalPathI);
+    }
+    else
+    {
+        qAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                               calData.txDigitalPathQ);
+        iAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                               calData.txAnalogPathI);
+    }
+
     C6000.writeCfgRegister(0x45, qAmp);   // Adjustment of Mod2 amplitude
     C6000.writeCfgRegister(0x46, iAmp);   // Adjustment of Mod1 amplitude
 

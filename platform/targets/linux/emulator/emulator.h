@@ -75,6 +75,16 @@ keyboard_t emulator_getKeys();
  * DMRBB_EV_TIMEOUT when the queue is empty).
  */
 
+/* Depth of the dmrbb_writeRegister() log in dmrEmuRecord */
+#define DMR_EMU_REG_LOG 8
+
+/* One dmrbb_writeRegister() call */
+struct dmrEmuRegWrite {
+    uint8_t page;
+    uint8_t addr;
+    uint8_t value;
+};
+
 /**
  * Record of everything the firmware wrote to the fake modem.
  */
@@ -109,6 +119,15 @@ struct dmrEmuRecord {
     uint32_t tsDelivered;  /* timeslot events returned by waitEvent  */
     uint32_t sysDelivered; /* system events returned by waitEvent    */
     uint32_t timeouts;     /* DMRBB_EV_TIMEOUT returns               */
+
+    /*
+     * Raw register writes of the DMR monitor screen, dmrbb_writeRegister():
+     * total count and a ring of the last DMR_EMU_REG_LOG writes, entry
+     * (regWrites - 1) % DMR_EMU_REG_LOG being the most recent one. The
+     * value written is also readable back with dmrbb_readRegister().
+     */
+    uint32_t regWrites;
+    struct dmrEmuRegWrite regLog[DMR_EMU_REG_LOG];
 };
 
 /**
@@ -132,11 +151,23 @@ void dmrEmu_pushTs(void);
 
 /**
  * Queue one system event with the given snapshot (irq82, r51, r52, r5f, lc
- * and voice fields are what the state machine reads).
+ * and voice fields are what the state machine reads; rssi, fskErr and the
+ * sub-status registers are passed through verbatim for the monitor screen).
+ * The interrupt counters tsCount, sysCount and lineCount are the fake's own,
+ * as on the radio: see dmrEmu_pulseLine().
  *
  * @param s: snapshot returned by dmrbb_waitEvent() with DMRBB_EV_SYS.
  */
 void dmrEmu_pushSys(const struct dmrbbSnapshot *s);
+
+/**
+ * Count one pulse on a fake EXTI line, as the ISR of the CS7000 driver does
+ * for a line that carries no event bit: lineCount[line] of every following
+ * snapshot, events and timeouts alike, is incremented.
+ *
+ * @param line: line number 0..3 (PC0..PC3).
+ */
+void dmrEmu_pulseLine(uint8_t line);
 
 /**
  * Script a base-station sourced group voice call: three voice LC headers,

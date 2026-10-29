@@ -100,19 +100,42 @@
 #define C6K_MOSI      GPIOB,15
 #define C6K_SLEEP     &extGpio,7
 
+/*
+ * HR_C6000 vocoder SPI port ("V_SPI", manual §4.6.1): the C6000 is the SPI
+ * slave, the MCU the master. Names follow the schematic roles (CS7000-M17 Plus
+ * schematic V01, same nets on the CS7000): V_SDO, C6000 pin 42, is an output
+ * of the C6000 and lands on PB4, the MCU MISO; V_SDI, C6000 pin 41, is an
+ * input of the C6000 and lands on PB5, the MCU MOSI; V_SCLK on PB3, V_CS on
+ * PB6. The former VOC_MOSI (PB4) / VOC_MISO (PB5) names had the roles swapped.
+ * UNVERIFIED on hardware: the orientation, see docs/dmr_bringup.md.
+ */
 #define VOC_CS        GPIOB,6
-#define VOC_CLK       GPIOB,3
-#define VOC_MOSI      GPIOB,4
-#define VOC_MISO      GPIOB,5
+#define VOC_SCK       GPIOB,3
+#define VOC_SDO_C6K   GPIOB,4   // C6000 V_SDO -> MCU MISO
+#define VOC_SDI_C6K   GPIOB,5   // C6000 V_SDI <- MCU MOSI
 
 #define I2S_FS        GPIOA,15
 #define I2S_CLK       GPIOC,10
 #define I2S_RX        GPIOC,11
 #define I2S_TX        GPIOC,12
 
-#define DMR_TS_INT    GPIOC,0
-#define DMR_SYS_INT   GPIOC,1
-#define DMR_TX_INT    GPIOC,2
+/*
+ * HR_C6000 interrupt lines, ~300ns active-low pulses (manual §4.4), caught
+ * with falling-edge EXTI interrupts by the DMR modem driver.
+ *
+ * Schematic discrepancy, UNVERIFIED on hardware: these assignments come from
+ * the reverse engineering of the CS7000 (STM32F405) OEM firmware and say
+ * SYS_INTER = PC1, RF_TX_INTER = PC2. The CS7000-M17 Plus schematic V01 says
+ * TIME_SLOT_INTER = PC0, RF_TX_INTER = PC2_C, SYS_INTER = PC3_C and puts the
+ * 2T/5T analogue tone detector on PC1. The driver attaches PC0..PC3 all four
+ * with a counter each during bring-up and dispatches with the constants
+ * below; fix DMR_SYS_INT per target from what the DMR monitor screen shows.
+ * RF_RX_INTER is not wired to the MCU.
+ */
+#define DMR_TS_INT      GPIOC,0
+#define DMR_SYS_INT     GPIOC,1
+#define DMR_TX_INT      GPIOC,2
+#define DMR_SYS_INT_ALT GPIOC,3   // SYS_INTER per the CS7000-M17 Plus schematic
 
 /* AK2365A */
 #define DET_PDN       &extGpio,6

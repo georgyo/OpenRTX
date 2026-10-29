@@ -32,10 +32,10 @@ static OpMode_DMR dmrMode;              // DMR mode handler
 
 /**
  * \internal
- * DMR receive report fields of rtxStatus_t. These are owned by the DMR opMode
- * handler, which updates them on every update() pass: a configuration pushed
- * by the UI thread must not clear them. Kept small on purpose, it lives on the
- * stack of the rtx thread.
+ * DMR receive report and bring-up monitor fields of rtxStatus_t. These are
+ * owned by the DMR opMode handler, which updates them on every update() pass:
+ * a configuration pushed by the UI thread must not clear them. Static storage
+ * on purpose: the rtx thread stack is 512 bytes.
  */
 struct DmrReport
 {
@@ -49,7 +49,10 @@ struct DmrReport
     uint8_t  callState;
     uint8_t  slotLock;
     uint8_t  markers;
+    dmrMonitor_t mon;
 };
+
+static DmrReport dmrReport;
 
 static void saveDmrReport(DmrReport *report, const rtxStatus_t *status)
 {
@@ -63,6 +66,7 @@ static void saveDmrReport(DmrReport *report, const rtxStatus_t *status)
     report->callState       = status->dmr_callState;
     report->slotLock        = status->dmr_slotLock;
     report->markers         = status->dmr_markers;
+    report->mon             = status->dmr_mon;
 }
 
 static void restoreDmrReport(rtxStatus_t *status, const DmrReport *report)
@@ -77,6 +81,7 @@ static void restoreDmrReport(rtxStatus_t *status, const DmrReport *report)
     status->dmr_callState       = report->callState;
     status->dmr_slotLock        = report->slotLock;
     status->dmr_markers         = report->markers;
+    status->dmr_mon             = report->mon;
 }
 
 
@@ -116,6 +121,7 @@ void rtx_init(pthread_mutex_t *m)
     rtxStatus.dmr_timeslot  = 1;
     rtxStatus.dmr_monitor   = 0;
     rtxStatus.dmr_polite    = 1;
+    rtxStatus.dmr_modeReg   = 0;
     rtxStatus.dmr_lcOk      = false;
     rtxStatus.dmr_rxSrcId   = 0;
     rtxStatus.dmr_rxDstId   = 0;
@@ -126,6 +132,7 @@ void rtx_init(pthread_mutex_t *m)
     rtxStatus.dmr_callState = DMR_CALL_IDLE;
     rtxStatus.dmr_slotLock  = 0;
     rtxStatus.dmr_markers   = 0;
+    memset(&rtxStatus.dmr_mon, 0x00, sizeof(rtxStatus.dmr_mon));
     currMode = &noMode;
 
     /*
@@ -179,7 +186,6 @@ void rtx_task()
             // receive report is owned by the opMode handler and survives the
             // copy as well: the UI thread never writes those fields.
             uint8_t tmp = rtxStatus.opStatus;
-            DmrReport dmrReport;
             saveDmrReport(&dmrReport, &rtxStatus);
             memcpy(&rtxStatus, newCnf, sizeof(rtxStatus_t));
             rtxStatus.opStatus = tmp;

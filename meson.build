@@ -568,13 +568,14 @@ cs7000_src = ['platform/drivers/NVM/nvmem_CS7000.c',
              'platform/drivers/baseband/HR_Cx000.cpp',
              'platform/drivers/baseband/HR_C6000_CS7000.cpp',
              'platform/drivers/baseband/radio_CS7000.cpp',
-             'platform/drivers/stubs/dmr_baseband_stub.c',
+             'platform/drivers/baseband/dmr_CS7000.cpp',
              'platform/drivers/keyboard/keyboard_CS7000.c',
              'platform/drivers/display/ST7735R_CS7000.c',
              'platform/drivers/backlight/backlight_CS7000.c',
              'platform/drivers/audio/Cx000_dac.cpp',
              'platform/drivers/audio/audio_CS7000.cpp',
              'platform/drivers/GPIO/gpio_shiftReg.c',
+             'platform/drivers/GPIO/gpio_irq_stm32.cpp',
              'platform/drivers/SPI/spi_custom.c',
              'platform/drivers/SPI/spi_bitbang.c',
              'platform/drivers/GPS/gps_stm32.cpp',
@@ -599,7 +600,7 @@ cs7000p_src = ['platform/drivers/NVM/nvmem_CS7000.c',
                'platform/drivers/baseband/HR_Cx000.cpp',
                'platform/drivers/baseband/HR_C6000_CS7000.cpp',
                'platform/drivers/baseband/radio_CS7000.cpp',
-               'platform/drivers/stubs/dmr_baseband_stub.c',
+               'platform/drivers/baseband/dmr_CS7000.cpp',
                'platform/drivers/baseband/AK2365A.c',
                'platform/drivers/baseband/SKY72310.c',
                'platform/drivers/audio/Cx000_dac.cpp',
@@ -609,6 +610,7 @@ cs7000p_src = ['platform/drivers/NVM/nvmem_CS7000.c',
                'platform/drivers/keyboard/keyboard_CS7000.c',
                'platform/drivers/backlight/backlight_CS7000.c',
                'platform/drivers/GPIO/gpio_shiftReg.c',
+               'platform/drivers/GPIO/gpio_irq_stm32.cpp',
                'platform/drivers/SPI/spi_custom.c',
                'platform/drivers/SPI/spi_bitbang.c',
                'platform/targets/CS7000-PLUS/hwconfig.c',
@@ -1388,6 +1390,33 @@ cx000_dac_test = executable('cx000_dac_test',
                             include_directories : ['tests/unit/fake'] + linux_inc,
                             dependencies        : [threads_dep, catch2_dep],
                             link_args           : linux_l_args)
+
+# Same driver with the register 0x06 preset to the DMR vocoder value.
+cx000_dac_dmr_test = executable('cx000_dac_dmr_test',
+                                sources : ['platform/drivers/audio/Cx000_dac.cpp',
+                                           'tests/unit/cx000_dac_dmr.cpp'],
+                                c_args              : linux_c_args,
+                                cpp_args            : linux_cpp_args,
+                                include_directories : ['tests/unit/fake'] + linux_inc,
+                                dependencies        : [threads_dep, catch2_dep],
+                                link_args           : linux_l_args)
+
+# HR_C6000 DMR driver of the CS7000/CS7000-PLUS against a recording fake SPI
+# bus, fake gpio ports and a fake gpio interrupt shim: the fake hwconfig.h in
+# tests/unit/fake/cs7000 shadows the target one, the Miosix interrupt lock
+# comes from the fake in tests/unit/fake_stm32.
+hr_c6000_dmr_test = executable('hr_c6000_dmr_test',
+                               sources : ['tests/unit/hr_c6000_dmr.cpp',
+                                          'platform/drivers/audio/Cx000_dac.cpp',
+                                          'platform/drivers/baseband/HR_Cx000.cpp',
+                                          'platform/drivers/baseband/HR_C6000.cpp',
+                                          'platform/drivers/baseband/HR_C6000_CS7000.cpp',
+                                          'platform/drivers/baseband/dmr_CS7000.cpp'],
+                               cpp_args            : linux_cpp_args,
+                               include_directories : ['tests/unit/fake/cs7000',
+                                                      'tests/unit/fake_stm32'] + openrtx_inc,
+                               dependencies        : [threads_dep, catch2_dep],
+                               link_args           : linux_l_args)
 # Compiles the STM32H7 clock tree setup against fake registers, see
 # tests/unit/stubs/stm32h7xx/stm32h7xx.h
 stm32h7_clock_tree_test = executable('stm32h7_clock_tree_test',
@@ -1443,6 +1472,8 @@ if build_machine.system() != 'darwin'
   test('Audio Threading Test', audio_threading_test)
 endif
 test('Cx000 DAC Test',       cx000_dac_test)
+test('Cx000 DAC DMR Test',   cx000_dac_dmr_test)
+test('HR_C6000 DMR Driver Test', hr_c6000_dmr_test)
 
 ##
 ## Host tests of the register-level STM32 drivers, compiled against the fake
@@ -1474,6 +1505,25 @@ if meson.get_compiler('cpp').get_id() == 'gcc'
     test('STM32 DMA Stream Test (' + mcu + ')', stm32_dma_stream_test)
   endforeach
 endif
+
+# Compiles the STM32 gpio interrupt driver for both families against fake
+# registers: the H7 build takes them from tests/unit/stubs/stm32h7xx (listed
+# first, so that its stm32h7xx.h wins over the shared fake) and only the Miosix
+# fake from tests/unit/fake_stm32; the F4 build takes everything from the
+# shared fake. The openrtx include directories provide peripherals/gpio_irq.h
+# and drivers/GPIO/gpio-native.h.
+foreach family : [['STM32H743xx', ['tests/unit/stubs/stm32h7xx', 'tests/unit/fake_stm32']],
+                  ['STM32F405xx', ['tests/unit/fake_stm32']]]
+  gpio_irq_stm32_test = executable('gpio_irq_stm32_test_' + family[0].to_lower(),
+                                   sources : ['tests/unit/gpio_irq_stm32.cpp',
+                                              'platform/drivers/GPIO/gpio_irq_stm32.cpp'],
+                                   cpp_args : linux_cpp_args + ['-D' + family[0]],
+                                   link_args : linux_l_args,
+                                   include_directories : family[1] + openrtx_inc,
+                                   dependencies : [catch2_dep])
+
+  test('STM32 GPIO IRQ Test (' + family[0] + ')', gpio_irq_stm32_test)
+endforeach
 test('STM32H7 Clock Tree Test', stm32h7_clock_tree_test)
 test('SKY72310 Lock Detect Test', sky72310_lock_test)
 test('AK2365A Driver Test',   ak2365a_test)

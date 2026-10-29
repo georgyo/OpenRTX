@@ -13,6 +13,7 @@
 #include "interfaces/delays.h"
 #include "interfaces/platform.h"
 #include "interfaces/radio.h"
+#include "protocols/DMR/LinkControl.hpp"
 #include "rtx/OpMode_DMR.hpp"
 #include "rtx/rtx.h"
 
@@ -32,6 +33,7 @@ OpMode_DMR::OpMode_DMR()
 {
     memset(&bbCfg, 0x00, sizeof(bbCfg));
     memset(&snap, 0x00, sizeof(snap));
+    memset(&mon, 0x00, sizeof(mon));
     cfg = ctrl.config();
     ctrl.setPort(&port);
     ctrl.setVoiceSink(&audioStub);
@@ -61,6 +63,7 @@ void OpMode_DMR::enable()
     /* The controller keeps its markers across restarts: a fresh mode entry
      * starts without any. */
     ctrl.clearMarkers();
+    memset(&mon, 0x00, sizeof(mon));
 }
 
 void OpMode_DMR::disable()
@@ -114,7 +117,15 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
     bb.timeslot = c.timeslot;
     bb.ownId = c.ownId;
     bb.polite = c.polite;
-    bb.modeReg = DMRBB_MODE_REG_DEFAULT;
+
+    /*
+     * Mode register 0x10: the driver default unless the DMR monitor screen
+     * asked for the alternative word, which then survives the watchdog
+     * reconfigurations too (UNVERIFIED on hardware which one the CS7000
+     * needs, see docs/dmr_bringup.md).
+     */
+    bb.modeReg = (status->dmr_modeReg != 0) ? status->dmr_modeReg :
+                                              DMRBB_MODE_REG_DEFAULT;
 
     /*
      * A reconfiguration deferred by an earlier call stays due: cfg/bbCfg
@@ -124,7 +135,8 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
                     || (c.colorCode != cfg.colorCode)
                     || (c.timeslot != cfg.timeslot) || (c.ownId != cfg.ownId)
                     || (c.polite != cfg.polite)
-                    || (bb.colorCode != bbCfg.colorCode);
+                    || (bb.colorCode != bbCfg.colorCode)
+                    || (bb.modeReg != bbCfg.modeReg);
 
     cfg = c;
     bbCfg = bb;
@@ -192,6 +204,7 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
     }
 
     followState(now);
+    monitor(ev);
     publish(status);
 
     /* Operating status for the RSSI filter and the UI */
@@ -275,6 +288,64 @@ void OpMode_DMR::followState(uint32_t nowMs)
     }
 }
 
+void OpMode_DMR::monitor(uint32_t ev)
+{
+    mon.timecode = ctrl.report().timecode;
+
+    /*
+     * The interrupt counters are refreshed by the driver on every wait,
+     * timeouts included: a line that pulses without raising an event (PC3
+     * while the pinmap expects SYS on PC1) is only visible through them, so
+     * they are published before the event gating of the register fields.
+     */
+    mon.tsCount = snap.tsCount;
+    mon.sysCount = snap.sysCount;
+    mon.rftxCount = snap.rftxCount;
+    memcpy(mon.lineCount, snap.lineCount, sizeof(mon.lineCount));
+
+    if (ev == DMRBB_EV_TIMEOUT)
+        return;
+
+    /* Per-slot measurements come with every event */
+    mon.rssi = snap.rssi;
+    mon.fskErr = snap.fskErr;
+
+    if (ev & DMRBB_EV_TS) {
+        mon.r52 = snap.r52;
+        mon.r42 = snap.r42;
+    }
+
+    if (ev & DMRBB_EV_SYS) {
+        mon.irq82 = snap.irq82;
+        mon.sub84 = snap.sub84;
+        mon.sub86 = snap.sub86;
+        mon.r51 = snap.r51;
+        mon.r52 = snap.r52;
+        mon.r5f = snap.r5f;
+
+        /*
+         * The LC RAM is kept from the last header, terminator or late
+         * entry: what the state machine decodes, shown raw next to its
+         * parsed fields and to the chip's own CRC verdict.
+         */
+        bool header = ((snap.irq82 & R82_CTRL_FRAME) != 0)
+                   && ((snap.r51 & R51_SYNC_CLASS_MASK) == R51_CLASS_HEADER);
+        if (header || ((snap.irq82 & R82_LATE_ENTRY) != 0)) {
+            FullLC lc;
+            bool parsed = lc.fromChipLc(snap.lc);
+
+            memcpy(mon.lc, snap.lc, sizeof(mon.lc));
+            mon.lcSrc = lc.src;
+            mon.lcDst = lc.dst;
+            mon.lcFlco = lc.flco;
+            mon.lcFid = lc.fid;
+            mon.lcValid = ((snap.r51 & R51_CRC_BAD) == 0) ? 0x01 : 0x00;
+            if (parsed)
+                mon.lcValid |= 0x02;
+        }
+    }
+}
+
 void OpMode_DMR::publish(rtxStatus_t *const status)
 {
     const CallController::Report &r = ctrl.report();
@@ -289,6 +360,7 @@ void OpMode_DMR::publish(rtxStatus_t *const status)
     status->dmr_callState = r.callState;
     status->dmr_slotLock = r.slotLock;
     status->dmr_markers = markers;
+    status->dmr_mon = mon;
 }
 
 #endif /* CONFIG_DMR */

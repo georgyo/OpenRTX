@@ -119,5 +119,10 @@ const stringsTable_t spanishStrings =
     .dmrBusy           = "Ocupado",
     .dmrWakeupFailed   = "Sin repetidor",
     .dmrNotSupported   = "DMR no disponible",
+    .dmrMonitor        = "Monitor DMR",
+    .testTone          = "Tono de prueba",
+    .resync            = "Resincronizar",
+    .berTest           = "Prueba BER",
+    .twoPointTest      = "Dos puntos",
 };
 #endif  // SPANISHSTRINGS_H

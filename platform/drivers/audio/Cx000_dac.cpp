@@ -62,6 +62,39 @@ static pthread_mutex_t  mutex;
 static pthread_cond_t   wakeup_cond;
 
 /*
+ * Register 0x06 ownership. In FM and M17 the driver owns the register and
+ * writes it wholesale: 0x22 with the "OpenMusic" bit 1 set, 0x20 with it
+ * clear, the pair every Cx000 radio has run so far. While the DMR modem
+ * driver owns the chip the rest of the register selects the vocoder
+ * interface (0x21: V_SPI vocoder, MCU controlled) and a beep must not switch
+ * it off, so the bit is set and cleared with a read-modify-write instead,
+ * 0x23 / 0x21. The two SPI transactions of the read-modify-write are
+ * separately serialised on the bus: a concurrent write of 0x06 by the mode
+ * switch of the rtx thread could be lost, but the DMR driver reprograms the
+ * register at every reconfiguration. UNVERIFIED on hardware: OpenMusic
+ * playback with the vocoder bits set (0x23).
+ */
+static volatile bool keepVocoderBits = false;
+
+void Cx000dac_setVocoderBits(const bool keep)
+{
+    keepVocoderBits = keep;
+}
+
+static inline void setOpenMusic(const bool enable)
+{
+    uint8_t reg = 0x20;
+
+    if(keepVocoderBits)
+        reg = c6000->readCfgRegister(0x06) & ~0x02;
+
+    if(enable)
+        reg |= 0x02;
+
+    c6000->writeCfgRegister(0x06, reg);
+}
+
+/*
  * Stop the current stream, to be called with the mutex locked.
  */
 static inline void stopStream()
@@ -70,7 +103,7 @@ static inline void stopStream()
     stream->running = 0;
 
     // Clear the "OpenMusic" bit
-    c6000->writeCfgRegister(0x06, 0x20);
+    setOpenMusic(false);
 }
 
 void Cx000dac_init(HR_C6000 *device)
@@ -200,7 +233,7 @@ int Cx000dac_startBeep(const uint16_t freq)
     pthread_mutex_unlock(&mutex);
 
     // Set the "OpenMusic" bit
-    c6000->writeCfgRegister(0x06, 0x22);
+    setOpenMusic(true);
 
     return 0;
 }
@@ -218,7 +251,7 @@ void Cx000dac_stopBeep()
 
     // Clear the "OpenMusic" bit
     if(stop)
-        c6000->writeCfgRegister(0x06, 0x20);
+        setOpenMusic(false);
 }
 
 static int Cx000dac_start(const uint8_t instance, const void *config,
@@ -272,7 +305,7 @@ static int Cx000dac_start(const uint8_t instance, const void *config,
     pthread_mutex_unlock(&mutex);
 
     // Set the "OpenMusic" bit
-    c6000->writeCfgRegister(0x06, 0x22);
+    setOpenMusic(true);
 
     return 0;
 }
