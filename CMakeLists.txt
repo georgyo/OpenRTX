@@ -106,6 +106,7 @@ target_sources(app
     openrtx/src/rtx/rtx.cpp
     openrtx/src/rtx/OpMode_FM.cpp
     openrtx/src/rtx/OpMode_M17.cpp
+    openrtx/src/rtx/OpMode_DMR.cpp
     openrtx/src/protocols/M17/DSP.cpp
     openrtx/src/protocols/M17/Golay.cpp
     openrtx/src/protocols/M17/Callsign.cpp
@@ -125,6 +126,7 @@ target_sources(app
     openrtx/src/protocols/DMR/FEC/SlotType.cpp
     openrtx/src/protocols/DMR/FEC/Emb.cpp
     openrtx/src/protocols/DMR/LinkControl.cpp
+    openrtx/src/protocols/DMR/CallController.cpp
 
     openrtx/src/ui/default/ui.c
     openrtx/src/ui/default/ui_main.c
