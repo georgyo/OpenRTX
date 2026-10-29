@@ -26,7 +26,7 @@ static const hwInfo_t hwInfo =
     .vhf_minFreq = 0,
     .vhf_maxFreq = 0,
     .uhf_minFreq = 400,
-    .uhf_maxFreq = 527
+    .uhf_maxFreq = 512
 };
 
 
