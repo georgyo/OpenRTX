@@ -10,6 +10,9 @@
 #include "interfaces/keyboard.h"
 #include "interfaces/platform.h"
 #include "hwconfig.h"
+#include "knob_direction.h"
+
+#define KNOB_POSITIONS 16    /* Number of detents of the channel selector */
 
 
 /*
@@ -79,23 +82,7 @@ keyboard_t kbd_getKeys()
     knobPos = getKnobPos();
     if(knobPos != knobPrev)
     {
-        if(knobPos > knobPrev)
-            keys |= KNOB_RIGHT;
-        else if(knobPos < knobPrev)
-            keys |= KNOB_LEFT;
-
-        if((knobPos > 8) && (knobPrev < 8))
-        {
-            keys |= KNOB_LEFT;
-            keys &= ~KNOB_RIGHT;
-        }
-
-        if((knobPos < 8) && (knobPrev > 8))
-        {
-            keys |= KNOB_RIGHT;
-            keys &= ~KNOB_LEFT;
-        }
-
+        keys |= kbd_knobDirection(knobPos, knobPrev, KNOB_POSITIONS);
         knobPrev = knobPos;
     }
 
