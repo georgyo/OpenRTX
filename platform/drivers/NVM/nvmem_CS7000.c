@@ -102,6 +102,15 @@ const struct nvmTable nvmTab = {
 static uint16_t settingsCrc;
 static uint16_t vfoCrc;
 
+/*
+ * The settings and the VFO are stored as EEEP records, and eeep_read() and
+ * eeep_write() refuse a length of 255 bytes or more: growing settings_t past
+ * that would silently stop the settings from being saved (settings_t is
+ * 108 bytes with the FRS fields).
+ */
+_Static_assert(sizeof(settings_t) < 255, "settings_t must fit an EEEP record");
+_Static_assert(sizeof(channel_t) < 255, "channel_t must fit an EEEP record");
+
 void nvm_init()
 {
 #ifdef PLATFORM_CS7000P

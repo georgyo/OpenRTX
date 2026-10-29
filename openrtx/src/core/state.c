@@ -11,6 +11,7 @@
 #include "core/event.h"
 #include "core/state.h"
 #include "core/battery.h"
+#include "core/frs.h"
 #include "hwconfig.h"
 #include "interfaces/platform.h"
 #include "interfaces/nvmem.h"
@@ -67,6 +68,21 @@ void state_init()
     if (state.settings.brightness > 100) {
         state.settings.brightness = 100;
     }
+
+    // Force FRS fields to be in range, settings may come from older firmware
+    if (state.settings.frs_mode > 1) {
+        state.settings.frs_mode = 0;
+    }
+
+    if (state.settings.frs_channel >= FRS_CHANNEL_NUM) {
+        state.settings.frs_channel = 0;
+    }
+
+    for (size_t i = 0; i < FRS_CHANNEL_NUM; i++) {
+        if (state.settings.frs_codes[i] > FRS_CODE_NUM) {
+            state.settings.frs_codes[i] = 0;
+        }
+    }
 }
 
 void state_terminate()
@@ -76,7 +92,14 @@ void state_terminate()
         state.settings.brightness = 5;
     }
 
-    nvm_writeSettingsAndVfo(&state.settings, &state.channel);
+    // While FRS mode is active state.channel holds the FRS channel and the
+    // user's VFO is parked in state.vfo_channel: persist the latter.
+    const channel_t *vfo = &state.channel;
+    if (state.settings.frs_mode != 0) {
+        vfo = &state.vfo_channel;
+    }
+
+    nvm_writeSettingsAndVfo(&state.settings, vfo);
     pthread_mutex_destroy(&state_mutex);
 }
 
