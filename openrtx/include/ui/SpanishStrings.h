@@ -102,5 +102,18 @@ const stringsTable_t spanishStrings =
     .resetCodes        = "Borrar códigos",
     .enter             = "Enter",
     .channelRange      = "Canal 1-22",
+    .dmrSettings       = "Ajustes de DMR",
+    .dmrId             = "ID DMR",
+    .talkgroup         = "Talkgroup",
+    .callType          = "Tipo de llamada",
+    .colorCode         = "Código de color",
+    .timeslot          = "Ranura",
+    .monitor           = "Monitor",
+    .access            = "Acceso",
+    .hangTime          = "Retención",
+    .group             = "Grupo",
+    .privateCall       = "Privada",
+    .polite            = "Cortés",
+    .impolite          = "Descortés",
 };
 #endif  // SPANISHSTRINGS_H

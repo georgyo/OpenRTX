@@ -218,8 +218,17 @@ void vp_announceChannelSummary(const channel_t *channel,
                 break;
 
             case OPMODE_DMR: {
-                vp_announceContactWithIndex(channel->dmr.contact_index,
-                                            localFlags);
+                if (!vp_announceContactWithIndex(channel->dmr.contact_index,
+                                                 localFlags)) {
+#ifdef CONFIG_DMR
+                    // No codeplug contact: the destination is the talkgroup
+                    // or ID from the settings
+                    if (state.settings.dmr_callType == ALL)
+                        vp_queueStringTableEntry(&currentLanguage->broadcast);
+                    else
+                        vp_queueInteger(state.settings.dmr_talkgroup);
+#endif
+                }
 
                 // Force announcement of the words timeslot and colorcode to avoid
                 // ambiguity.

@@ -119,8 +119,9 @@ TEST_CASE("FRS settings layout", "[frs]")
      * The FRS fields are appended to settings_t so that records written by
      * older firmware load with the tail zeroed (FRS off, channel 1, no
      * codes), and the whole record must still fit the CS7000 EEEP limit.
+     * The DMR fields follow them (11 bytes, see ui_dmr.cpp).
      */
-    REQUIRE(sizeof(settings_t) == 108);
+    REQUIRE(sizeof(settings_t) == 119);
     REQUIRE(sizeof(settings_t) < 255);
     REQUIRE(offsetof(settings_t, frs_mode) == 84);
     REQUIRE(offsetof(settings_t, frs_channel) == 85);
