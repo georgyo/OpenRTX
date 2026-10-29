@@ -981,9 +981,10 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
 
     uint8_t pages = _ui_dmrMonitorPages();
     REQUIRE(pages >= DMRMON_SECTION_NUM);
-    /* 12, 13, 7 and 5 rows in six per page: 2 + 3 + 2 + 1, as documented */
+    /* 12, 13, 7, 7 and 5 rows in six per page: 2 + 3 + 2 + 2 + 1, as
+     * documented */
     if ((CONFIG_SCREEN_WIDTH == 160) && (CONFIG_SCREEN_HEIGHT == 128))
-        REQUIRE(pages == 8);
+        REQUIRE(pages == 10);
     printf("DMR monitor: %u pages on %ux%u\n", pages, CONFIG_SCREEN_WIDTH,
            CONFIG_SCREEN_HEIGHT);
 
@@ -1008,6 +1009,7 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
     REQUIRE(sectionStart[DMRMON_TS]);
     REQUIRE(sectionStart[DMRMON_R51]);
     REQUIRE(sectionStart[DMRMON_LC_LO]);
+    REQUIRE(sectionStart[DMRMON_AUD_VOCODER]);
     REQUIRE(sectionStart[DMRMON_ACT_RESYNC]);
     REQUIRE(actionPages == 1);
 
@@ -1053,6 +1055,8 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
     REQUIRE(monitorEntry(DMRMON_R82) == "0x82");
     REQUIRE(monitorEntry(DMRMON_R5F) == "0x5F");
     REQUIRE(monitorEntry(DMRMON_LC_HI) == "LC 6-11");
+    REQUIRE(monitorEntry(DMRMON_AUD_VOCODER) == "Vocoder");
+    REQUIRE(monitorEntry(DMRMON_AUD_OVER) == "Overrun");
     REQUIRE(monitorEntry(DMRMON_ACT_RESYNC) == currentLanguage->resync);
     REQUIRE(monitorEntry(DMRMON_ACT_BER) == currentLanguage->berTest);
     REQUIRE(monitorEntry(DMRMON_ACT_TWOPOINT) == currentLanguage->twoPointTest);
@@ -1140,6 +1144,19 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     REQUIRE(monitorValue(DMRMON_LC_FLCO) == "0");
     REQUIRE(monitorValue(DMRMON_LC_FID) == "00");
     REQUIRE(monitorValue(DMRMON_LC_CRC) == "ok");
+    /* The backend this build links, initialised by the RTX stage: "none"
+     * would mean OpMode_DMR::enable() never reached dmrAudio_init() */
+#ifdef CONFIG_DMR_VOCODER_LOOPBACK
+    REQUIRE(monitorValue(DMRMON_AUD_VOCODER) == "loopback");
+#else
+    REQUIRE(monitorValue(DMRMON_AUD_VOCODER) == "null");
+#endif
+    REQUIRE(monitorValue(DMRMON_AUD_RX) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_VARY) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_OUT) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_TX) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_UNDER) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_OVER) == "0");
     REQUIRE(monitorValue(DMRMON_ACT_RESYNC) == "41<-20");
     REQUIRE(monitorValue(DMRMON_ACT_MODE) == "10<-6A");
     REQUIRE(monitorValue(DMRMON_ACT_R06) == "06<-21");

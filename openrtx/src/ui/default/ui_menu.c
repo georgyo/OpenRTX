@@ -19,6 +19,7 @@
 #include "core/voicePromptUtils.h"
 #include "core/frs.h"
 #ifdef CONFIG_DMR
+#include "core/dmr_audio.h"
 #include "interfaces/dmr_baseband.h"
 #endif
 
@@ -669,7 +670,8 @@ static uint8_t dmrMonReadback[6];   // 0x10, 0x06, 0x12, 0x14, 0x15, 0x16
 // First row of each section, plus the end marker
 static const uint8_t dmrMonSectionFirst[DMRMON_SECTION_NUM + 1] =
 {
-    DMRMON_TS, DMRMON_R51, DMRMON_LC_LO, DMRMON_ACT_RESYNC, DMRMON_ROWS_NUM
+    DMRMON_TS, DMRMON_R51, DMRMON_LC_LO, DMRMON_AUD_VOCODER, DMRMON_ACT_RESYNC,
+    DMRMON_ROWS_NUM
 };
 
 // Same values as the "0x06 variant" action of ui.c, in the same order
@@ -732,6 +734,8 @@ int _ui_getDMRMonitorEntryName(char *buf, uint8_t max_len, uint8_t index)
         "0x51", "0x52", "0x5F", "0x42", "CC", "TC", "Sync", "RSSI", "FSK err",
         "rd 0x10", "rd 0x06", "rd 0x12", "rd 0x14-16",
         "LC 0-5", "LC 6-11", "Src", "Dst", "FLCO", "FID", "CRC",
+        "Vocoder", "Aud RX", "Aud vary", "Aud out", "Aud TX", "Underrun",
+        "Overrun",
         "", "Mode 0x10", "Reg 0x06", "", ""
     };
 
@@ -860,6 +864,33 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
             sniprintf(buf, max_len, "%s%s",
                       (mon->lcValid & 0x01) ? "ok" : "bad",
                       (mon->lcValid & 0x02) ? "" : "*");
+            break;
+        case DMRMON_AUD_VOCODER:
+            sniprintf(buf, max_len, "%s", dmrAudio_backendName());
+            break;
+        case DMRMON_AUD_RX:
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.framesRx);
+            break;
+        case DMRMON_AUD_VARY:
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.varying);
+            break;
+        case DMRMON_AUD_OUT:
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.blocksOut);
+            break;
+        case DMRMON_AUD_TX:
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.framesTx);
+            break;
+        case DMRMON_AUD_UNDER:
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.underruns);
+            break;
+        case DMRMON_AUD_OVER:
+            sniprintf(buf, max_len, "%lu",
+                      (unsigned long) dmrMonStatus.dmr_audio.overruns);
             break;
         // Actions: the registers the next ENTER writes, or the hint that
         // ui.c refuses them because the RTX stage is not running DMR

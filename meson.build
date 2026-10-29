@@ -80,9 +80,34 @@ openrtx_src = ['openrtx/src/core/state.c',
                'openrtx/src/protocols/DMR/FEC/Emb.cpp',
                'openrtx/src/protocols/DMR/LinkControl.cpp',
                'openrtx/src/protocols/DMR/CallController.cpp',
+               'openrtx/src/protocols/DMR/Silence.c',
+               'openrtx/src/core/dmr_audio.c',
                'openrtx/src/rtx/OpMode_DMR.cpp']
 
 openrtx_inc = ['openrtx/include', 'platform']
+
+##
+## DMR vocoder backend, see openrtx/include/core/dmr_vocoder.h and the
+## "Vocoder" section of docs/dmr_mode.md. No AMBE code is in the tree: the
+## null backend (silence / test tone) is built for every target, the loopback
+## backend (a tone descriptor, for the emulator) is added on the Linux target
+## with 'auto' or everywhere with 'loopback', and 'external' builds neither
+## for the firmware targets so that an out-of-tree object providing
+## dmrVocoder_get() can be linked there; the Linux target (emulator and host
+## tests) has no such object and gets the null backend with 'external', see
+## below. Both files compile to nothing without CONFIG_DMR.
+##
+
+dmr_vocoder = get_option('dmr_vocoder')
+dmr_vocoder_null_src = ['openrtx/src/core/dmr_vocoder_null.c']
+dmr_vocoder_loopback_src = ['openrtx/src/core/dmr_vocoder_loopback.c']
+
+if dmr_vocoder == 'loopback'
+  openrtx_src += dmr_vocoder_null_src + dmr_vocoder_loopback_src
+  openrtx_def += {'CONFIG_DMR_VOCODER_LOOPBACK': ''}
+elif dmr_vocoder != 'external'
+  openrtx_src += dmr_vocoder_null_src
+endif
 
 ##
 ## OpenRTX UI sources
@@ -394,6 +419,17 @@ linux_inc = ['platform/targets/linux',
              'platform/drivers/tones']
 
 linux_def = {'PLATFORM_LINUX': '', 'VP_USE_FILESYSTEM':''}
+
+# The emulator plays the loopback vocoder by default: an injected DMR call is
+# then audible as a tone through SDL. 'external' is a firmware setting: the
+# emulator and the unit tests built from linux_src still need a backend to
+# link, they get the null one as with -Ddmr_vocoder=null.
+if dmr_vocoder == 'auto'
+  linux_src += dmr_vocoder_loopback_src
+  linux_def += {'CONFIG_DMR_VOCODER_LOOPBACK': ''}
+elif dmr_vocoder == 'external'
+  linux_src += dmr_vocoder_null_src
+endif
 
 sdl_dep     = dependency('SDL2',     required: false)
 threads_dep = dependency('threads',  required: false)
@@ -1290,6 +1326,18 @@ dmr_opmode_test = executable('dmr_opmode_test',
                              sources : unit_test_src + ['tests/unit/DMR_opmode.cpp'],
                              kwargs  : unit_test_opts)
 
+# Both in-tree vocoder backends are under test whatever the dmr_vocoder option
+# selected for the emulator: the one the option left out is added here (the
+# null backend is always in, 'external' included).
+dmr_vocoder_test_src = unit_test_src + ['tests/unit/dmr_vocoder.cpp']
+if dmr_vocoder == 'null' or dmr_vocoder == 'external'
+  dmr_vocoder_test_src += dmr_vocoder_loopback_src
+endif
+
+dmr_vocoder_test = executable('dmr_vocoder_test',
+                              sources : dmr_vocoder_test_src,
+                              kwargs  : unit_test_opts)
+
 m17_packet_test = executable('m17_packet_test',
                               sources : unit_test_src + ['tests/unit/M17_packet.cpp'],
                               kwargs  : unit_test_opts)
@@ -1380,6 +1428,24 @@ if build_machine.system() != 'darwin'
                                     link_args           : linux_l_args + ['-Wl,--wrap=pthread_join'])
 endif
 
+# DMR audio thread test: the modules under test with a fake audio driver paced
+# by the test and a fake vocoder backend, both provided by the test itself, and
+# the same pthread_join() wrap as the audio threading test.
+if build_machine.system() != 'darwin'
+  dmr_audio_test = executable('dmr_audio_test',
+                              sources : ['openrtx/src/core/dmr_audio.c',
+                                         'openrtx/src/core/audio_stream.c',
+                                         'openrtx/src/core/audio_path.cpp',
+                                         'openrtx/src/core/dsp.cpp',
+                                         'openrtx/src/protocols/DMR/Silence.c',
+                                         'tests/unit/dmr_audio.cpp'],
+                              c_args              : linux_c_args,
+                              cpp_args            : linux_cpp_args,
+                              include_directories : linux_inc,
+                              dependencies        : [threads_dep, catch2_dep],
+                              link_args           : linux_l_args + ['-Wl,--wrap=pthread_join'])
+endif
+
 # HR_Cx000 DAC driver test, built against the fake HR_C6000 in tests/unit/fake
 # which shadows the real header.
 cx000_dac_test = executable('cx000_dac_test',
@@ -1458,6 +1524,7 @@ test('DMR Codeplug Test',     dmr_cps_test)
 test('UI DMR Test',           ui_dmr_test)
 test('DMR Call Control Test', dmr_callctrl_test)
 test('DMR OpMode Test',       dmr_opmode_test)
+test('DMR Vocoder Test',      dmr_vocoder_test)
 test('M17 Packet Frame Test', m17_packet_test)
 test('DSP Oversampling Test', dsp_oversampling_test)
 test('GFX Text Test',        gfx_text_test)
@@ -1470,6 +1537,7 @@ test('Knob Direction Test',  knob_direction_test)
 test('M17 OpMode PTT Test',  m17_opmode_ptt_test)
 if build_machine.system() != 'darwin'
   test('Audio Threading Test', audio_threading_test)
+  test('DMR Audio Test',       dmr_audio_test)
 endif
 test('Cx000 DAC Test',       cx000_dac_test)
 test('Cx000 DAC DMR Test',   cx000_dac_dmr_test)

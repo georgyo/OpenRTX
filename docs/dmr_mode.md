@@ -11,25 +11,29 @@ in, and the rules the series follows.
 
 ## Read this first: status of the series
 
-DMR support lands in six stages. **Stages 1 to 3 are in the tree.** With
+DMR support lands in six stages. **Stages 1 to 4 are in the tree.** With
 them, DMR is a mode the user can select and configure, the RTX stage runs
 the complete Layer-2 call state machine (`OpMode_DMR` in `rtx.cpp`) against
-an abstract modem interface, and stage 3 adds what is needed to bring that
+an abstract modem interface, stage 3 adds what is needed to bring that
 interface up on the CS7000 radios: the STM32 external interrupt shim
 (`openrtx/include/peripherals/gpio_irq.h`), the HR_C6000 DMR modem driver,
 and the DMR monitor screen with its bring-up checklist
-([dmr_bringup.md](dmr_bringup.md)). On the Linux emulator the modem is a
-scriptable fake, so calls are received and transmitted headlessly. Nothing
-has been run on a radio: the analog FM and M17 modes keep working after
-visiting DMR, and the monitor screen exists so that the first person with a
-radio can find out which of the documented assumptions hold.
+([dmr_bringup.md](dmr_bringup.md)), and stage 4 the audio plumbing around a
+pluggable vocoder whose in-tree backends are not codecs (see
+[Vocoder](#vocoder)): a received call plays silence, the test tone, or on
+the emulator a tone, at the right times. On the Linux emulator the modem is
+a scriptable fake, so calls are received and transmitted headlessly and a
+replayed call is audible. Nothing has been run on a radio: the analog FM
+and M17 modes keep working after visiting DMR, and the monitor screen
+exists so that the first person with a radio can find out which of the
+documented assumptions hold.
 
 | Stage | Title | Status |
 |---|---|---|
 | 1 | DMR data model, settings, UI mode selection and ETSI protocol library (no RF) | in tree |
 | 2 | Call-control state machine, `dmr_baseband` interface, `OpMode_DMR` and the emulator modem model | in tree |
 | 3 | HR_C6000 DMR driver, EXTI shim, `radio_CS7000` branches and the DMR monitor screen (RX sync, colour code, slot and LC with caller display, no audio) | in tree |
-| 4 | RX voice plumbing: vocoder backend interface, `dmr_audio` thread, PCM to the speaker through the C6000 DAC, and the internal-vocoder experiment | planned |
+| 4 | RX voice plumbing: vocoder backend interface, `dmr_audio` thread, PCM to the speaker through the C6000 DAC, and the internal-vocoder experiment | in tree (the vocoder seam, the null / loopback backends, the audio thread and the emulator demo; the internal-vocoder experiment is a bring-up check, see [dmr_bringup.md](dmr_bringup.md)) |
 | 5 | TX voice calls: simplex (DMO, active timing) first, then repeater (RMO, passive timing with wake-up) | planned |
 | 6 | Contacts and talkgroup UI, last heard, private calls from history, voice prompts and documentation polish | planned |
 
@@ -144,10 +148,10 @@ timeslot and system passes, the last link control RAM with its decoded
 fields) and from `dmrbb_readRegister()` for a few registers read back at
 every redraw.
 
-The rows are grouped in four sections of 12, 13, 7 and 5 rows, each
+The rows are grouped in five sections of 12, 13, 7, 7 and 5 rows, each
 starting on a new page; a section spans as many pages as the display height
-needs (six rows per page on 160x128: 2 + 3 + 2 + 1 = 8 pages; five on
-128x64: 3 + 3 + 2 + 1 = 9 pages), the top bar reading `DMR monitor n/N`:
+needs (six rows per page on 160x128: 2 + 3 + 2 + 2 + 1 = 10 pages; five on
+128x64: 3 + 3 + 2 + 2 + 1 = 11 pages), the top bar reading `DMR monitor n/N`:
 
 1. counters: `TS`, `SYS`, `RFTX` interrupts, `PC0`..`PC3` pulses per EXTI
    line, slot lock, timecode, last `0x82` / `0x84` / `0x86`;
@@ -156,7 +160,9 @@ needs (six rows per page on 160x128: 2 + 3 + 2 + 1 = 8 pages; five on
    `0x06`, `0x12`, `0x14`-`0x16` read back;
 3. link control: the 12 LC RAM octets in hex, source, destination, FLCO, FID
    and the CRC verdict of the last header;
-4. actions: `Resync` (0x81 = 0xFE, the Layer-2 mask of `dmrMode()`, then
+4. audio (stage 4): the vocoder backend name and the `dmr_audio` counters,
+   see [Counters and the monitor screen](#counters-and-the-monitor-screen);
+5. actions: `Resync` (0x81 = 0xFE, the Layer-2 mask of `dmrMode()`, then
    0x41 = 0x20), `Mode 0x10` (0x6E / 0x6A, also pushed to the RTX stage as
    `rtxStatus_t::dmr_modeReg` so that it survives the modem reconfigurations
    until power off), `Reg 0x06` (cycles 0x21, 0x01, 0x24, 0x20, 0x00),
@@ -205,8 +211,10 @@ default), a receive report the DMR opMode handler fills (`dmr_lcOk`,
 `dmr_markers`) and the bring-up block `dmr_mon` (`dmrMonitor_t`, 64 bytes:
 interrupt and EXTI line counters, the last 0x82/0x84/0x86 flags,
 0x51/0x52/0x5F/0x42, RSSI, FSK error, timecode, the last LC RAM with its
-decoded source, destination, FLCO, FID and CRC verdict). The report and the
-block are owned by the opMode handler: `rtx_task()` keeps them across the
+decoded source, destination, FLCO, FID and CRC verdict) and, since stage 4,
+the audio layer counters `dmr_audio` (`struct dmrAudioStats` of
+`core/dmr_audio.h`, six 32-bit counters, 24 bytes). The report, the block and the counters are
+owned by the opMode handler: `rtx_task()` keeps them across the
 copy of a new configuration, together with `opStatus`. The call state is one
 of `DMR_CALL_IDLE`, `DMR_CALL_RX`, `DMR_CALL_RX_HANG`, `DMR_CALL_TX` and
 `DMR_CALL_TX_WAKEUP`.
@@ -367,10 +375,11 @@ counts of headers, voice bursts, terminators and driver calls);
   after, and by `disable()` mid-call), the "not supported" path, and the
   publication of the bring-up block (counters, registers, decoded LC, CRC
   verdict, the mode word override, the counters through the timeout
-  passes). It prints the sizes: `OpMode_DMR` is 424 bytes as a static
+  passes). It prints the sizes: `OpMode_DMR` is 440 bytes as a static
   object (344 in stage 2, plus the 64 byte `dmrMonitor_t` block and the
-  larger snapshot), `DMR::CallController` 176, `struct dmrbbSnapshot` 88
-  (72 plus the four `lineCount[]` counters).
+  larger snapshot of stage 3, the voice sink with its counters, the two
+  audio path IDs and the flags of stage 4), `DMR::CallController` 176,
+  `struct dmrbbSnapshot` 88 (72 plus the four `lineCount[]` counters).
 - Stack: the handler is a static object, so only the frames of `update()`
   and what it calls sit on the 512 byte rtx thread stack. Measured with
   `-fstack-usage` on the Cortex-M7 build (`arm-miosix-eabi-g++ -Os`,
@@ -391,6 +400,205 @@ counts of headers, voice bursts, terminators and driver calls);
   (opening from `Settings > DMR`, the page walk on both key sets, the
   rendering of every row from a scripted call on the fake modem, and each
   action's register writes as recorded by `dmrEmu_record()->regLog`).
+
+## Stage 4: RX voice plumbing, the `dmr_audio` thread and the emulator demo
+
+Stage 4 closes the receive audio path from the modem to the speaker, and
+the transmit path from the microphone to the modem, around the vocoder seam
+of the [Vocoder](#vocoder) section. Nothing here decodes AMBE: with the null
+backend a received call plays silence (or the test tone) at the right
+times, with the loopback backend the emulator plays a tone.
+
+### The receive path
+
+```
+HR_C6000 -> V_SPI 27 bytes -> dmrbbSnapshot::voice -> CallController
+   -> DmrAudioLink::rxVoiceFrame() -> dmrAudio_pushFrame() [queue of 3]
+   -> DMR audio thread: dmrVocoder_get()->decode() -> 480 samples
+   -> 8 kHz output stream on SINK_SPK (audio_stream.c, double buffered,
+      one 60 ms block per half)
+   -> Cx000_dac.cpp "OpenMusic" (U_SPI SOUND page, 32 samples every 4 ms,
+      register 0x06 bit1 read-modify-write) -> C6000 DAC -> LINEOUT
+   -> TC75S51F -> volume -> TDA2822G -> speaker
+```
+
+`OpMode_DMR` requests `SOURCE_MCU -> SINK_SPK` at `PRIO_RX` when the call
+controller opens a call (`DMR_CALL_RX`), keeps the path through the hang
+time (the amplifier stays on for the answer) and releases it when the hang
+time ends, as in stage 2. New in stage 4: as soon as the path is granted it
+calls `dmrAudio_startRx()`, which opens the output stream on the sink of
+the path and starts the audio thread; every voice burst the controller
+hands to the `VoiceSink` (`DmrAudioLink` in `OpMode_DMR.hpp`) goes to
+`dmrAudio_pushFrame()`. The thread pops one payload per 60 ms period of the
+stream, decodes it into the idle half of the double buffer and syncs; when
+no payload is queued it writes silence. The result of the sync is not a
+reason to quit, as in the M17 decoder: the Cx000 DAC driver answers false
+when the sync point had already passed on entry (the thread came one
+period late), a glitch to play through, and the thread only leaves when
+the path is no longer open or the stream is gone (no idle buffer). When
+the call ends (terminator or voice timeout, `DMR_CALL_RX_HANG`) the thread
+is stopped and the stream released while the path stays open; a call
+opening during the hang time starts it again. A reprogramming of the modem
+(`OpMode_DMR::reprogramModem()`: a colour code, timeslot, ID or access
+policy change, or the two-second watchdog) and `disable()` stop the thread
+before the driver rewrites the chip.
+
+The audio path manager can suspend the RX path under a higher priority one
+on the same sink, typically a voice prompt (`PRIO_PROMPT`) or a beep: the
+stream layer then terminates the stream, the thread finds the path no
+longer `PATH_OPEN` at its next period and quits on its own. Payloads pushed
+meanwhile are dropped (`dmrAudio_pushFrame()` returns false, the opMode
+counts them as received but not queued). When the prompt releases the sink
+the RX path is open again and the next `update()` pass restarts the thread;
+the old one is reclaimed by that start, no thread is ever detached. A start
+that fails on an open path (no output device on that sink, as the emulator
+has no microphone device for the transmit side) is not retried until the
+path is requested anew.
+
+### The transmit side
+
+The microphone path (`SOURCE_MIC -> SINK_MCU`, `PRIO_TX`) is requested for
+the whole transmission as in stage 2, wake-up included, so that the
+microphone is up before it is needed; stage 4 adds `dmrAudio_startTx()` on
+it once the controller reaches `TX_HEADER` (not during a repeater wake-up,
+whose hundreds of milliseconds would only fill the queue and drop payloads
+as overruns): an 8 kHz input stream on the source (with the
+`CONFIG_MIC_OVERSAMPLE` decimation, DC block and `CONFIG_MIC_GAIN` of the
+M17 encoder), the thread encodes each 480-sample block through the backend
+and queues the payload; `DmrAudioLink::txVoiceFrameNeeded()` pops one per
+own voice burst and the controller writes it to the modem, or the AMBE+2
+silence pattern when the queue is empty. When the controller enters
+`TX_VOICE` (on the last header, one own slot before the first voice burst)
+`followState()` calls `DmrAudioLink::startVoice()` -> `dmrAudio_flushTx()`
+once, which drops what the three headers left in the queue but the newest
+payload: the first voice burst carries the last 60 ms of microphone audio
+rather than what was said while the headers went out, and the queue runs
+at about one payload for the rest of the transmission instead of sitting
+full (three payloads, 180 ms of extra mouth-to-ear delay, no room for
+jitter). With the null backend every payload is the silence pattern, so
+the air interface carries a well-formed call with silence; keying the PA
+for it is stage 5. On the emulator there is no microphone device, the
+start is refused and silence is sent.
+
+### The `dmr_audio` module
+
+`openrtx/include/core/dmr_audio.h` / `openrtx/src/core/dmr_audio.c`, a C
+module modelled on `audio_codec.c`:
+
+| Function | Role |
+|---|---|
+| `dmrAudio_init()` / `dmrAudio_terminate()` | reference counted; the first init calls the backend's `init()` and clears the counters, the last terminate stops the thread and calls `terminate()`. `OpMode_DMR::enable()` / `disable()` pair them |
+| `dmrAudio_startRx(path)` / `dmrAudio_startTx(path)` | open the stream on the sink / source of an open path and start the thread; true at once when already running on that path; another path takes over only with a higher priority (the codec's rule) |
+| `dmrAudio_stop()` | stop the thread, release its stream, join. Idempotent and safe from two threads at once |
+| `dmrAudio_running()` | true while the thread runs; false once it quit on its own (path suspended, stream error) |
+| `dmrAudio_pushFrame(ambe)` | RX: queue a payload, never blocks; on a full queue the oldest is dropped and counted |
+| `dmrAudio_popFrame(ambe)` | TX: take the next encoded payload, false when empty or not encoding |
+| `dmrAudio_flushTx()` | TX: drop every queued payload but the newest one, not counted as overruns; called once when the voice bursts of a transmission begin |
+| `dmrAudio_getStats()` | copy of `struct dmrAudioStats` |
+| `dmrAudio_backendName()` | `dmrVocoder_get()->name` |
+
+The queue holds `DMR_AUDIO_QUEUE_DEPTH` = 3 payloads (the one being played
+plus two bursts of jitter) in either direction, one direction at a time.
+Start and stop transitions are serialised by a mutex held until the new
+thread exists, so that a stop from the UI thread cannot slip between the
+stop of the old thread and the start of the new one, and the join is
+exclusive (Miosix fails a second concurrent join at once). The thread has
+`DMR_AUDIO_THREAD_STKSIZE` = 4096 bytes of stack (`core/threads.h`), sized
+for the in-tree backends: the output buffer is static, the oversampled
+input buffer is heap allocated for the life of the thread, the backends
+keep a payload and the DSP state on the stack. An out-of-tree backend
+documents its own figure.
+
+### Counters and the monitor screen
+
+`struct dmrAudioStats` is published on every pass into
+`rtxStatus_t::dmr_audio` (kept across configuration copies like the
+receive report) and shown by a fifth section of the DMR monitor screen,
+"Audio", between the link control and the actions:
+
+| Row | Field | Meaning |
+|---|---|---|
+| `Vocoder` | `dmrAudio_backendName()` | `null`, `loopback`, or the name an external backend gives |
+| `Aud RX` | `framesRx` | payloads handed to the audio layer while playback was running, dropped ones included |
+| `Aud vary` | `varying` | of which differed from the previous one: stays at 0 when the modem hands over the same bytes at every burst, what a dead V_SPI read looks like; follows `Aud RX` with real voice |
+| `Aud out` | `blocksOut` | 480-sample blocks written to the speaker stream, silence included |
+| `Aud TX` | `framesTx` | payloads encoded from the microphone |
+| `Underrun` | `underruns` | silent blocks played between two payloads of the same reception (a lost or late burst); the silence before the first payload and after the last one is not counted |
+| `Overrun` | `overruns` | payloads dropped from a full queue, either direction |
+
+The section moves the actions to the last page as before; the screen has
+10 pages on the 160x128 displays and 11 on 128x64.
+
+### The emulator demo
+
+With the default `dmr_vocoder=auto`, the Linux emulator links the loopback
+backend and `dmr_linux.cpp` fills the voice bursts of a replayed call with
+`dmrVocoderLoopback_tonePayload()`: 1 kHz on bursts A..C and 700 Hz on
+D..F at about -12 dBFS, the level stepping down by an inaudible notch from
+A to F so that every burst differs from the previous one. So
+
+```
+openrtx_linux --dmr-call 2345678,9      # a call to the default talkgroup
+```
+
+then MONI + 5 to switch to DMR: two seconds later the call is on the main
+screen and audible through SDL as a 180 ms alternation of the two tones for
+three seconds, every twelve seconds. Two seconds after each replayed call
+the fake modem prints what the audio layer did with it:
+
+```
+dmr_linux: audio loopback: rx 50, tx 0, blocks out 62, underruns 7, overruns 0, varying 50
+```
+
+which is also the headless check of the path: with
+`SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy` and the shell commands
+`sleep 2500`, `keycombo MONI 5`, `sleep 14000`, `quit` on stdin, the 50
+payloads reach the thread, every one differs from the previous, and one
+480-sample block per burst goes out (`blocks out` also counts the silence
+before the first burst and the gaps). A few underruns per call are normal
+on the emulator: the fake modem's 30 ms clock thread (`usleep`) and SDL's
+audio clock are not locked and drift apart over a call, whereas on a radio
+the slot timing and the DAC clock both come from the HR_C6000. The call is
+filtered like any other, so it must be addressed to the configured
+talkgroup (or `Settings > DMR > Monitor` set to accept it).
+
+### Tests
+
+- `dmr_audio_test` (`tests/unit/dmr_audio.cpp`, in the style of
+  `audio_threading_test`): the module with a fake audio driver paced by
+  the test, whose `sync()` blocks until the test grants a period and which
+  records every block written to the speaker, and a fake vocoder backend
+  (decode fills a pattern carrying the payload's first byte, encode
+  recovers the block index from the level of a square wave the fake
+  microphone delivers). Covered: init/terminate reference counting;
+  `startRx` then ten payloads played in order, 480 samples each; a missing
+  payload played as 480 zeros and counted once voice resumes, but not
+  before the first payload nor after the last; a late sync point (the
+  fake driver answering -1 once, as the Cx000 DAC does) played through
+  without stopping the stream; a full queue dropping the oldest payload;
+  `stop` releasing the stream and joining; a path suspended by a prompt
+  making the thread quit and a restart resuming playback; `startTx`
+  pulling 480-sample blocks with `popFrame` returning the encoded payloads
+  in order and the queue overflow; `flushTx` keeping the newest payload
+  only, not counting it as an overrun and leaving a receive queue alone; a
+  start refused on a sink without a device; the TX path taking over the RX one and not the
+  reverse; two concurrent stops; a hundred start/stop rounds, half of them
+  with the thread parked in the driver. `pthread_join()` is wrapped as in
+  the audio threading test; the sanitizer build runs it too.
+- `dmr_opmode_test`, extended: SDL's dummy audio device is initialised so
+  that the emulator's `SINK_SPK` stream really opens. An injected call
+  starts the thread on the granted `SOURCE_MCU -> SINK_SPK` path, blocks
+  flow while the call is up, every voice burst is pushed and counted, the
+  thread stops at the hang time and restarts for a call during it, the
+  path is released after; a transmission with no microphone device is
+  refused and sends the silence pattern; the encoder queue is flushed once
+  per transmission, when the controller enters `TX_VOICE` and before the
+  first voice burst is requested; a voice prompt suspends the RX path, the
+  thread quits, the bursts meanwhile are lost, and playback resumes after
+  the prompt.
+- `ui_dmr_test`, extended: the audio section's rows, names and values,
+  the `Vocoder` row showing the backend the build links (`loopback` with
+  `CONFIG_DMR_VOCODER_LOOPBACK`, `null` otherwise, never `none`).
 
 ## Licensing
 
@@ -413,18 +621,182 @@ OpenRTX is GPL-3.0-or-later and the DMR series keeps it that way:
   decode-only and carries a patent notice, the OEM blobs are proprietary and
   upstream OpenRTX declined AMBE code in the past (issue #33). The reasoning
   is laid out in the feasibility study of the series.
-- The vocoder is therefore a pluggable backend (`core/dmr_vocoder.h`, stage
-  4). The tree ships a null backend (silence on TX, silence or a debug test
-  tone on RX, enabled by the `dmr_testTone` setting) and an emulator loopback
-  backend, so that the slot machinery, the V_SPI transfers, the audio paths
-  and the interoperation with repeaters and hotspots are exercised end to
-  end. A Meson option will let whoever holds a licence link an out-of-tree
-  backend. Whether the chip can decode voice by itself after all is the first
-  experiment of stage 4; the documentation says it cannot.
+- The vocoder is therefore a pluggable backend (`core/dmr_vocoder.h`, see
+  the [Vocoder](#vocoder) section). The tree ships a null backend (silence
+  on TX, silence or a debug test tone on RX, enabled by the `dmr_testTone`
+  setting) and an emulator loopback backend, so that the slot machinery, the
+  V_SPI transfers, the audio paths and the interoperation with repeaters and
+  hotspots are exercised end to end. The `dmr_vocoder` Meson option lets
+  whoever holds a licence link an out-of-tree backend. Whether the chip can
+  decode voice by itself after all is the first experiment of stage 4; the
+  documentation says it cannot.
 
 Until a vocoder backend is available, a DMR call carries no audible voice:
 the radio shows the caller, the talkgroup, the colour code and the slot, and
 transmits headers, terminators and silence frames.
+
+## Vocoder
+
+### What is shipped, and what is not
+
+A DMR voice burst carries 216 bits of voice: three 72-bit AMBE+2 frames of
+20 ms each (ETSI TS 102 361-1 §6.1, Figure 6.2; TS 102 361-2 §5.2.1 names
+the codec). The HR_C6000 does not contain the codec. Its user manual (§4.6,
+"Vocoder interface") describes a V_SPI port on which the chip hands the 27
+bytes of every received voice burst to an external vocoder and takes the 27
+bytes of every burst to transmit from it, and on the CS7000 boards that
+port is wired to the STM32 (CS7000-M17 Plus schematic V01, nets VOC_*):
+the OEM firmware runs AMBE+2 in software on the MCU, as the TYT and
+Radioddity firmwares do on their HR_C5000/HR_C6000 radios. OpenRTX's own
+CS7000 initialisation writes register 0x06 = 0x21, "V_SPI vocoder, MCU
+controls the vocoder", since before this series.
+
+OpenRTX cannot ship that codec:
+
+- AMBE+2 is covered by DVSI's US patent 8,359,197 B2 ("Half-rate vocoder",
+  <https://patents.google.com/patent/US8359197B2/en>), in force until
+  2028-05-20; DVSI licenses it as a closed library or in the AMBE-3000 chip
+  (<https://www.dvsinc.com/soft_products/ambe_p2.shtml>);
+- `mbelib` (<https://github.com/szechyjs/mbelib>) is decode-only and its
+  COPYRIGHT file warns that the algorithm is patented and that using it may
+  require a licence;
+- the OEM firmware blobs are proprietary;
+- upstream OpenRTX declined AMBE code in the past
+  (<https://github.com/OpenRTX/OpenRTX/issues/33>) and a GPL-3.0-or-later
+  tree cannot carry a patent-encumbered implementation of any origin.
+
+So **no AMBE or AMBE+2 code, table or blob is in this tree, and none will
+be accepted.** What the tree has is the seam and two backends that are not
+codecs:
+
+| Backend | File | What it does |
+|---|---|---|
+| `null` | `openrtx/src/core/dmr_vocoder_null.c` | `decode()` fills 60 ms of silence, or a 1 kHz sine at -12 dBFS (phase continuous from one burst to the next) when `Settings > DMR > Test tone` is on; `encode()` fills the AMBE+2 silence pattern. Built for every target with `CONFIG_DMR` |
+| `loopback` | `openrtx/src/core/dmr_vocoder_loopback.c` | `encode()` packs a coarse descriptor of the 480 samples into the 27 bytes (signature `LB`, RMS level, dominant frequency from the zero crossings, a 20-point peak envelope, XOR check); `decode()` plays a sine back from it, shaped by the envelope and scaled to the level. A payload without the signature (real AMBE, the silence pattern, zeros) decodes to silence. Built for the Linux emulator, so that the RX/TX plumbing is testable end to end and audible through SDL; interoperates with nothing |
+
+The silence pattern itself (`openrtx/src/protocols/DMR/Silence.c`,
+`dmr_ambeSilence`, also reachable as `DMR::AMBE_SILENCE`) is the one
+constant table taken from a third party, MMDVMHost `DMRDefines.h`
+(GPL-2.0-or-later, attributed in the file): 27 bytes of already encoded
+silence, not codec code.
+
+### The interface
+
+`openrtx/include/core/dmr_vocoder.h` is a C ABI so that a backend can be
+written in C or C++ and linked from outside the tree:
+
+```c
+struct dmrVocoder {
+    const char *name;
+    int  (*init)(void);
+    void (*terminate)(void);
+    bool (*decode)(const uint8_t ambe[27], int16_t pcm[480]);
+    bool (*encode)(const int16_t pcm[480], uint8_t ambe[27]);
+};
+
+const struct dmrVocoder *dmrVocoder_get(void);
+```
+
+One payload of 27 bytes is three AMBE+2 frames, 60 ms, 480 samples at
+8 kHz. `decode()` and `encode()` always fill their output buffer: the return
+value says whether it holds audio (`decode()`) or encoded voice (`encode()`),
+`false` meaning the buffer holds silence, respectively the AMBE+2 silence
+pattern, because the backend had nothing better (test tone off, bad
+signature, corrupted frame, no encoder). The caller may then substitute its
+own silence or skip the playback. `init()` runs once before the first
+frame and `terminate()` once after the last; the two codec functions are
+called from the DMR audio thread only and are not reentrant.
+
+### Selecting a backend: the `dmr_vocoder` Meson option
+
+```
+meson setup -Ddmr_vocoder=<auto|null|loopback|external> <build dir>
+```
+
+| Value | Radios | Linux emulator |
+|---|---|---|
+| `auto` (default) | `null` | `loopback`: an injected call (`--dmr-call`) is audible as a tone |
+| `null` | `null` | `null` |
+| `loopback` | `null` compiled, `loopback` selected (a bench test of the V_SPI transfers between two OpenRTX radios, nothing else) | `loopback` |
+| `external` | neither backend compiled: the out-of-tree object provides `dmrVocoder_get()` | `null` (the setting is a firmware one; the emulator and the host tests have no out-of-tree object to link) |
+
+The selection is a link-time one: `dmrVocoder_get()` is defined by
+`dmr_vocoder_null.c`, or by `dmr_vocoder_loopback.c` when
+`CONFIG_DMR_VOCODER_LOOPBACK` is defined, and by nobody in the firmware
+with `external`. The null backend is still compiled next to the loopback
+one (the loopback `decode()` has no use for silence frames, the audio layer
+does) and both structs, `dmrVocoder_null` and `dmrVocoder_loopback`, are
+reachable by name for the tests whatever the option. The T-TWR Plus (Zephyr, `CMakeLists.txt`)
+compiles `dmr_vocoder_null.c`, which is empty there because the board has no
+`CONFIG_DMR`.
+
+### Linking an external backend
+
+With `-Ddmr_vocoder=external` the firmware references `dmrVocoder_get()` and
+nothing defines it: the link of the radio targets fails until an object
+providing it is added, which is the point. The Linux target is not
+affected: `openrtx_linux` and the unit tests are built with the null
+backend under `external`, as under `null`, so that `meson test` on the host
+(and the emulator's `doCheck` of the flake) keep working from the same
+configuration; nothing in the tree links an out-of-tree object on the
+host. Whoever holds a licence for a real vocoder (DVSI's
+library, a hardware vocoder on a serial port, an implementation covered by
+a licence in their jurisdiction) writes, out of tree:
+
+```c
+#include "core/dmr_vocoder.h"
+
+static const struct dmrVocoder myBackend = {
+    .name = "my vocoder", .init = myInit, .terminate = myTerminate,
+    .decode = myDecode, .encode = myEncode,
+};
+
+const struct dmrVocoder *dmrVocoder_get(void)
+{
+    return &myBackend;
+}
+```
+
+and links it, for instance with a Meson wrap or an `-l` in the cross file's
+`link_args`. The backend runs on the DMR audio thread of the radio, with
+its stack; a backend needing more stack, a large heap or a coprocessor is
+expected to document it and to fail `init()` (negative errno) when it cannot
+run, in which case the audio layer behaves as with the null backend. Such an
+object must never be committed to this repository, offered in an OpenRTX
+release or distributed with the firmware, since the combination would not
+be distributable under the GPL.
+
+### The test tone
+
+`Settings > DMR > Test tone` (`settings.dmr_testTone`, off by default and
+not meant to stay on) makes the null backend play a 1 kHz sine at -12 dBFS
+for every received voice burst instead of silence. It exists for the
+hardware bring-up of the audio path: with a call being received, the tone
+must come out of the speaker for the 60 ms of every burst of the call, which
+proves the OpenMusic DAC path, the amplifier and mute sequencing and the
+slot timing of the pushes without any codec (`docs/dmr_bringup.md`). The
+setting is read at every burst, so the tone starts and stops as it is
+toggled; a transmission is not affected, the null encoder always sends the
+silence pattern.
+
+### Tests
+
+`dmr_vocoder_test` (`tests/unit/dmr_vocoder.cpp`): the silence pattern is
+one array shared by C and C++; `dmrVocoder_get()` returns the backend the
+build selected; the null backend encodes to the silence pattern and decodes
+to zeros with the tone off and to a 1 kHz, -12 dBFS sine with the tone on,
+continuous across two calls (zero crossings, peak, RMS, DFT bin, largest
+sample-to-sample step); the loopback backend round-trips a 1 kHz and a
+433 Hz tone with the RMS within 5 % and the same dominant DFT bin, keeps an
+envelope and the phase across payloads, plays silence for the silence
+pattern, for zeros and for a corrupted payload of its own; every buffer
+handed to the backends sits between guard zones that must come back intact
+(and the sanitizer build catches what the guards do not); a full-scale
+block holding -32768, whose magnitude does not fit an int16, keeps its
+level through the loopback round trip. The test builds both backends
+whatever the `dmr_vocoder` option (the null backend is in every host
+executable, the loopback one is added to this test when the option left
+it out).
 
 ## Hardware validation policy
 
@@ -461,3 +833,5 @@ of the DMR VFO from the settings, the exclusion with FRS mode, every item of
 receive, hang, transmit and wake-up call states, the DMR monitor screen with
 its pages and actions, the preservation of the receive report in
 `rtx_task()`, the size and the defaults of `settings_t`.
+
+To hear a replayed call, see [The emulator demo](#the-emulator-demo).
