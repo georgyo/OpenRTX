@@ -54,6 +54,9 @@ typedef struct
     uint16_t txUnderruns;  /**< Silent bursts while the encoder was running:
                                 the microphone stream fell behind          */
     uint16_t rfKeyed;      /**< Times the RF stage was keyed for TX         */
+    uint32_t shortLc;      /**< Last Short LC with a good CRC, 28 bits      */
+    uint16_t shortLcOk;    /**< Short LCs received with a good CRC          */
+    uint16_t shortLcBad;   /**< Short LCs dropped for a bad CRC             */
 }
 dmrMonitor_t;
 
@@ -112,6 +115,10 @@ typedef struct
                                     (register 0x50): 0 chip-filled, 1 the
                                     manual's per-burst sequence, from the
                                     monitor screen                         */
+    uint8_t  dmr_rfAdvance;    /**< DMR RF_TX_INTER advance register 0x12
+                                    override from the monitor screen, 0 =
+                                    driver default (bit6, the two-point
+                                    test tone, is never carried here)      */
 
     /* DMR receive report, written by the DMR opMode handler */
     bool     dmr_lcOk;         /**< DMR Full LC with valid CRC is held     */
@@ -126,6 +133,12 @@ typedef struct
     uint8_t  dmr_slotLock;     /**< DMR timing: 0 none, 1 synced,
                                     2 timecode locked                      */
     uint8_t  dmr_markers;      /**< DMR top-bar markers, enum dmrMarker    */
+    uint8_t  dmr_tsBusy;       /**< DMR repeater slot activity from the
+                                    Act_Updt Short LC: bit0 TS1 busy, bit1
+                                    TS2 busy; cleared 2 s after the last
+                                    Short LC of any kind (a Null message
+                                    keeps them alive), on a retune and on
+                                    a modem reprogramming                  */
     dmrMonitor_t dmr_mon;      /**< DMR bring-up counters, monitor screen  */
     struct dmrAudioStats dmr_audio; /**< DMR audio layer counters          */
 }

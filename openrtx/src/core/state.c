@@ -105,6 +105,21 @@ void state_init()
     if (state.settings.dmr_monitor > 2) {
         state.settings.dmr_monitor = default_settings.dmr_monitor;
     }
+
+    // A favourite slot is either empty or a packed {ID, call type} word:
+    // anything else (an unknown type, bits above the type, an ID of zero
+    // with a type) is emptied
+    for (size_t i = 0; i < DMR_FAV_NUM; i++) {
+        uint32_t fav = state.settings.dmr_favourites[i];
+        uint32_t id = DMR_FAV_ID(fav);
+        uint32_t type = DMR_FAV_TYPE(fav);
+
+        if ((fav != DMR_FAV_PACK(id, type)) || (type > 2) || (id == 0)) {
+            state.settings.dmr_favourites[i] = 0;
+        }
+    }
+
+    state.dmr_destName[0] = '\0';
 }
 
 void state_terminate()

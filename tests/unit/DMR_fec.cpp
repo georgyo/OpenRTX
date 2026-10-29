@@ -31,6 +31,8 @@
 #include "protocols/DMR/FEC/EmbeddedLc.hpp"
 #include "protocols/DMR/FEC/SlotType.hpp"
 #include "protocols/DMR/FEC/Emb.hpp"
+#include "protocols/DMR/FEC/ShortLc.hpp"
+#include "protocols/DMR/LinkControl.hpp"
 
 #include "assets/DMR_fec_vectors.inc"
 
@@ -770,4 +772,216 @@ TEST_CASE("Captured voice LC header burst decodes end to end",
     uint32_t src = (uint32_t(lc[6]) << 16) | (uint32_t(lc[7]) << 8) | lc[8];
     REQUIRE(dst == 3120);
     REQUIRE(src == 3120101);
+}
+
+/*
+ * Short LC in the CACH, clauses 7.1.4 and B.2.3 (figure B.6), and the
+ * Activity Update of TS 102 361-2 clause 7.1.3.2. There is no oracle for
+ * these in dmr_utils3: the vectors are built by hand from the figure.
+ */
+
+/* Act_Updt: group voice to 31665 on TS1, nothing on TS2 */
+static uint32_t actUpdtVector()
+{
+    DMR::ActivityUpdate au;
+    au.activity[0] = DMR::ACT_GROUP_VOICE;
+    au.activity[1] = DMR::ACT_NONE;
+    au.hash[0] = DMR::ActivityUpdate::hashAddress(31665);
+    au.hash[1] = 0;
+    return au.pack();
+}
+
+TEST_CASE("Short LC CRC and chip layout", "[dmr][fec][shortlc]")
+{
+    uint32_t msg = actUpdtVector();
+    REQUIRE((msg >> 24) == 1);
+    REQUIRE(((msg >> 20) & 0x0F) == 8);
+    REQUIRE(((msg >> 16) & 0x0F) == 0);
+    REQUIRE(((msg >> 8) & 0xFF) == Crc::crc8Bits(31665, 24));
+    REQUIRE((msg & 0xFF) == 0);
+
+    /* The CRC is the one of clause B.3.7 over the 28 message bits */
+    REQUIRE(ShortLc::crc(msg) == Crc::crc8Bits(msg, 28));
+
+    /* RX RAM 0x24..0x28: 28 bits left aligned, CRC in the fifth byte */
+    uint8_t bytes[5];
+    ShortLc::toChipBytes(msg, bytes);
+    REQUIRE(bytes[0] == (uint8_t)(msg >> 20));
+    REQUIRE(bytes[1] == (uint8_t)(msg >> 12));
+    REQUIRE(bytes[2] == (uint8_t)(msg >> 4));
+    REQUIRE(bytes[3] == (uint8_t)((msg & 0x0F) << 4));
+    REQUIRE(bytes[4] == ShortLc::crc(msg));
+
+    uint32_t back = 0;
+    REQUIRE(ShortLc::fromChipBytes(bytes, back) == true);
+    REQUIRE(back == msg);
+
+    /* A wrong CRC, or a flipped message bit, is rejected */
+    bytes[4] ^= 0x01;
+    back = 0xFFFFFFFF;
+    REQUIRE(ShortLc::fromChipBytes(bytes, back) == false);
+    REQUIRE(back == 0xFFFFFFFF);
+    bytes[4] ^= 0x01;
+    bytes[1] ^= 0x40;
+    REQUIRE(ShortLc::fromChipBytes(bytes, back) == false);
+
+    /* The low nibble of 0x27 is not part of the message */
+    bytes[1] ^= 0x40;
+    bytes[3] |= 0x0F;
+    REQUIRE(ShortLc::fromChipBytes(bytes, back) == true);
+    REQUIRE(back == msg);
+}
+
+TEST_CASE("Short LC interleaving follows figure B.6", "[dmr][fec][shortlc]")
+{
+    /*
+     * Only LC(27) set: CACH 1 starts with LC(27) LC(15) LC(3) PC(16), the
+     * CRC of the message lands in row 2 columns 4..11 and the column
+     * parity closes every column.
+     */
+    uint32_t frags[4];
+    uint32_t msg = 0x08000000;
+    ShortLc::encode(msg, frags);
+
+    REQUIRE(((frags[0] >> 16) & 1) == 1); // LC(27)
+    REQUIRE(((frags[0] >> 15) & 1) == 0); // LC(15)
+    REQUIRE(((frags[0] >> 14) & 1) == 0); // LC(3)
+    REQUIRE(((frags[0] >> 13) & 1) == 1); // PC(16): LC(27) alone in col 0
+
+    for (unsigned i = 0; i < 4; i++)
+        REQUIRE((frags[i] >> 17) == 0);
+
+    /* Rebuild the encode matrix and check every row and column */
+    uint32_t rows[4] = { 0 };
+    for (unsigned col = 0; col < 17; col++) {
+        for (unsigned row = 0; row < 4; row++) {
+            unsigned pos = col * 4 + row;
+            unsigned bit = (frags[pos / 17] >> (16 - (pos % 17))) & 1;
+            rows[row] |= bit << (16 - col);
+        }
+    }
+
+    uint32_t parity = 0;
+    for (unsigned row = 0; row < 4; row++)
+        parity ^= rows[row];
+    REQUIRE(parity == 0);
+
+    for (unsigned row = 0; row < 3; row++) {
+        uint32_t w = rows[row];
+        REQUIRE(Hamming::decode(Hamming::H17_12, w) == 0);
+    }
+
+    REQUIRE(Hamming::data(Hamming::H17_12, rows[0]) == 0x800); // LC(27..16)
+    REQUIRE(Hamming::data(Hamming::H17_12, rows[1]) == 0x000); // LC(15..4)
+    REQUIRE(Hamming::data(Hamming::H17_12, rows[2]) == ShortLc::crc(msg));
+
+    /* CACH 4 ends with PC(0), the last column's parity */
+    REQUIRE((frags[3] & 1) == ((rows[0] ^ rows[1] ^ rows[2]) & 1));
+}
+
+TEST_CASE("Short LC round trip and single error correction",
+          "[dmr][fec][shortlc]")
+{
+    const uint32_t vectors[] = { actUpdtVector(), 0x00000000, 0x0FFFFFFF,
+                                 0x0A5A5A5A, 0x01234567 };
+
+    for (uint32_t v : vectors) {
+        uint32_t frags[4];
+        uint32_t msg = 0;
+
+        ShortLc::encode(v, frags);
+        INFO("message " << std::hex << v);
+        REQUIRE(ShortLc::decode(frags, msg) == 0);
+        REQUIRE(msg == v);
+
+        for (unsigned pos = 0; pos < 68; pos++) {
+            uint32_t bad[4];
+            memcpy(bad, frags, sizeof(bad));
+            bad[pos / 17] ^= 1u << (16 - (pos % 17));
+            msg = 0;
+            INFO("error at bit " << pos);
+            REQUIRE(ShortLc::decode(bad, msg) == 1);
+            REQUIRE(msg == v);
+        }
+    }
+}
+
+TEST_CASE("Short LC rejects corrupted messages", "[dmr][fec][shortlc]")
+{
+    uint32_t frags[4];
+    uint32_t msg = 0xFFFFFFFF;
+    uint32_t v = actUpdtVector();
+    ShortLc::encode(v, frags);
+
+    /*
+     * Two errors in one row of a (17,12,3) code are miscorrected into a
+     * third bit: the CRC then rejects the message, whichever pair of
+     * columns of row 0 is hit (row 0 holds the SLCO and the activity
+     * nibbles, so every miscorrection changes the message).
+     */
+    for (unsigned a = 0; a < 17; a++) {
+        for (unsigned b = a + 1; b < 17; b++) {
+            uint32_t bad[4];
+            memcpy(bad, frags, sizeof(bad));
+            unsigned pa = a * 4, pb = b * 4;
+            bad[pa / 17] ^= 1u << (16 - (pa % 17));
+            bad[pb / 17] ^= 1u << (16 - (pb % 17));
+            msg = 0xFFFFFFFF;
+            INFO("errors at columns " << a << " and " << b);
+            REQUIRE(ShortLc::decode(bad, msg) == -1);
+            REQUIRE(msg == 0xFFFFFFFF);
+        }
+    }
+
+    /* Garbage never decodes to the vector */
+    uint32_t zero[4] = { 0, 0, 0, 0 };
+    msg = 0xFFFFFFFF;
+    int res = ShortLc::decode(zero, msg);
+    bool untouched = (res < 0) && (msg == 0xFFFFFFFF);
+    REQUIRE((untouched || (msg == 0)));
+}
+
+TEST_CASE("Activity Update Short LC parser", "[dmr][fec][shortlc]")
+{
+    DMR::ActivityUpdate au;
+    uint32_t v = actUpdtVector();
+
+    REQUIRE(au.unpack(v) == true);
+    REQUIRE(au.activity[0] == DMR::ACT_GROUP_VOICE);
+    REQUIRE(au.activity[1] == DMR::ACT_NONE);
+    REQUIRE(au.hash[0] == Crc::crc8Bits(31665, 24));
+    REQUIRE(au.hash[1] == 0);
+    REQUIRE(au.busy(1) == true);
+    REQUIRE(au.busy(2) == false);
+    REQUIRE(au.voice(1) == true);
+    REQUIRE(au.voice(2) == false);
+    REQUIRE(au.matches(1, 31665) == true);
+    REQUIRE(au.matches(1, 31664) == false);
+    REQUIRE(au.matches(2, 0) == true);
+    REQUIRE(au.busy(0) == false);
+    REQUIRE(au.busy(3) == false);
+    REQUIRE(au.pack() == v);
+
+    /* A Null message is not an activity update, the fields stay */
+    REQUIRE(au.unpack(0x00000000) == false);
+    REQUIRE(au.activity[0] == DMR::ACT_GROUP_VOICE);
+
+    /* Reserved activity codes count as busy but not as voice; data too */
+    DMR::ActivityUpdate other;
+    other.activity[0] = 1;
+    other.activity[1] = DMR::ACT_GROUP_DATA;
+    other.hash[0] = 0x12;
+    other.hash[1] = 0x34;
+    REQUIRE(au.unpack(other.pack()) == true);
+    REQUIRE(au.busy(1) == true);
+    REQUIRE(au.voice(1) == false);
+    REQUIRE(au.busy(2) == true);
+    REQUIRE(au.voice(2) == false);
+    REQUIRE(au.hash[0] == 0x12);
+    REQUIRE(au.hash[1] == 0x34);
+
+    /* Hash of the 24-bit address, TS 102 361-1 B.3.7 */
+    REQUIRE(DMR::ActivityUpdate::hashAddress(0x1234567)
+            == DMR::ActivityUpdate::hashAddress(0x234567));
+    REQUIRE(DMR::ActivityUpdate::hashAddress(0) == 0);
 }

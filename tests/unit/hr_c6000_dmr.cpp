@@ -316,6 +316,8 @@ static void resetAll()
 {
     dmrbb_terminate();
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 0);
+    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE,
+                        DMRBB_SYS_LINE_PINMAP);
 
     uspi.reset();
     vspi.reset();
@@ -335,6 +337,7 @@ static struct dmrbbConfig defaultConfig()
     cfg.ownId = 0x23C34E; /* 2345806 */
     cfg.polite = true;
     cfg.modeReg = DMRBB_MODE_REG_DEFAULT;
+    cfg.rfAdvance = 0;
     return cfg;
 }
 
@@ -1130,6 +1133,208 @@ TEST_CASE("RF_TX_INTER is counted and timestamped against the slot tick",
     REQUIRE(uspi.log.empty());
     REQUIRE(s.rftxCount == 2);
     REQUIRE(readWord(DMRBB_DRV_RFTX_TICK(0), 4) == 0x12345);
+
+    dmrbb_terminate();
+}
+
+TEST_CASE("dmrbb_configure rewrites 0x12 only for a non-default RF advance",
+          "[dmr_cs7000][tx]")
+{
+    /*
+     * rfAdvance = 0 (the OpMode's "no override") and the explicit default
+     * both leave the table's 0x12 = 0x98 alone; the OpenGD77 word 0x15 is
+     * written right after the mode word, before the colour code.
+     */
+    resetAll();
+    REQUIRE(dmrbb_init() == 0);
+
+    struct dmrbbConfig cfg = defaultConfig();
+    cfg.rfAdvance = DMRBB_RF_ADVANCE_DEFAULT;
+    dmrbb_configure(&cfg);
+
+    size_t n = dmrModeStream.size();
+    REQUIRE(uspi.log.size() == n + 6);
+    unsigned writes12 = 0;
+    for (const auto &t : uspi.log) {
+        if ((t.tx[0] == 0x04) && (t.tx[1] == 0x12))
+            writes12 += 1;
+    }
+    REQUIRE(writes12 == 1);
+    REQUIRE(uspi.pages[4][0x12] == 0x98);
+
+    uspi.log.clear();
+    cfg.rfAdvance = 0x15;
+    dmrbb_configure(&cfg);
+    REQUIRE(uspi.log.size() == n + 7);
+    requireTx(uspi.log[n], cfgWrite(0x12, 0x15));
+    requireTx(uspi.log[n + 1], cfgWrite(0x1F, 0x10));
+    REQUIRE(uspi.pages[4][0x12] == 0x15);
+
+    /* Both overrides together: mode word first, then the advance */
+    uspi.log.clear();
+    cfg.modeReg = 0x6A;
+    dmrbb_configure(&cfg);
+    REQUIRE(uspi.log.size() == n + 8);
+    requireTx(uspi.log[n], cfgWrite(0x10, 0x6A));
+    requireTx(uspi.log[n + 1], cfgWrite(0x12, 0x15));
+    requireTx(uspi.log[n + 2], cfgWrite(0x1F, 0x10));
+
+    dmrbb_terminate();
+}
+
+TEST_CASE("dmrbb_waitEvent reads the Short LC from RX RAM 0x24 when 0x86 "
+          "reports one",
+          "[dmr_cs7000]")
+{
+    bringUp();
+
+    /* TX end flag with the Short LC sub-status bit, no control frame */
+    uspi.pages[4][0x82] = 0x20;
+    uspi.pages[4][0x86] = 0x04;
+    for (uint8_t i = 0; i < 5; i++)
+        uspi.pages[2][0x24 + i] = (uint8_t)(0x91 + i);
+
+    struct dmrbbSnapshot s;
+    memset(&s, 0, sizeof(s));
+    fireLine(1);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
+
+    REQUIRE(s.irq82 == 0x20);
+    REQUIRE(s.sub86 == 0x04);
+    for (uint8_t i = 0; i < 5; i++)
+        REQUIRE(s.shortLc[i] == (uint8_t)(0x91 + i));
+
+    /*
+     * Read order: 0x82, 0x86, then the five RX RAM bytes at 0x24 in one
+     * chip select, before the status registers and the acknowledge.
+     */
+    requireTx(uspi.log[0], { 0x84, 0x82, 0x00 });
+    requireTx(uspi.log[1], { 0x84, 0x86, 0x00 });
+    REQUIRE(uspi.log[2].tx.size() == 7);
+    REQUIRE(uspi.log[2].tx[0] == 0x82);
+    REQUIRE(uspi.log[2].tx[1] == 0x24);
+    REQUIRE(uspi.log[2].rxBytes == 5);
+    requireTx(uspi.log[3], { 0x84, 0x51, 0x00 });
+    requireTx(uspi.log.back(), cfgWrite(0x83, 0x20));
+
+    /* The 12-byte LC RAM is not read: no control frame flag */
+    for (const auto &t : uspi.log) {
+        if (t.tx[0] == 0x82)
+            REQUIRE(t.tx[1] == 0x24);
+    }
+
+    /* TX end without the Short LC bit: the snapshot keeps the old bytes */
+    uspi.log.clear();
+    uspi.pages[4][0x86] = 0x80;
+    for (uint8_t i = 0; i < 5; i++)
+        uspi.pages[2][0x24 + i] = 0xEE;
+
+    fireLine(1);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
+    REQUIRE(s.sub86 == 0x80);
+    for (uint8_t i = 0; i < 5; i++)
+        REQUIRE(s.shortLc[i] == (uint8_t)(0x91 + i));
+    for (const auto &t : uspi.log)
+        REQUIRE(t.tx[0] != 0x82);
+
+    /* The Short LC bit without the TX end flag is never looked at */
+    uspi.log.clear();
+    uspi.pages[4][0x82] = 0x08;
+    uspi.pages[4][0x86] = 0x04;
+    fireLine(1);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
+    for (const auto &t : uspi.log) {
+        REQUIRE(!((t.tx[0] == 0x84) && (t.tx[1] == 0x86)));
+        REQUIRE(!((t.tx[0] == 0x82) && (t.tx[1] == 0x24)));
+    }
+    for (uint8_t i = 0; i < 5; i++)
+        REQUIRE(s.shortLc[i] == (uint8_t)(0x91 + i));
+
+    dmrbb_terminate();
+}
+
+TEST_CASE("The SYS line knob moves the SYS_INTER dispatch between PC1 and PC3",
+          "[dmr_cs7000]")
+{
+    bringUp();
+
+    auto lineCount = [](unsigned n) {
+        uint32_t v = 0;
+        for (unsigned b = 0; b < 4; b++) {
+            v |= (uint32_t)dmrbb_readRegister(DMRBB_PAGE_DRIVER,
+                                              DMRBB_DRV_LINE_COUNT(n) + b)
+              << (8 * b);
+        }
+        return v;
+    };
+
+    /* Default: the pinmap line, PC1 */
+    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
+            == DMRBB_SYS_LINE_PINMAP);
+
+    uspi.pages[4][0x82] = 0x08;
+    struct dmrbbSnapshot s;
+    memset(&s, 0, sizeof(s));
+
+    fireLine(3);
+    REQUIRE(dmrbb_waitEvent(&s, 5) == DMRBB_EV_TIMEOUT);
+    REQUIRE(s.sysCount == 0);
+    REQUIRE(lineCount(3) == 1);
+    REQUIRE(uspi.log.empty());
+
+    /* Switch to the schematic line, PC3: it raises the event and the
+     * register reads, PC1 only counts */
+    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE,
+                        DMRBB_SYS_LINE_SCHEMATIC);
+    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
+            == DMRBB_SYS_LINE_SCHEMATIC);
+
+    fireLine(3);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
+    REQUIRE(s.sysCount == 1);
+    REQUIRE(s.irq82 == 0x08);
+    REQUIRE(lineCount(3) == 2);
+    requireTx(uspi.log[0], { 0x84, 0x82, 0x00 });
+    requireTx(uspi.log.back(), cfgWrite(0x83, 0x08));
+
+    uspi.log.clear();
+    fireLine(1);
+    REQUIRE(dmrbb_waitEvent(&s, 5) == DMRBB_EV_TIMEOUT);
+    REQUIRE(s.sysCount == 1);
+    REQUIRE(lineCount(1) == 1);
+    REQUIRE(uspi.log.empty());
+
+    /* TS and RF_TX dispatch are not affected */
+    fireLine(0);
+    fireLine(2);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == (DMRBB_EV_TS | DMRBB_EV_RFTX));
+
+    /* Values other than the two candidates are ignored */
+    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE, 0);
+    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
+            == DMRBB_SYS_LINE_SCHEMATIC);
+    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE, 2);
+    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE, 7);
+    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
+            == DMRBB_SYS_LINE_SCHEMATIC);
+
+    /* The knob survives a reconfiguration, like the other driver knobs */
+    struct dmrbbConfig cfg = defaultConfig();
+    dmrbb_configure(&cfg);
+    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
+            == DMRBB_SYS_LINE_SCHEMATIC);
+    uspi.log.clear();
+    fireLine(3);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
+
+    /* And back to the pinmap line */
+    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE,
+                        DMRBB_SYS_LINE_PINMAP);
+    uspi.log.clear();
+    fireLine(1);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
+    fireLine(3);
+    REQUIRE(dmrbb_waitEvent(&s, 5) == DMRBB_EV_TIMEOUT);
 
     dmrbb_terminate();
 }

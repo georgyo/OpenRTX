@@ -78,10 +78,12 @@ openrtx_src = ['openrtx/src/core/state.c',
                'openrtx/src/protocols/DMR/FEC/EmbeddedLc.cpp',
                'openrtx/src/protocols/DMR/FEC/SlotType.cpp',
                'openrtx/src/protocols/DMR/FEC/Emb.cpp',
+               'openrtx/src/protocols/DMR/FEC/ShortLc.cpp',
                'openrtx/src/protocols/DMR/LinkControl.cpp',
                'openrtx/src/protocols/DMR/CallController.cpp',
                'openrtx/src/protocols/DMR/Silence.c',
                'openrtx/src/core/dmr_audio.c',
+               'openrtx/src/core/dmr_lastheard.c',
                'openrtx/src/rtx/OpMode_DMR.cpp']
 
 openrtx_inc = ['openrtx/include', 'platform']
@@ -1526,6 +1528,10 @@ dmr_fec_test = executable('dmr_fec_test',
                           sources : unit_test_src + ['tests/unit/DMR_fec.cpp'],
                           kwargs  : unit_test_opts)
 
+dmr_lastheard_test = executable('dmr_lastheard_test',
+                                sources : unit_test_src + ['tests/unit/DMR_lastheard.cpp'],
+                                kwargs  : unit_test_opts)
+
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
 test('M17 Demodulator Test',  m17_demodulator_test)
@@ -1616,3 +1622,4 @@ test('STM32H7 Clock Tree Test', stm32h7_clock_tree_test)
 test('SKY72310 Lock Detect Test', sky72310_lock_test)
 test('AK2365A Driver Test',   ak2365a_test)
 test('DMR FEC Unit Test',     dmr_fec_test)
+test('DMR Last Heard Test',   dmr_lastheard_test)
