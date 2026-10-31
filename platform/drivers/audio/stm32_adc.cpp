@@ -193,13 +193,64 @@ void stm32adc_init(const uint8_t instance)
     ADC_TypeDef *adc = periph[instance].adc;
 
     #ifdef STM32H743xx
+    /*
+     * The ADC may have been left enabled and running by the code which ran
+     * before OpenRTX, i.e. the bootloader on the first boot after flashing:
+     * the start-up sequence below is ignored by the hardware unless ADEN = 0,
+     * so stop the ongoing conversions and switch the ADC off first. The
+     * command bits of ADC_CR are "read, set": writing 0 has no effect and
+     * writing 1 re-issues the command, hence they are masked out of every
+     * read-modify-write (ADC_CR_BITS_PROPERTY_RS in the ST LL driver).
+     */
+    constexpr uint32_t crRsBits = ADC_CR_ADCAL | ADC_CR_JADSTP | ADC_CR_ADSTP
+                                | ADC_CR_JADSTART | ADC_CR_ADSTART
+                                | ADC_CR_ADDIS | ADC_CR_ADEN;
+    uint32_t timeout = ADC_STARTUP_TIMEOUT;
+
+    if(((adc->CR & ADC_CR_DEEPPWD) == 0) && ((adc->CR & ADC_CR_ADEN) != 0))
+    {
+        uint32_t stop = 0;
+
+        if((adc->CR & ADC_CR_ADSTART) != 0)
+            stop |= ADC_CR_ADSTP;
+
+        if((adc->CR & ADC_CR_JADSTART) != 0)
+            stop |= ADC_CR_JADSTP;
+
+        if(stop != 0)
+            adc->CR = (adc->CR & ~crRsBits) | stop;
+
+        while(((adc->CR & (ADC_CR_ADSTART | ADC_CR_JADSTART)) != 0)
+              && (timeout > 0))
+            timeout -= 1;
+
+        adc->CR = (adc->CR & ~crRsBits) | ADC_CR_ADDIS;
+
+        timeout = ADC_STARTUP_TIMEOUT;
+        while(((adc->CR & ADC_CR_ADEN) != 0) && (timeout > 0))
+            timeout -= 1;
+    }
+
     adc->CR = ADC_CR_ADVREGEN
             | ADC_CR_BOOST_1
             | ADC_CR_BOOST_0;
 
-    uint32_t timeout = ADC_STARTUP_TIMEOUT;
+    timeout = ADC_STARTUP_TIMEOUT;
     while(((adc->ISR & ADC_ISR_LDORDY) == 0) && (timeout > 0))
         timeout -= 1;
+
+    // Restore the reset values of the configuration registers the sequence
+    // below does not write, they keep whatever the previous owner put there.
+    adc->IER    = 0;
+    adc->ISR    = ADC_ISR_ADRDY | ADC_ISR_EOSMP | ADC_ISR_EOC | ADC_ISR_EOS
+                | ADC_ISR_OVR | ADC_ISR_JEOC | ADC_ISR_JEOS | ADC_ISR_AWD1
+                | ADC_ISR_AWD2 | ADC_ISR_AWD3 | ADC_ISR_JQOVF;
+    adc->CFGR2  = 0;
+    adc->DIFSEL = 0;
+    adc->OFR1   = 0;
+    adc->OFR2   = 0;
+    adc->OFR3   = 0;
+    adc->OFR4   = 0;
 
     // Calibrate the ADC, both offset and linearity. Calibration requires the
     // ADC to be disabled (ADEN = 0).
@@ -233,7 +284,8 @@ void stm32adc_init(const uint8_t instance)
     adc->SMPR2 = 0x36DB6DB6;
     adc->SMPR1 = 0x36DB6DB6;
     adc->SQR1  = 0;                 // Convert one channel
-    adc->CFGR |= ADC_CFGR_DISCEN
+    adc->CFGR  = ADC_CFGR_JQDIS     // Reset value, injected queue disabled
+              |  ADC_CFGR_DISCEN
               |  ADC_CFGR_EXTEN_0   // Trigger on rising edge
               |  adcTrig            // Trigger source
               |  ADC_CFGR_RES_1     // 12-bit resolution
