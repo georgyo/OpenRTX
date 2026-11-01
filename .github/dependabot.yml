@@ -15,8 +15,9 @@ updates:
           - version-update:semver-major
           - version-update:semver-minor
 
-  # Bumps the nixpkgs pin in flake.lock; the Nix build workflow runs the
-  # checks and every image on the PR (see "Updating pins" in nix/README.md).
+  # Bumps the flake inputs (nixpkgs, nix-github-actions) in flake.lock; the
+  # Nix build workflow runs the checks and every image on the PR (see
+  # "Updating pins" in nix/README.md).
   - package-ecosystem: nix
     directory: /
     commit-message:

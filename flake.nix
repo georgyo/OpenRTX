@@ -8,10 +8,22 @@
 {
   description = "OpenRTX - modular open source radio firmware";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # Turns the flake outputs into the GitHub Actions job matrix, see
+    # `githubActions` below.
+    nix-github-actions = {
+      url = "github:nix-community/nix-github-actions";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      nix-github-actions,
+    }:
     let
       inherit (nixpkgs) lib;
 
@@ -277,6 +289,26 @@
           zephyr = pkgs.openrtx.zephyrShell;
         }
       );
+
+      # The GitHub Actions job matrix of .github/workflows/nix.yml, one job per
+      # attribute (`nix eval --json .#githubActions.matrix`). Everything that
+      # workflow builds between the toolchain and the final collection of
+      # images is listed here: every package but the toolchain (built by the
+      # job before the matrix) and `all` (built by the job after it), the
+      # checks and the dev shells. Only x86_64-linux: the hosted runners for
+      # the other systems cannot build the toolchain.
+      githubActions = nix-github-actions.lib.mkGithubMatrix {
+        checks = lib.genAttrs [ "x86_64-linux" ] (
+          system:
+          removeAttrs self.packages.${system} [
+            "all"
+            "default"
+            "miosix-toolchain"
+          ]
+          // lib.mapAttrs' (name: lib.nameValuePair "check-${name}") self.checks.${system}
+          // lib.mapAttrs' (name: lib.nameValuePair "devShell-${name}") self.devShells.${system}
+        );
+      };
 
       # `nix fmt` formats every .nix file in the tree; `nix fmt -- --ci` checks.
       formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);
