@@ -49,6 +49,25 @@ void platform_init()
 
     spi_init((const struct spiDevice *) &spiSr);
     gpioShiftReg_init(&extGpio);
+
+    /*
+     * The firmware is also entered from the bootloader without a power
+     * cycle, as it happens right after flashing, and the ADC drivers assume
+     * the reset state of the peripherals: an ADC left enabled ignores most
+     * of their start-up sequence. Reset the ADCs so that every start is the
+     * same as a power-on one. ADC3 is not used and stays unclocked.
+     */
+    RCC->AHB1ENR  |= RCC_AHB1ENR_ADC12EN;
+    RCC->AHB4ENR  |= RCC_AHB4ENR_ADC3EN;
+    __DSB();
+    RCC->AHB1RSTR |= RCC_AHB1RSTR_ADC12RST;
+    RCC->AHB4RSTR |= RCC_AHB4RSTR_ADC3RST;
+    __DSB();
+    RCC->AHB1RSTR &= ~RCC_AHB1RSTR_ADC12RST;
+    RCC->AHB4RSTR &= ~RCC_AHB4RSTR_ADC3RST;
+    RCC->AHB4ENR  &= ~RCC_AHB4ENR_ADC3EN;
+    __DSB();
+
     adcStm32_init(&adc1);
     nvm_init();
     audio_init();
