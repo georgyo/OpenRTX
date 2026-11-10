@@ -95,5 +95,12 @@ const stringsTable_t englishStrings =
     .CAN               = "CAN",
     .canRxCheck        = "CAN RX Check",
     .metaText          = "Meta Txt",
+    .frs               = "FRS",
+    .frsSettings       = "FRS Settings",
+    .frsMode           = "FRS Mode",
+    .code              = "Code",
+    .resetCodes        = "Reset Codes",
+    .enter             = "Enter",
+    .channelRange      = "Channel 1-22",
 };
 #endif  // ENGLISHSTRINGS_H

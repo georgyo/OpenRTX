@@ -100,6 +100,13 @@ typedef struct
     const char* CAN;
     const char* canRxCheck;
     const char* metaText;
+    const char* frs;
+    const char* frsSettings;
+    const char* frsMode;
+    const char* code;
+    const char* resetCodes;
+    const char* enter;
+    const char* channelRange;
 }
 stringsTable_t;
 

@@ -10,6 +10,13 @@
 #include "hwconfig.h"
 #include <stdbool.h>
 
+/*
+ * Number of FRS channels (47 CFR 95.563), numbered 1..22 on the radio and
+ * stored 0-based. Defined here rather than in core/frs.h because settings_t
+ * stores one privacy code per channel and core/frs.h includes this header.
+ */
+#define FRS_CHANNEL_NUM 22
+
 typedef enum
 {
     TIMER_OFF =  0,
@@ -51,6 +58,9 @@ typedef struct
     bool    showBatteryIcon;      // Battery display true: icon, false: percentage
     bool    gpsSetTime;           // Use GPS to ajust RTC time
     char    M17_meta_text[53];    // M17 Meta Text to send
+    uint8_t frs_mode;             // FRS mode: 0 = off, 1 = FRS
+    uint8_t frs_channel;          // Current FRS channel, 0-based (0..21)
+    uint8_t frs_codes[FRS_CHANNEL_NUM]; // Privacy code per FRS channel, 0 = off
 }
 __attribute__((packed)) settings_t;
 
@@ -79,6 +89,9 @@ static const settings_t default_settings =
     false,                        // Display battery icon
     false,                        // Update RTC with GPS
     "OpenRTX",                    // Default M17 meta text
+    0,                            // FRS mode off
+    0,                            // FRS channel 1
+    { 0 },                        // FRS privacy codes all off
 };
 
 #endif /* SETTINGS_H */

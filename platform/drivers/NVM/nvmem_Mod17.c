@@ -6,6 +6,7 @@
 
 #include "interfaces/nvmem.h"
 #include "calibration/calibInfo_Mod17.h"
+#include <stddef.h>
 #include <string.h>
 #include "core/crc.h"
 #include "flash.h"
@@ -32,6 +33,15 @@ __attribute__((packed)) memory_t;
 
 static const uint32_t MEM_MAGIC   = 0x584E504F;    // "OPNX"
 static const uint32_t baseAddress = 0x080E0000;
+
+/*
+ * The data lives in sector 11 of the STM32F405 flash, 128kB starting at
+ * baseAddress: only the blocks lying entirely inside the sector can be used,
+ * which is fewer than the 1024 the flag words can track.
+ */
+#define SECTOR_SIZE 0x20000
+#define NUM_BLOCKS  ((SECTOR_SIZE - offsetof(memory_t, data)) \
+                     / sizeof(dataBlock_t))
 memory_t *memory = ((memory_t *) baseAddress);
 
 mod17Calib_t mod17CalData;   // Calibration data, to be saved and loaded
@@ -78,6 +88,12 @@ static int findActiveBlock()
 
     block = (block * 32) + bit;
     block -= 1;
+
+    // No block written yet, or a block that would lie beyond the end of the
+    // sector, as a firmware with smaller data blocks can leave behind: its
+    // data is not valid for this layout and must not even be read.
+    if(block >= NUM_BLOCKS)
+        return -2;
 
     // Check data validity
     const size_t crcLen = sizeof(settings_t) + sizeof(mod17Calib_t);
@@ -146,9 +162,9 @@ int nvm_writeSettings(const settings_t *settings)
     /*
      * Memory never initialised or save space finished: erase all the sector.
      * On STM32F405 the settings are saved in sector 11, starting at address
-     * 0x08060000.
+     * 0x080E0000.
      */
-    if((block < 0) || (block >= 2047))
+    if((block < 0) || ((size_t)(block + 1) >= NUM_BLOCKS))
     {
         flash_eraseSector(11);
         addr = ((uint32_t) &(memory->magic));
