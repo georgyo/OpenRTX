@@ -33,7 +33,9 @@ void usb_serial_terminate(void);
 void usb_serial_task(void);
 
 /**
- * \return true if a host is connected and the CDC port is open.
+ * \return true if a host has configured the device and the bus is active.
+ * Whether a program has the port open is not known, and an unplugged cable
+ * is only seen once the bus has gone into suspend.
  */
 bool usb_serial_connected(void);
 
@@ -53,7 +55,9 @@ uint32_t usb_serial_available(void);
  * Also returns -1 if no forward progress is made within
  * USB_SERIAL_WRITE_TIMEOUT_MS (default 50 ms; transfer stalled while
  * mounted), clearing the TX FIFO before returning. The wait is a kernel
- * sleep, not a busy loop.
+ * sleep, not a busy loop, and it is paid once: until the host takes data
+ * again the following calls queue what fits in the FIFO and return at once.
+ * Data written while the bus is suspended is dropped.
  *
  * Thread-safe: concurrent callers are serialised by an internal mutex.
  * Do not call this function from within a tinyUSB callback, as it may

@@ -64,6 +64,15 @@ static uint8_t carrier_boot_notify_remaining;
 static pthread_mutex_t cdc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /*
+ * Set when usb_serial_write() gave up on a host that keeps the device
+ * configured but does not take data, as it happens with no terminal open on
+ * the port or with the bus suspended. While it is set the writes do not wait
+ * any more; it is cleared when an IN transfer completes or the device is
+ * mounted again. Protected by cdc_mutex.
+ */
+static bool tx_stalled = false;
+
+/*
  * Upper bound for the hardware ready flags polled in usb_serial_init(), in
  * 10 us steps: HSI48 starts in a few microseconds and the VDD33USB detector
  * settles in well under a millisecond, so 10 ms is generous.  Polling without
@@ -320,7 +329,12 @@ void usb_serial_task(void)
 
 bool usb_serial_connected(void)
 {
-    return atomic_load(&usb_mounted);
+    /*
+     * usb_mounted alone stays set once the device has been enumerated: VBUS
+     * is not sensed, so an unplugged cable never unmounts the device and is
+     * only visible as a suspended bus.
+     */
+    return atomic_load(&usb_mounted) && tud_mounted() && !tud_suspended();
 }
 
 uint32_t usb_serial_available(void)
@@ -357,13 +371,31 @@ ssize_t usb_serial_write(const void *buf, size_t len)
      * traffic may not run until the bus resumes.  Advertise remote wakeup in
      * the configuration descriptor and pulse here when we have data to send.
      * VBUS is not sensed on this board (PA9 is used by the Bluetooth UART),
-     * so an unplugged cable is only visible as a bus that stays suspended:
-     * when the host did not enable remote wakeup there is no way to resume
-     * it either, treat both cases as "not connected" instead of stalling.
+     * so an unplugged cable is only visible as a bus that stays suspended,
+     * and with remote wakeup armed by the host the pulse "succeeds" forever
+     * on it: signal once and drop the data instead of waiting for a resume
+     * that may never come.
      */
-    if (len > 0 && tud_suspended() && !tud_remote_wakeup()) {
+    if (len > 0 && tud_suspended()) {
+        if (!tx_stalled) {
+            (void)tud_remote_wakeup();
+            tx_stalled = true;
+        }
+
         pthread_mutex_unlock(&cdc_mutex);
         return -1;
+    }
+
+    /*
+     * The host stopped taking data and a previous call already waited for
+     * it: queue what fits in the FIFO, which goes out as soon as the host
+     * reads again, and return without waiting a second time.
+     */
+    if (tx_stalled) {
+        uint32_t accepted = tud_cdc_write(p, rem);
+        tud_cdc_write_flush();
+        pthread_mutex_unlock(&cdc_mutex);
+        return (accepted == rem) ? (ssize_t)len : -1;
     }
 
     while (rem > 0) {
@@ -401,6 +433,7 @@ ssize_t usb_serial_write(const void *buf, size_t len)
         tud_cdc_write_flush();
 
         if (timeout == 0) {
+            tx_stalled = true;
             tud_cdc_write_clear();
             pthread_mutex_unlock(&cdc_mutex);
             return -1;
@@ -411,7 +444,17 @@ ssize_t usb_serial_write(const void *buf, size_t len)
         sleepFor(0, 1); /* allow the ISR to queue the xfer-complete event */
         pthread_mutex_lock(&cdc_mutex);
 
-        if (tud_suspended() && !tud_remote_wakeup()) {
+        /*
+         * usb_serial_terminate() may have run during the sleep: the clock
+         * of the peripheral is off then, do not touch the stack again.
+         */
+        if (!atomic_load(&usb_mounted)) {
+            pthread_mutex_unlock(&cdc_mutex);
+            return -1;
+        }
+
+        if (tud_suspended()) {
+            tx_stalled = true;
             tud_cdc_write_clear();
             pthread_mutex_unlock(&cdc_mutex);
             return -1;
@@ -455,8 +498,19 @@ void _Z17OTG_FS_IRQHandlerv(void)
     tud_int_handler(USB_SERIAL_RHPORT);
 }
 
+/*
+ * An IN transfer completed, so the host reads the port again. Called from
+ * tud_task(), which always runs with cdc_mutex held.
+ */
+void tud_cdc_tx_complete_cb(uint8_t itf)
+{
+    (void)itf;
+    tx_stalled = false;
+}
+
 void tud_mount_cb(void)
 {
+    tx_stalled = false;
     atomic_store(&usb_mounted, true);
     atomic_store(&cdc_uart_notify_pending, false);
 #if CFG_TUD_CDC_NOTIFY
@@ -498,8 +552,11 @@ void tud_umount_cb(void)
  * (SET_LINE_CODING, SET_CONTROL_LINE_STATE) and was flipping usb_mounted off
  * and back on, breaking host tools and motivating fragile resume workarounds.
  *
- * Physical disconnect is reported as DCD_EVENT_UNPLUGGED -> tud_umount_cb().
- * While the device remains configured but the host is not polling IN (e.g.
- * real bus suspend), usb_serial_write() may wait for FIFO space; the bounded
- * retry loop (USB_SERIAL_WRITE_TIMEOUT_MS) prevents indefinite blocking.
+ * A physical disconnect is not reported on this board: without VBUS sensing
+ * tinyUSB never raises DCD_EVENT_UNPLUGGED, tud_umount_cb() does not run and
+ * the bus just stays suspended, which usb_serial_connected() and
+ * usb_serial_write() check for. While the device remains configured but the
+ * host is not polling IN (no terminal open on the port), usb_serial_write()
+ * waits for FIFO space once, for USB_SERIAL_WRITE_TIMEOUT_MS, and then stops
+ * waiting until the host takes data again.
  */
