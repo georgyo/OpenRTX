@@ -27,10 +27,19 @@ int main(void)
     display_setBacklightLevel(255);
 
     int i = 0;
+    int pass = 0;
 
     while (1) {
+        // The control transfers of the enumeration advance one stage per
+        // call: service the stack every 5 ms, as the firmware does.
         usb_serial_task();
+        sleepFor(0, 5u);
 
+        pass += 1;
+        if (pass < 50)
+            continue;
+
+        pass = 0;
         gfx_clearScreen();
 
         point_t pos_line = { 5, 15 };
@@ -43,8 +52,6 @@ int main(void)
 
         printf("Hello via serial #%d\n", i);
         i++;
-
-        sleepFor(0, 250u);
     }
 
     return 0;
