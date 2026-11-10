@@ -1,7 +1,7 @@
 name: "Nix build"
 on:
   workflow_dispatch:
-  pull_request:
+  push:
 
 # Cancel superseded runs of the same PR, keep manual runs. As in main.yml,
 # pushes do not start a run on their own and the event name is part of the
