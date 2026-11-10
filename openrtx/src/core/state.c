@@ -25,6 +25,29 @@ const uint32_t freq_steps[] = { 1000,  5000,  6250,  10000, 12500,
                                 15000, 20000, 25000, 50000, 100000 };
 const size_t n_freq_steps = sizeof(freq_steps) / sizeof(freq_steps[0]);
 
+/**
+ * Check whether a frequency lies in one of the bands the hardware declares.
+ * Targets declaring no band at all, like the Module17, are not restricted.
+ */
+static bool freqInBand(const freq_t freq)
+{
+    const hwInfo_t *hwinfo = platform_getHwInfo();
+
+    if (!hwinfo->vhf_band && !hwinfo->uhf_band)
+        return true;
+
+    // hwInfo_t frequencies are in MHz
+    if (hwinfo->vhf_band && (freq >= (hwinfo->vhf_minFreq * 1000000U))
+        && (freq <= (hwinfo->vhf_maxFreq * 1000000U)))
+        return true;
+
+    if (hwinfo->uhf_band && (freq >= (hwinfo->uhf_minFreq * 1000000U))
+        && (freq <= (hwinfo->uhf_maxFreq * 1000000U)))
+        return true;
+
+    return false;
+}
+
 void state_init()
 {
     pthread_mutex_init(&state_mutex, NULL);
@@ -39,9 +62,14 @@ void state_init()
 
     /*
      * Try loading VFO configuration from nonvolatile memory and default to sane
-     * values in case of failure.
+     * values in case of failure. The same goes for a VFO saved outside the
+     * bands of the radio, as a firmware with wider band limits can leave
+     * behind: the UI refuses every step from there, yet nothing stops a
+     * transmission.
      */
-    if (nvm_readVfoChannelData(&state.channel) < 0) {
+    if ((nvm_readVfoChannelData(&state.channel) < 0)
+        || !freqInBand(state.channel.rx_frequency)
+        || !freqInBand(state.channel.tx_frequency)) {
         state.channel = cps_getDefaultChannel();
     }
 
