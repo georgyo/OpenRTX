@@ -53,11 +53,11 @@ let
       rev = "b9eeca15d7598fae6a368c1c5d2462108f892849"; # v3.13.0
       hash = "sha256-WKp6/NX1SQJFLijW/fKwbR1FRoboAklDiHT6WqPRBjw=";
     };
-    # subprojects/radio_tool.wrap pins `revision = head`, which cannot be
-    # pinned. radio_tool.nix builds v0.3.0 as a proper package and puts it on
-    # PATH, so find_program('radio_tool') never falls back to this wrap
-    # (whose packagefiles meson.build runs cmake/make at configure time), and
-    # the source is intentionally not fetched.
+    # subprojects/radio_tool.wrap pins the last C++ release of radio_tool.
+    # radio_tool.nix builds v0.3.0, the version of the devcontainer, as a
+    # proper package and puts it on PATH, so find_program('radio_tool') never
+    # falls back to this wrap (whose packagefiles meson.build runs cmake/make
+    # at configure time), and the source is intentionally not fetched.
     # subprojects/tinyusb.wrap (tag 0.20.0): subproject('tinyusb') is called
     # by the Cortex-M7 cross builds, where the CS7000P firmware links it. The
     # tag is pinned to its commit here so the cache entry cannot drift; 0.20.0

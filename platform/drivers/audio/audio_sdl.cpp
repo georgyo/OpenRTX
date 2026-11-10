@@ -50,6 +50,16 @@ static SDL_AudioDeviceID openDevice(const struct streamCtx *ctx)
     return SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
 }
 
+/**
+ * Free the thread-local storage SDL keeps for the calling thread. The streams
+ * are opened and closed by threads SDL did not create, the codec thread for
+ * one, whose storage would otherwise be lost when the thread ends.
+ */
+static void releaseThreadStorage()
+{
+    SDL_TLSCleanup();
+}
+
 static int sdlPlay_start(const uint8_t instance, const void *config,
                          struct streamCtx *ctx)
 {
@@ -154,6 +164,7 @@ static void sdlPlay_stop(struct streamCtx *ctx)
     free(state);
     ctx->priv = NULL;
     ctx->running = 0;
+    releaseThreadStorage();
 }
 
 static void sdlPlay_halt(struct streamCtx *ctx)
@@ -168,6 +179,7 @@ static void sdlPlay_halt(struct streamCtx *ctx)
     free(state);
     ctx->priv = NULL;
     ctx->running = 0;
+    releaseThreadStorage();
 }
 
 #pragma GCC diagnostic push
