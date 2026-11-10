@@ -1669,7 +1669,9 @@ void ui_updateFSM(bool *sync_rtx)
         state.ui_screen = LOW_BAT;
         if(event.type == EVENT_KBD && event.payload)
         {
+            // The alert may have replaced a settings screen in edit mode
             state.ui_screen = state.settings.frs_mode ? MAIN_FRS : MAIN_VFO;
+            ui_state.edit_mode = false;
             state.emergency = true;
         }
         return;

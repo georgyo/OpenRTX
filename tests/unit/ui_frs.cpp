@@ -665,3 +665,38 @@ TEST_CASE("The macro menu cancels a pending FRS channel entry", "[ui][frs]")
     REQUIRE(state.channel.rx_frequency == freq);
     REQUIRE(state.channel.rx_only == 0);
 }
+
+TEST_CASE("Low battery alert does not leave a settings row in edit mode",
+          "[ui][frs]")
+{
+    boot_frs();
+    freq_t freq = state.channel.tx_frequency;
+
+    /* Display settings, first row in edit mode */
+    press(KEY_ENTER);
+    pressN(KEY_DOWN, M_SETTINGS);
+    press(KEY_ENTER);
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == SETTINGS_DISPLAY);
+    press(KEY_ENTER);
+
+    /* Battery empty: any key dismisses the alert, back to the FRS screen */
+    state.charge = 0;
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == MAIN_FRS);
+    state.charge = 100;
+
+    /*
+     * Radio settings: were the edit mode still on, the offset row would be
+     * open for editing and the first ESC would only close it.
+     */
+    press(KEY_ENTER);
+    pressN(KEY_DOWN, M_SETTINGS);
+    press(KEY_ENTER);
+    pressN(KEY_DOWN, S_RADIO);
+    press(KEY_ENTER);
+    REQUIRE(state.ui_screen == SETTINGS_RADIO);
+    press(KEY_ESC);
+    REQUIRE(state.ui_screen == MENU_SETTINGS);
+    REQUIRE(state.channel.tx_frequency == freq);
+}
