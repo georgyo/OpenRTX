@@ -27,7 +27,9 @@ extern "C" {
  * are exercised.
  */
 
-static const freq_t VFO_FREQ = 430000000;
+/* VFO the radio is on before FRS mode, away from the default channel */
+static const freq_t VFO_FREQ = 435000000;
+static const freq_t DEFAULT_FREQ = 430000000;
 
 /* Press (and release) a key combination, return the RTX sync request. */
 static bool press(uint32_t keys)
@@ -82,7 +84,8 @@ static void boot(const settings_t &settings)
     state.v_bat = 8000;
     state.settings = settings;
     state.channel = cps_getDefaultChannel();
-    state.vfo_channel = state.channel;
+    state.channel.rx_frequency = VFO_FREQ;
+    state.channel.tx_frequency = VFO_FREQ;
     state.ui_screen = MAIN_VFO;
     ui_init();
     ui_saveState();
@@ -617,7 +620,8 @@ TEST_CASE("Reset to defaults leaves FRS mode", "[ui][frs]")
     REQUIRE(state.settings.frs_mode == 0);
     pressN(KEY_ESC, 2);
     REQUIRE(state.ui_screen == MAIN_VFO);
-    REQUIRE(state.channel.rx_frequency == VFO_FREQ);
+    /* Defaults also reset the VFO, the parked one is not restored */
+    REQUIRE(state.channel.rx_frequency == DEFAULT_FREQ);
 }
 
 TEST_CASE("TX is enabled only on the FRS main screen", "[ui][frs]")
