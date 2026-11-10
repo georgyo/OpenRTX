@@ -22,6 +22,7 @@ extern "C" {
 struct sky73210 {
     const struct spiDevice *spi; ///< SPI bus device driver
     const struct gpioPin cs;     ///< Chip select gpio
+    const struct gpioPin ld;     ///< Lock detect gpio, port NULL if not wired
     const uint32_t refClk;       ///< Reference clock frequency, in Hz
 };
 
@@ -49,6 +50,27 @@ void SKY73210_terminate(const struct sky73210 *dev);
  */
 void SKY73210_setFrequency(const struct sky73210 *dev, const uint32_t freq,
                            uint8_t clkDiv);
+
+/**
+ * Check whether the PLL is locked, by reading the lock detect (LD) output.
+ * The LD pin signals an out-of-lock condition as an active low level.
+ *
+ * @param dev: pointer to device data.
+ * @return true if the PLL is locked or if the device has no lock detect gpio.
+ */
+bool SKY73210_isLocked(const struct sky73210 *dev);
+
+/**
+ * Wait for the PLL to lock, polling the lock detect output. The loop is taken
+ * as locked once the output has read high for 1ms without interruption, so a
+ * timeout shorter than that always expires.
+ *
+ * @param dev: pointer to device data.
+ * @param timeoutUs: maximum time to wait, in microseconds.
+ * @return true if the PLL locked before the timeout expired or if the device
+ * has no lock detect gpio, false otherwise.
+ */
+bool SKY73210_waitLock(const struct sky73210 *dev, uint32_t timeoutUs);
 
 #ifdef __cplusplus
 }

@@ -87,7 +87,7 @@
 #define PLL_CS        &GpioD,9
 #define PLL_CLK       GPIOD,10
 #define PLL_DAT       GPIOD,8
-#define PLL_LD        GPIOD,11
+#define PLL_LD        &GpioD,11
 
 /* HR_C6000 */
 #define C6K_CS        &GpioB,12
