@@ -35,7 +35,9 @@ public:
      * @param s: pointer to the DMA stream peripheral.
      * @param IRQn: DMA stream IRQ number.
      */
-    StreamHandler(DMA_Stream_TypeDef *s, IRQn_Type IRQn) : IRQn(IRQn), stream(s)
+    StreamHandler(DMA_Stream_TypeDef *s, IRQn_Type IRQn) : stopTransfer(false),
+        transferSize(0), IRQn(IRQn), streamEndCallback(nullptr), stream(s),
+        waiting(nullptr)
     { }
 
     /**
@@ -105,7 +107,9 @@ public:
      * For linear buffer mode the calling thread is put to sleep until the DMA
      * reaches the end of the transfer.
      *
-     * @return true if thread was effectively put to sleep, false otherwise.
+     * @return true if thread was effectively put to sleep, false otherwise:
+     * this is the case when the stream is not running or when another thread
+     * is already waiting.
      */
     bool sync()
     {
@@ -113,6 +117,11 @@ public:
 
         // Enter in critical section until the end of the function
         FastInterruptDisableLock dLock;
+
+        // A stream which is not running, because never started or ended by
+        // a stop or by a transfer error, raises no interrupt to end the wait.
+        if(running() == false)
+            return false;
 
         Thread *curThread = Thread::IRQgetCurrentThread();
         if((waiting != 0) && (waiting != curThread))
@@ -176,17 +185,45 @@ public:
     }
 
     /**
+     * Bit position of the interrupt flags of a stream inside the DMA status
+     * and flag clear registers. LISR/LIFCR hold streams 0 to 3 and HISR/HIFCR
+     * streams 4 to 7, with the flags of the four streams of a register
+     * starting at bits 0, 6, 16 and 22.
+     *
+     * @param stn: DMA stream number.
+     * @return position of the least significant flag of the stream.
+     */
+    static constexpr uint32_t irqFlagShift(const uint8_t stn)
+    {
+        return (((stn % 4) / 2) * 16) + (((stn % 4) % 2) * 6);
+    }
+
+    /**
+     * Interrupt flags of a stream once aligned to bit zero: FEIF, DMEIF, TEIF,
+     * HTIF and TCIF. Bit 1 is reserved.
+     */
+    static constexpr uint32_t IRQ_FLAGS_MASK = 0x3D;
+
+    /**
      * Stream interrupt handler function.
      *
-     * @param irqFlags: IRQ status flags.
+     * @param irqFlags: IRQ status flags, aligned to the positions of stream 0.
      */
     void IRQhandler(const uint32_t irqFlags)
     {
-        (void) irqFlags;
-
         using namespace miosix;
 
-        if(((stream->CR & DMA_SxCR_CIRC) == 0) || (stopTransfer == true))
+        /*
+         * On a transfer error the hardware disables the stream, treat it as
+         * the end of the transfer so that the end callback runs and the stream
+         * is not left marked as running with a thread waiting forever.
+         * The flags are those returned by DmaStream::readIrqFlags(), aligned
+         * to the bit positions of stream 0.
+         */
+        bool error = (irqFlags & DMA_LISR_TEIF0) != 0;
+
+        if(((stream->CR & DMA_SxCR_CIRC) == 0) || (stopTransfer == true)
+           || error)
         {
             stream->CR &= ~DMA_SxCR_EN;
             stopTransfer = false;
@@ -317,7 +354,7 @@ private:
      */
     static inline constexpr void clearIrqFlags(const uint32_t mask)
     {
-        uint32_t shift  = (STN % 4) * 8;
+        uint32_t shift  = StreamHandler::irqFlagShift(STN);
 
         if(STN < 4)
             reinterpret_cast< DMA_TypeDef *>(DMA)->LIFCR = (mask << shift);
@@ -330,7 +367,7 @@ private:
      */
     static inline constexpr uint32_t readIrqFlags()
     {
-        uint32_t shift  = (STN % 4) * 8;
+        uint32_t shift  = StreamHandler::irqFlagShift(STN);
         uint32_t flags  = 0;
 
         if(STN < 4)
@@ -338,7 +375,7 @@ private:
         else
             flags = reinterpret_cast< DMA_TypeDef *>(DMA)->HISR;
 
-        return (flags >> shift) & 0x7D;
+        return (flags >> shift) & StreamHandler::IRQ_FLAGS_MASK;
     }
 
     /**
