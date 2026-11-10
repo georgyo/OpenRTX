@@ -111,6 +111,16 @@ TEST_CASE("FRS channel descriptor", "[frs]")
         REQUIRE(ch.fm.txToneEn == 0);
         REQUIRE(ch.fm.txTone == 0);
     }
+
+    SECTION("Out of range channel cannot transmit")
+    {
+        channel_t ch = frs_buildChannel(FRS_CHANNEL_NUM, 0);
+        REQUIRE(ch.rx_frequency == 0);
+        REQUIRE(ch.rx_only == 1);
+
+        ch = frs_buildChannel(255, 0);
+        REQUIRE(ch.rx_only == 1);
+    }
 }
 
 TEST_CASE("FRS settings layout", "[frs]")

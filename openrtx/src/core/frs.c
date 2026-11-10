@@ -83,10 +83,12 @@ channel_t frs_buildChannel(uint8_t channel, uint8_t code)
     memset(&ch, 0, sizeof(ch));
     ch.mode = OPMODE_FM;
     ch.bandwidth = BW_12_5;
-    ch.rx_only = 0;
     ch.power = frs_getPower(channel);
     ch.rx_frequency = frs_getFrequency(channel);
     ch.tx_frequency = ch.rx_frequency;
+
+    // No transmission on something that is not a FRS channel
+    ch.rx_only = (ch.rx_frequency == 0);
     sniprintf(ch.name, CPS_STR_SIZE, "FRS %d", channel + 1);
 
     ch.fm.txTone = frs_codeToCtcss(code);

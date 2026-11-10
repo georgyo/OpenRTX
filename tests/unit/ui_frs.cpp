@@ -643,3 +643,25 @@ TEST_CASE("TX is enabled only on the FRS main screen", "[ui][frs]")
     press(KEY_ESC);
     REQUIRE(state.txDisable == false);
 }
+
+TEST_CASE("The macro menu cancels a pending FRS channel entry", "[ui][frs]")
+{
+    boot_frs();
+    press(KEY_5);
+    REQUIRE(state.settings.frs_channel == 4);
+    freq_t freq = state.channel.rx_frequency;
+
+    /* Pending digit, then MONI: the macro menu takes over input_number */
+    press(KEY_1);
+    REQUIRE(state.ui_screen == MAIN_FRS_INPUT);
+    press(KEY_MONI);
+    REQUIRE(state.ui_screen == MAIN_FRS);
+
+    /* Past the entry timeout nothing is left to accept */
+    sleepFor(2, 100);
+    status_event();
+    REQUIRE(state.ui_screen == MAIN_FRS);
+    REQUIRE(state.settings.frs_channel == 4);
+    REQUIRE(state.channel.rx_frequency == freq);
+    REQUIRE(state.channel.rx_only == 0);
+}

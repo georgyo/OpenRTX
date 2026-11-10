@@ -913,6 +913,10 @@ static void _ui_frs_toggle(bool *sync_rtx)
 
 static void _ui_frs_setChannel(uint8_t channel, bool *sync_rtx)
 {
+    // Not a channel: keep the current one
+    if (channel >= FRS_CHANNEL_NUM)
+        return;
+
     state.settings.frs_channel = channel;
     _ui_frs_apply(sync_rtx);
 
@@ -1111,6 +1115,11 @@ int _ui_handleToneSelectScroll(bool direction_up)
 
 static void _ui_fsm_menuMacro(kbd_msg_t msg, bool *sync_rtx)
 {
+    // The macro menu keeps its key in input_number, where a FRS channel
+    // entry holds its pending digit: opening the menu cancels the entry.
+    if (state.ui_screen == MAIN_FRS_INPUT)
+        state.ui_screen = MAIN_FRS;
+
     // If there is no keyboard left and right select the menu entry to edit
 #if defined(CONFIG_UI_NO_KEYBOARD)
     if (msg.keys & KNOB_LEFT)
