@@ -66,10 +66,21 @@ static nmeaRbuf nmea;
 void IRQHandler()
 {
     #if defined(STM32H743xx)
-    if(PORT->ISR & USART_ISR_RXNE_RXFNE) {
-        PORT->ISR = 0;
+    uint32_t isr = PORT->ISR;
+
+    // Reading RDR clears RXFNE
+    if(isr & USART_ISR_RXNE_RXFNE)
         nmeaRbuf_putChar(&nmea, PORT->RDR);
-    }
+
+    /*
+     * USART_ISR is read-only: the error flags are cleared only through ICR.
+     * ORE also raises the interrupt when RXNEIE is set, so leaving it set
+     * after an overrun would keep the IRQ pending forever.
+     */
+    PORT->ICR = USART_ICR_ORECF
+              | USART_ICR_FECF
+              | USART_ICR_NECF
+              | USART_ICR_PECF;
     #else
     if(PORT->SR & USART_SR_RXNE) {
         PORT->SR = 0;
@@ -117,7 +128,7 @@ void gpsStm32_disable(void *priv)
     (void) priv;
 
     PORT->CR1 &= ~USART_CR1_UE;
-    NVIC_DisableIRQ(USART6_IRQn);
+    NVIC_DisableIRQ(IRQn);
 }
 
 int gpsStm32_getNmeaSentence(void *priv, char *buf, const size_t maxLength)

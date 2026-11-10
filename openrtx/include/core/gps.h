@@ -101,11 +101,13 @@ static inline void gps_disable(const struct gpsDevice *dev)
 
 /**
  * Get a full NMEA sentence from the GPS.
- * This function is nonblocking.
+ * This function is nonblocking. The sentence written in the destination
+ * buffer is always NUL-terminated, thus at most bufSize - 1 characters are
+ * stored.
  *
  * @param dev: pointer to GPS device handle.
  * @param buf: pointer to a buffer where to write the sentence.
- * @param bufSize: size of the destination buffer.
+ * @param bufSize: size of the destination buffer, including the terminator.
  * @return the length of the extracted sentence, -1 if the sentence is
  * longer than the maximum allowed size or zero if no sentence is available.
  */
