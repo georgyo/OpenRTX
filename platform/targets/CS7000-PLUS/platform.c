@@ -48,6 +48,18 @@ void platform_init()
     gpio_setMode(GPIOEXT_DAT, OUTPUT);
 
     /*
+     * PWR_CR3 is cleared only by a power-on reset (RM0433, description of
+     * the register), so a USB regulator enable left there by the bootloader,
+     * which upgrades the firmware over USB, is still set when the firmware
+     * starts after flashing and through every later reset. With the
+     * regulator on, the battery sense line never falls below the power-off
+     * threshold of platform_pwrButtonStatus(), see usb_serial_init(): the
+     * radio could then be switched off only by removing the battery. Turn
+     * the regulator off before the first battery reading.
+     */
+    PWR->CR3 &= ~PWR_CR3_USBREGEN;
+
+    /*
      * HR_C6000 interrupt lines, floating inputs: the C6000 drives them
      * with active-low pulses (manual §4.4). RF_TX_INTER and SYS_INTER are
      * on the PC2_C and PC3_C pads, which reach the PC2 and PC3 port logic
