@@ -265,7 +265,7 @@ public:
                 bool crcBad = false)
     {
         dmrbbSnapshot s = burst(sync, slot, cc);
-        s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_HEADER);
+        s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA);
         if (crcBad)
             s.r51 |= R51_CRC_BAD;
         lc.toChipLc(s.lc);
@@ -276,7 +276,7 @@ public:
                    const uint8_t raw[FULL_LC_BYTES])
     {
         dmrbbSnapshot s = burst(sync, slot, cc);
-        s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_HEADER);
+        s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA);
         memcpy(s.lc, raw, FULL_LC_BYTES);
         sys(s);
     }
@@ -293,7 +293,8 @@ public:
                uint8_t fill = 0xA5)
     {
         dmrbbSnapshot s = burst(sync, slot, cc);
-        s.r51 = (uint8_t)((seq << 4) | R51_CLASS_VOICE);
+        s.r51 = (uint8_t)((seq << 4)
+                          | ((seq == 1) ? R51_CLASS_VOICE : R51_CLASS_NONE));
         s.voiceValid = true;
         memset(s.voice, fill, VOICE_PAYLOAD_BYTES);
         sys(s);
@@ -304,7 +305,7 @@ public:
                     const FullLC *lc = nullptr)
     {
         dmrbbSnapshot s = burst(sync, slot, cc);
-        s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_HEADER);
+        s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_DATA);
         if (lc != nullptr)
             lc->toChipLc(s.lc);
         sys(s);
@@ -915,16 +916,36 @@ TEST_CASE("DMR RX in direct mode opens only the call's slot", "[dmr][callctrl]")
     b.header(R5F_SYNC_MS, 0, 1, lc);
     REQUIRE(b.ctrl.state() == CallController::RX_CALL);
 
-    /* From now on 0x41 alternates 0x50 / 0x00 following the timecode */
+    /*
+     * While the voice bursts keep coming 0x41 alternates 0x50 / 0x00
+     * following the timecode. Burst B and the following ones report the
+     * "no sync" class.
+     */
     b.port.clear();
+    uint8_t seq = 1;
     for (unsigned i = 0; i < 12; i++) {
         b.ts();
         uint8_t next = b.ctrl.report().timecode ^ 1;
         uint8_t expected = (next == callTc) ? R41_RX : R41_IDLE;
         REQUIRE(b.port.last(W_R41)->value == expected);
+
+        /* The call's slot has just ended: its burst is reported */
+        if (b.ctrl.report().timecode != callTc) {
+            b.voice(R5F_SYNC_MS, 0, 1, seq);
+            seq = (uint8_t)((seq % SUPERFRAME_BURST) + 1);
+            REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+        }
     }
     REQUIRE(b.port.count(W_R41, R41_RX) == 6);
     REQUIRE(b.port.count(W_R41, R41_IDLE) == 6);
+
+    /* Two bursts missed: both slots are opened again */
+    b.tsN(5);
+    b.port.clear();
+    b.tsN(4);
+    REQUIRE(b.port.count(W_R41, R41_RX) == 4);
+    REQUIRE(b.port.count(W_R41, R41_IDLE) == 0);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
 
     /* Disagreeing CACH bits do not flip the parity of a DMO call */
     for (unsigned i = 0; i < 8; i++)
@@ -2151,4 +2172,117 @@ TEST_CASE("DMR TX repeater mode: every own burst is programmed for the "
         REQUIRE(b.port.count(W_R50, R50_VOICE_LC_HEADER) == 3);
         REQUIRE(b.ctrl.state() == CallController::TX_VOICE);
     }
+}
+
+TEST_CASE("DMR RX: bursts B to F, without sync, belong to the call",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+
+    FullLC lc = b.groupCall(1234567, 31665);
+    b.header(R5F_SYNC_BS, 2, 1, lc);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+
+    /* Burst A: voice sync class. B to F: class 00, bit 7 set or not */
+    b.voice(R5F_SYNC_BS, 2, 1, 1);
+    for (uint8_t seq = 2; seq <= 6; seq++) {
+        dmrbbSnapshot s = b.burst(R5F_SYNC_BS, 2, 1);
+        s.r51 = (uint8_t)((seq << 4) | ((seq & 1) ? 0x80 : 0x00)
+                          | R51_CLASS_NONE);
+        s.voiceValid = true;
+        b.sys(s);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+    }
+    REQUIRE(b.sink.rxFrames == 6);
+
+    /* The terminator, data sync class and type 2, ends it */
+    b.terminator(R5F_SYNC_BS, 2, 1, &lc);
+    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+}
+
+TEST_CASE("DMR RX: the stale CRC bit does not drop a voice burst",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+
+    FullLC lc = b.groupCall(1234567, 31665);
+    b.header(R5F_SYNC_BS, 2, 1, lc);
+
+    dmrbbSnapshot s = b.burst(R5F_SYNC_BS, 2, 1);
+    s.r51 = (uint8_t)((3 << 4) | R51_CRC_BAD | R51_CLASS_NONE);
+    s.voiceValid = true;
+    b.sys(s);
+    REQUIRE(b.sink.rxFrames == 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+}
+
+TEST_CASE("DMR RX: an LC without a source never opens a call",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.cfg.monitor = 1;
+    b.settle();
+
+    /* Late entry reported on an LC RAM that was never written */
+    FullLC empty;
+    empty.clear();
+    b.lateEntry(R5F_SYNC_BS, 2, 1, empty);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.report().lcOk == false);
+}
+
+TEST_CASE("DMR RX: the colour code shown comes from validated bursts only",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+
+    FullLC lc = b.groupCall(1234567, 31665);
+    b.header(R5F_SYNC_BS, 2, 1, lc);
+    REQUIRE(b.ctrl.report().rxColorCodeSeen == 1);
+
+    /* Noise in the other slot: bad CRC, or a burst without any sync */
+    b.header(R5F_SYNC_MS, 0, 9, lc, true);
+    REQUIRE(b.ctrl.report().rxColorCodeSeen == 1);
+
+    dmrbbSnapshot s = b.burst(R5F_SYNC_MS, 0, 12);
+    s.r51 = (uint8_t)((7 << 4) | R51_CLASS_NONE);
+    b.sys(s);
+    REQUIRE(b.ctrl.report().rxColorCodeSeen == 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+}
+
+TEST_CASE("DMR TX: a PTT released before the first burst is not latched",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    b.ctrl.setPtt(false, b.now);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+
+    /* The next press arms again */
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+}
+
+TEST_CASE("DMR TX: a transmission without slot interrupts raises a marker",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    REQUIRE(b.ctrl.report().rfKey == true);
+
+    /* The chip never provides its time axis */
+    b.timeout(CallController::TS_WATCHDOG_MS);
+    REQUIRE(b.ctrl.report().rfKey == false);
+    REQUIRE(b.ctrl.report().rfFailed == true);
+    REQUIRE(b.ctrl.state() < CallController::TX_ARM);
 }

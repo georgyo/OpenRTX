@@ -122,6 +122,13 @@ void CallController::enable(uint32_t nowMs)
     callSlot = 0;
     callDmo = false;
 
+    /*
+     * The RX RAM may still hold the LC of a previous call on the first
+     * system interrupt after the modem was programmed (OpenGD77
+     * observation), so the first LC read is discarded.
+     */
+    skipLc = true;
+
     goRx(nowMs, RX_SEARCH);
     publish();
 }
@@ -396,13 +403,6 @@ void CallController::goRx(uint32_t nowMs, State next)
     port->startRx();
     resetTiming();
     requestAxis(nowMs);
-
-    /*
-     * UNVERIFIED on hardware: the RX RAM may still hold the LC of the
-     * previous call on the first system interrupt after a mode switch
-     * (OpenGD77 observation), so the first LC read is discarded.
-     */
-    skipLc = true;
     st = next;
 }
 
@@ -432,6 +432,10 @@ bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
     /* PF or R set, reserved FID, unknown FLCO: rejected by unpack() */
     FullLC lc;
     if (!lc.fromChipLc(s.lc))
+        return false;
+
+    /* An LC RAM never written reads as a call from nobody */
+    if (lc.src == 0)
         return false;
 
     if (!lc.matches(cfg.ownId, cfg.dstId, cfg.callType, cfg.monitor))
@@ -468,22 +472,27 @@ bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
 void CallController::processControlFrame(const struct dmrbbSnapshot &s,
                                          uint32_t nowMs)
 {
-    if (s.r51 & R51_CRC_BAD)
-        return;
-
     uint8_t cls = s.r51 & R51_SYNC_CLASS_MASK;
 
-    if (cls == R51_CLASS_VOICE) {
-        /* Voice burst A..F, sequence 1..6 in 0x51[7:4] */
-        if ((st == RX_CALL) && burstIsCall(s)) {
+    if (cls == R51_CLASS_RC)
+        return;
+
+    if (cls != R51_CLASS_DATA) {
+        /*
+         * Voice burst A to F. Bit 2 of 0x51 is the CRC of the last data
+         * burst and says nothing about a voice burst.
+         */
+        if ((r51VoiceSeq(s.r51) != 0) && (st == RX_CALL) && burstIsCall(s)) {
             lastVoiceMs = nowMs;
+            if (callDmo)
+                callTimecode = (uint8_t)(timecode ^ 1);
             if (s.voiceValid && !rep.lcManufacturer && (sink != nullptr))
                 sink->rxVoiceFrame(s.voice);
         }
         return;
     }
 
-    if (cls == R51_CLASS_RC)
+    if (s.r51 & R51_CRC_BAD)
         return;
 
     uint8_t type = s.r51 >> 4;
@@ -870,10 +879,10 @@ void CallController::setPtt(bool p, uint32_t nowMs)
     ptt = p;
 
     if (!p) {
-        pttLatched = false;
         /* Nothing on the air yet: just go back to RX */
         if ((st == TX_ARM) || (st == TX_WAKEUP))
             abortTx(nowMs, false);
+        pttLatched = false;
         publish();
         return;
     }
@@ -942,10 +951,14 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
         case RX_CALL:
             /*
              * Direct mode: open only the call's slot, the other one may
-             * decode noise as valid data (OpenGD77 observation). Repeater
-             * mode: receive both, the timeslot is filtered in software.
+             * decode noise as valid data (OpenGD77 observation), and only
+             * while bursts keep coming: after two missed bursts both slots
+             * are opened again, so that a wrong parity cannot lock the
+             * call out. Repeater mode: receive both, the timeslot is
+             * filtered in software.
              */
-            if (callDmo && (next != callTimecode))
+            if (callDmo && (next != callTimecode)
+                && (elapsed(nowMs, lastVoiceMs) < DMO_GATE_HOLD_MS))
                 port->setNextSlot(R41_IDLE);
             else
                 port->setNextSlot(R41_RX);
@@ -968,7 +981,19 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
 
     uint8_t irq = s.irq82;
 
-    if (irq & (R82_CTRL_FRAME | R82_LATE_ENTRY)) {
+    /*
+     * Sync type and colour code are taken only from a burst the chip
+     * vouches for: a data burst with a good CRC, a burst with the voice
+     * sync or a late entry. Both slots are open while idle and the empty
+     * one may report noise as a frame.
+     */
+    uint8_t cls = s.r51 & R51_SYNC_CLASS_MASK;
+    bool goodData = (cls == R51_CLASS_DATA) && ((s.r51 & R51_CRC_BAD) == 0);
+    bool trusted = ((irq & R82_LATE_ENTRY) != 0)
+                || (((irq & R82_CTRL_FRAME) != 0)
+                    && (goodData || (cls == R51_CLASS_VOICE)));
+
+    if (trusted) {
         lastSync = s.r5f & R5F_SYNC_MASK;
         if (lastSync == R5F_SYNC_BS)
             lastBsSyncMs = nowMs;
@@ -1036,6 +1061,7 @@ void CallController::onTimeout(uint32_t nowMs)
     if ((silent >= TS_RECONFIGURE_MS) && !rep.needsReconfigure) {
         rep.needsReconfigure = true;
         if (isTx()) {
+            rep.rfFailed = true;
             pttLatched = true;
             unkeyRf();
         }
@@ -1043,6 +1069,7 @@ void CallController::onTimeout(uint32_t nowMs)
     } else if ((silent >= TS_WATCHDOG_MS) && !wdRestarted) {
         wdRestarted = true;
         if (isTx()) {
+            rep.rfFailed = true;
             pttLatched = true;
             unkeyRf();
         }

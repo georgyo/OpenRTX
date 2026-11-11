@@ -283,7 +283,7 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
     /* Three headers, TS 102 361-2 §5.2.1.1 */
     for (unsigned i = 0; i < 3; i++) {
         struct dmrbbSnapshot s = bsBurst(cc, ts);
-        s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_HEADER);
+        s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA);
         lc.toChipLc(s.lc);
         scriptBurst(cc, ts, s);
     }
@@ -292,7 +292,8 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
     for (unsigned i = 0; i < bursts; i++) {
         uint8_t seq = (uint8_t)((i % SUPERFRAME_BURST) + 1);
         struct dmrbbSnapshot s = bsBurst(cc, ts);
-        s.r51 = (uint8_t)((seq << 4) | R51_CLASS_VOICE);
+        s.r51 = (uint8_t)((seq << 4)
+                          | ((seq == 1) ? R51_CLASS_VOICE : R51_CLASS_NONE));
         s.voiceValid = true;
 #ifdef CONFIG_DMR_VOCODER_LOOPBACK
         dmrVocoderLoopback_tonePayload(
@@ -307,7 +308,7 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
 
     /* Terminator with LC */
     struct dmrbbSnapshot s = bsBurst(cc, ts);
-    s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_HEADER);
+    s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_DATA);
     lc.toChipLc(s.lc);
     scriptBurst(cc, ts, s);
 }

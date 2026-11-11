@@ -1241,7 +1241,7 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     s.irq82 = 0x08;
     s.sub84 = 0x80;
     s.sub86 = 0x40;
-    s.r51 = 0x10;
+    s.r51 = 0x12;
     s.r52 = 0x14;
     s.r5f = 0x01;
     s.rssi = 1234;
@@ -1282,7 +1282,7 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     REQUIRE(monitorValue(DMRMON_R82) == "08");
     REQUIRE(monitorValue(DMRMON_R84) == "80");
     REQUIRE(monitorValue(DMRMON_R86) == "40");
-    REQUIRE(monitorValue(DMRMON_R51) == "10");
+    REQUIRE(monitorValue(DMRMON_R51) == "12");
     REQUIRE(monitorValue(DMRMON_R52) == "14");
     REQUIRE(monitorValue(DMRMON_R5F) == "01");
     REQUIRE(monitorValue(DMRMON_CC) == "1");
@@ -1331,13 +1331,13 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     REQUIRE(monitorValue(DMRMON_TS) == "10");
 
     /* A bad CRC and a manufacturer LC are flagged */
-    s.r51 = 0x24;
+    s.r51 = 0x26;
     s.lc[1] = 0x10;
     dmrEmu_pushSys(&s);
     rtx_task();
     render();
     REQUIRE(monitorValue(DMRMON_SYS) == "2");
-    REQUIRE(monitorValue(DMRMON_R51) == "24");
+    REQUIRE(monitorValue(DMRMON_R51) == "26");
     REQUIRE(monitorValue(DMRMON_LC_FID) == "10");
     REQUIRE(monitorValue(DMRMON_LC_CRC) == "bad");
     s.lc[0] = 0x80;
@@ -1839,7 +1839,7 @@ static void inject_terminator(uint32_t src, uint32_t dst, uint8_t ts)
     s.irq82 = DMR::R82_CTRL_FRAME;
     s.r5f = DMR::R5F_SYNC_BS;
     s.r52 = (uint8_t)((1 << 4) | ((ts == 2) ? DMR::R52_TC : 0));
-    s.r51 = (uint8_t)((DMR::DT_TERMINATOR_LC << 4) | DMR::R51_CLASS_HEADER);
+    s.r51 = (uint8_t)((DMR::DT_TERMINATOR_LC << 4) | DMR::R51_CLASS_DATA);
     lc.toChipLc(s.lc);
     dmrEmu_pushSys(&s);
     rtx_task();

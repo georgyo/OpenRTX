@@ -542,7 +542,7 @@ void OpMode_DMR::monitor(uint32_t ev)
          * parsed fields and to the chip's own CRC verdict.
          */
         bool header = ((snap.irq82 & R82_CTRL_FRAME) != 0)
-                   && ((snap.r51 & R51_SYNC_CLASS_MASK) == R51_CLASS_HEADER);
+                   && ((snap.r51 & R51_SYNC_CLASS_MASK) == R51_CLASS_DATA);
         if (header || ((snap.irq82 & R82_LATE_ENTRY) != 0)) {
             FullLC lc;
             bool parsed = lc.fromChipLc(snap.lc);

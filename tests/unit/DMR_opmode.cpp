@@ -947,7 +947,7 @@ TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
     s.irq82 = R82_CTRL_FRAME;
     s.sub84 = 0x80;
     s.sub86 = 0x40;
-    s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_HEADER);
+    s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA);
     s.r52 = 0x14;
     s.r5f = R5F_SYNC_BS;
     s.r42 = 0x60;
@@ -1001,7 +1001,7 @@ TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
     REQUIRE(mon->lc[0] == 0x00);
 
     /* A terminator with a bad CRC: the chip's verdict is reported */
-    s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_HEADER | R51_CRC_BAD);
+    s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_DATA | R51_CRC_BAD);
     s.voiceValid = false;
     dmrEmu_pushSys(&s);
     dmr.update(&b.status, false);
@@ -1677,7 +1677,7 @@ TEST_CASE("DMR OpMode TX: a call opening while the RF is still keyed after "
     s.irq82 = R82_CTRL_FRAME;
     s.r5f = R5F_SYNC_BS;
     s.r52 = (1 << 4) | R52_TC;
-    s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_HEADER);
+    s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA);
     lc.toChipLc(s.lc);
 
     /* The first LC after the modem went back to RX is skipped as stale

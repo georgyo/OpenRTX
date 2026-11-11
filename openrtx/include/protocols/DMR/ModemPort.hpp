@@ -156,14 +156,41 @@ static constexpr uint8_t R86_RDY_LST = 0x10;     /* per-slot deadline    */
 static constexpr uint8_t R86_SHORT_LC = 0x04;    /* Short LC received    */
 
 /*
- * Register 0x51 fields (G4EML).
+ * Register 0x51 fields. Manual chapter 8: [7:4] "DLLRecvDataType", the data
+ * type of a data burst or, for a voice burst, 1 to 6 for A to F in [6:4]
+ * with bit 7 set; bit 2 CRC result of a data burst, 0 good; [1:0]
+ * "SyncClass", 00 "no sync header", 01 voice, 10 data, 11 RC. A voice
+ * superframe therefore reads class 01 for burst A, which carries the voice
+ * sync, and class 00 for bursts B to F, which carry the EMB instead; the
+ * LC header, the terminator and the CSBKs read class 10.
  */
 static constexpr uint8_t R51_CRC_BAD = 0x04;
 static constexpr uint8_t R51_SYNC_CLASS_MASK = 0x03;
-static constexpr uint8_t R51_CLASS_HEADER = 0x00; /* data burst with sync */
-static constexpr uint8_t R51_CLASS_VOICE = 0x01;  /* voice burst          */
-static constexpr uint8_t R51_CLASS_DATA = 0x02;   /* data burst           */
-static constexpr uint8_t R51_CLASS_RC = 0x03;     /* reverse channel      */
+static constexpr uint8_t R51_CLASS_NONE = 0x00;  /* no sync: voice B to F */
+static constexpr uint8_t R51_CLASS_VOICE = 0x01; /* voice sync: voice A   */
+static constexpr uint8_t R51_CLASS_DATA = 0x02;  /* data sync             */
+static constexpr uint8_t R51_CLASS_RC = 0x03;    /* reverse channel       */
+static constexpr uint8_t R51_VOICE_SEQ_MASK = 0x07;
+
+/**
+ * Voice burst number reported by register 0x51.
+ *
+ * @param r51: value of register 0x51.
+ * @return 1 to 6 for the voice bursts A to F, 0 when the register does not
+ * describe a voice burst.
+ */
+static inline uint8_t r51VoiceSeq(uint8_t r51)
+{
+    uint8_t cls = r51 & R51_SYNC_CLASS_MASK;
+    if ((cls != R51_CLASS_NONE) && (cls != R51_CLASS_VOICE))
+        return 0;
+
+    uint8_t seq = (r51 >> 4) & R51_VOICE_SEQ_MASK;
+    if (seq > SUPERFRAME_BURST)
+        return 0;
+
+    return seq;
+}
 
 /*
  * Register 0x52 fields (G4EML): [7:4] colour code, bit3 CACH AT, bit2 CACH

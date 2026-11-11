@@ -89,6 +89,7 @@ public:
     static constexpr uint8_t TIMECODE_LOCK_COUNT = 5;   /* agreeing TS    */
     static constexpr uint8_t TIMECODE_DROP_COUNT = 4;   /* disagreeing TS */
     static constexpr uint8_t HEADER_REPEAT = 3;
+    static constexpr uint32_t DMO_GATE_HOLD_MS = 150;   /* 2 bursts + 30 */
     static constexpr uint32_t TS_TICK_TOLERANCE_MS = 5; /* TS jitter      */
 
     /*
