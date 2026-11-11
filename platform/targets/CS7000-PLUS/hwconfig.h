@@ -70,6 +70,9 @@ extern const struct gpsDevice gps;
 /* Device supports USB CDC serial */
 #define CONFIG_USB_SERIAL
 
+/* DMR bring-up trace on the USB serial port, see core/dmr_trace.h */
+#define CONFIG_DMR_TRACE
+
 /* Miosix sets NVIC_SetPriorityGrouping(7), disabling interrupt nesting.
  * In the resulting flat 0-15 scheme, 14 is near-lowest priority,
  * consistent with other peripheral drivers. */
