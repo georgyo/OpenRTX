@@ -60,6 +60,8 @@ enum uiScreen
     SETTINGS_FRS,
     SETTINGS_DMR,
     DMR_MONITOR_SCREEN,
+    DMR_LAST_HEARD,
+    DMR_FAVOURITES,
     LOW_BAT
 };
 
@@ -180,8 +182,17 @@ enum settingsDMRItems
     DMR_ACCESS,
     DMR_HANGTIME,
     DMR_TESTTONE,
+    DMR_FAVOURITES_ENTRY,
     DMR_MONITOR_ENTRY
 };
+
+// Length of the destination name kept in state.dmr_destName, with the
+// terminator
+#define DMR_DEST_NAME_LEN 16
+
+// Room left for the top-bar lock symbol before the DMR TS busy tags, in
+// pixels (the symbol fonts are 13 px wide at most, plus a gap)
+#define DMR_TSBUSY_LOCK_OFFSET 16
 
 // Longest DMR ID or talkgroup entry, in digits: DMR_ID_MAX is 16777215
 #define DMR_ID_DIGITS 8
@@ -219,6 +230,8 @@ enum dmrMonitorRows
     DMRMON_SYNC,          // sync type, 0x5F[1:0]
     DMRMON_RSSI,          // 0x43:0x44
     DMRMON_FSKERR,        // 0x0F
+    DMRMON_SLC,           // last Short LC with a good CRC, good/bad counts
+    DMRMON_TSBUSY,        // TS1/TS2 busy hints from the Act_Updt Short LC
     DMRMON_RB10,          // register 0x10 read back at draw time
     DMRMON_RB06,          // register 0x06 read back
     DMRMON_RB12,          // register 0x12 read back
@@ -249,7 +262,9 @@ enum dmrMonitorRows
     DMRMON_ACT_TWOPOINT,  // 0x12 bit6 toggle
     DMRMON_ACT_LCSS,      // 0x50 LCSS convention of the voice bursts,
                           // chip-filled / manual, through the RTX status
-    DMRMON_ACT_RFADV,     // 0x12 = 0x98 / 0x15 (RF_TX_INTER advance)
+    DMRMON_ACT_RFADV,     // 0x12 = 0x98 / 0x15 (RF_TX_INTER advance),
+                          // through the RTX status like the mode word
+    DMRMON_ACT_SYSLINE,   // driver page DMRBB_DRV_SYS_LINE = PC1 / PC3
     DMRMON_ROWS_NUM
 };
 
@@ -499,6 +514,38 @@ static inline bool _ui_dmrCallReceived(const rtxStatus_t *status)
  */
 void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status);
 
+/**
+ * Name of the codeplug contact with the given DMR ID and call type, if any.
+ * The codeplug is scanned once per ID and the answer cached (the cache
+ * holds the whole last heard ring plus the caller of the main screen, so a
+ * redraw never rescans), so that the main screen and the last heard list
+ * can ask at every redraw. Implemented in ui_menu.c.
+ *
+ * @param id: 24-bit DMR ID.
+ * @param type: dmrContactType_t of the call.
+ * @param buf: destination for the name, DMR_DEST_NAME_LEN bytes.
+ * @return true when a contact was found and buf holds its name.
+ */
+bool _ui_dmrContactName(uint32_t id, uint8_t type, char *buf);
+
+/**
+ * Forget the cached contact names, for the tests (the codeplug does not
+ * change at run time on the radio).
+ */
+void _ui_dmrContactNameCacheClear(void);
+
+/**
+ * Destination of a DMR call as shown on screen: "TG 31665" for a group call,
+ * "PC 2345678" for a private call, "ALL" for a broadcast, the 128x64 layout
+ * using the compact form without the space. Implemented in ui_main.c.
+ *
+ * @param buf: destination buffer.
+ * @param len: size of buf.
+ * @param callType: dmrContactType_t.
+ * @param id: destination ID.
+ */
+void _ui_dmrDestString(char *buf, size_t len, uint8_t callType, uint32_t id);
+
 #ifdef CONFIG_DMR
 /**
  * Number of pages of the DMR monitor screen for the current layout: every
@@ -547,6 +594,33 @@ uint8_t _ui_dmrMonitorCurrentPage(void);
  * offset from DMRMON_ACTION_FIRST.
  */
 uint8_t _ui_dmrMonitorSelectedAction(void);
+
+/**
+ * Rows of the DMR last heard screen, list getter signatures: the entry is
+ * "<contact name or source ID> <destination>", the value the age of the
+ * call ("12s", "3m", "1h"). Implemented in ui_menu.c.
+ */
+int _ui_getLastHeardEntryName(char *buf, uint8_t max_len, uint8_t index);
+int _ui_getLastHeardValueName(char *buf, uint8_t max_len, uint8_t index);
+int _ui_getLastHeardDestName(char *buf, uint8_t max_len, uint8_t index);
+
+/**
+ * Rows of the DMR favourites screen, list getter signatures: the entry is
+ * the slot number, the value the destination or "Empty". Implemented in
+ * ui_menu.c.
+ */
+int _ui_getFavouriteEntryName(char *buf, uint8_t max_len, uint8_t index);
+int _ui_getFavouriteValueName(char *buf, uint8_t max_len, uint8_t index);
+
+/**
+ * Draw the DMR last heard screen (MONI + 4 on the main screens).
+ */
+void _ui_drawDMRLastHeard(ui_state_t *ui_state);
+
+/**
+ * Draw the DMR favourites screen (Settings > DMR > Favourites).
+ */
+void _ui_drawDMRFavourites(ui_state_t *ui_state);
 #endif
 
 extern const color_t color_black;

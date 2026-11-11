@@ -20,6 +20,7 @@
 #include "core/frs.h"
 #ifdef CONFIG_DMR
 #include "core/dmr_audio.h"
+#include "core/dmr_lastheard.h"
 #include "interfaces/dmr_baseband.h"
 #endif
 
@@ -666,7 +667,8 @@ static uint8_t dmrMonR06 = 0;
 static uint8_t dmrMonLcss = 0;
 static uint8_t dmrMonPage = 0;
 static uint8_t dmrMonSelected = 0;
-static uint8_t dmrMonReadback[6];   // 0x10, 0x06, 0x12, 0x14, 0x15, 0x16
+static uint8_t dmrMonReadback[7];   // 0x10, 0x06, 0x12, 0x14, 0x15, 0x16,
+                                    // driver SYS line
 
 // First row of each section, plus the end marker
 static const uint8_t dmrMonSectionFirst[DMRMON_SECTION_NUM + 1] =
@@ -748,11 +750,12 @@ int _ui_getDMRMonitorEntryName(char *buf, uint8_t max_len, uint8_t index)
         "TS", "SYS", "RFTX", "PC0", "PC1", "PC2", "PC3", "Lock", "Timecode",
         "0x82", "0x84", "0x86",
         "0x51", "0x52", "0x5F", "0x42", "CC", "TC", "Sync", "RSSI", "FSK err",
+        "Short LC", "TS busy",
         "rd 0x10", "rd 0x06", "rd 0x12", "rd 0x14-16",
         "LC 0-5", "LC 6-11", "Src", "Dst", "FLCO", "FID", "CRC",
         "Vocoder", "Aud RX", "Aud vary", "Aud out", "Aud TX", "Underrun",
         "Overrun", "TX bursts", "TX silent", "TX under", "RF keyed",
-        "", "Mode 0x10", "Reg 0x06", "", "", "", ""
+        "", "Mode 0x10", "Reg 0x06", "", "", "", "", ""
     };
 
     if(index >= DMRMON_ROWS_NUM) return -1;
@@ -773,6 +776,9 @@ int _ui_getDMRMonitorEntryName(char *buf, uint8_t max_len, uint8_t index)
             break;
         case DMRMON_ACT_RFADV:
             sniprintf(buf, max_len, "%s", currentLanguage->rfAdvance);
+            break;
+        case DMRMON_ACT_SYSLINE:
+            sniprintf(buf, max_len, "%s", currentLanguage->sysLine);
             break;
         default:
             sniprintf(buf, max_len, "%s", names[index]);
@@ -848,6 +854,18 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
             break;
         case DMRMON_FSKERR:
             sniprintf(buf, max_len, "%u", mon->fskErr);
+            break;
+        case DMRMON_SLC:
+            // Last Short LC with a good CRC, then the good and bad counts
+            sniprintf(buf, max_len, "%07lX %u/%u",
+                      (unsigned long) mon->shortLc, mon->shortLcOk,
+                      mon->shortLcBad);
+            break;
+        case DMRMON_TSBUSY:
+            sniprintf(buf, max_len, "%s%s%s",
+                      (dmrMonStatus.dmr_tsBusy & 0x01) ? "TS1 " : "",
+                      (dmrMonStatus.dmr_tsBusy & 0x02) ? "TS2" : "",
+                      (dmrMonStatus.dmr_tsBusy == 0) ? "-" : "");
             break;
         case DMRMON_RB10:
         case DMRMON_RB06:
@@ -935,6 +953,7 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
         case DMRMON_ACT_TWOPOINT:
         case DMRMON_ACT_LCSS:
         case DMRMON_ACT_RFADV:
+        case DMRMON_ACT_SYSLINE:
             if(dmrMonReady == false)
             {
                 sniprintf(buf, max_len, "DMR off");
@@ -975,6 +994,17 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
                             ? DMRMON_R12_GD77 : DMRMON_R12_OEM;
                 sniprintf(buf, max_len, "12<-%02X",
                           (r12 & DMRMON_R12_TWOPOINT) | adv);
+            }
+            else if(index == DMRMON_ACT_SYSLINE)
+            {
+                // The EXTI line the driver dispatches as SYS_INTER now and
+                // the one the next ENTER selects (same rule as ui.c: PC3
+                // unless PC3 is in force)
+                uint8_t line = dmrMonReadback[6];
+                uint8_t next = (line == DMRBB_SYS_LINE_SCHEMATIC)
+                             ? DMRBB_SYS_LINE_PINMAP
+                             : DMRBB_SYS_LINE_SCHEMATIC;
+                sniprintf(buf, max_len, "PC%u->PC%u", line, next);
             }
             else
             {
@@ -1029,6 +1059,8 @@ void _ui_drawDMRMonitor(ui_state_t* ui_state)
     dmrMonReadback[3] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x14);
     dmrMonReadback[4] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x15);
     dmrMonReadback[5] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x16);
+    dmrMonReadback[6] = dmrbb_readRegister(DMRBB_PAGE_DRIVER,
+                                           DMRBB_DRV_SYS_LINE);
 
     gfx_clearScreen();
     // Print "DMR monitor n/N" on top bar
@@ -1701,6 +1733,250 @@ void _ui_drawSettingsDMR(ui_state_t* ui_state)
                               _ui_getDMREntryName, _ui_getDMRValueName);
     }
 }
+
+#endif
+
+/*
+ * Contact names for DMR IDs: the codeplug is scanned for a DMR contact with
+ * the ID and call type, the first CONTACT_SCAN_MAX entries at most, and the
+ * answer (found or not) kept in a small cache keyed by ID and type. The
+ * cache holds as many answers as the last heard ring has entries, plus one
+ * for the caller of the main screen, so that a redraw of either screen
+ * never evicts an answer it is about to ask for again (the replacement is
+ * round-robin). On the radios without a codeplug (cps_io_stub) the first
+ * read fails and the scan costs nothing.
+ */
+#define CONTACT_SCAN_MAX 256
+#define CONTACT_CACHE_NUM 9
+#ifdef CONFIG_DMR
+#if CONTACT_CACHE_NUM < (DMR_LASTHEARD_NUM + 1)
+#error "the contact name cache must hold the last heard ring and the caller"
+#endif
+#endif
+
+static struct
+{
+    uint32_t id;
+    uint8_t type;
+    bool valid;
+    bool found;
+    char name[DMR_DEST_NAME_LEN];
+}
+contactCache[CONTACT_CACHE_NUM];
+static uint8_t contactCacheNext = 0;
+
+void _ui_dmrContactNameCacheClear()
+{
+    memset(contactCache, 0x00, sizeof(contactCache));
+    contactCacheNext = 0;
+}
+
+bool _ui_dmrContactName(uint32_t id, uint8_t type, char *buf)
+{
+    for(uint8_t i = 0; i < CONTACT_CACHE_NUM; i++)
+    {
+        if(contactCache[i].valid && (contactCache[i].id == id) &&
+           (contactCache[i].type == type))
+        {
+            if(contactCache[i].found)
+                strncpy(buf, contactCache[i].name, DMR_DEST_NAME_LEN);
+            return contactCache[i].found;
+        }
+    }
+
+    bool found = false;
+    contact_t contact;
+    for(uint16_t pos = 0; pos < CONTACT_SCAN_MAX; pos++)
+    {
+        if(cps_readContact(&contact, pos) == -1)
+            break;
+
+        if((contact.mode == OPMODE_DMR) && (contact.info.dmr.id == id) &&
+           (contact.info.dmr.contactType == type))
+        {
+            found = true;
+            break;
+        }
+    }
+
+    uint8_t slot = contactCacheNext;
+    contactCacheNext = (contactCacheNext + 1) % CONTACT_CACHE_NUM;
+    contactCache[slot].id = id;
+    contactCache[slot].type = type;
+    contactCache[slot].valid = true;
+    contactCache[slot].found = found;
+    if(found)
+    {
+        strncpy(contactCache[slot].name, contact.name, DMR_DEST_NAME_LEN - 1);
+        contactCache[slot].name[DMR_DEST_NAME_LEN - 1] = '\0';
+        strncpy(buf, contactCache[slot].name, DMR_DEST_NAME_LEN);
+    }
+
+    return found;
+}
+
+#ifdef CONFIG_DMR
+/*
+ * Last heard list, two lines per call: "<name or source>" with the age of
+ * the call on the right, then "-> <destination>" below. The destination is
+ * never cut (a truncated ID would read as another talkgroup): a contact
+ * name is shortened to the width the age leaves, an ID always fits, see
+ * the width guard in tests/unit/ui_dmr.cpp.
+ */
+#define LASTHEARD_GAP 4
+#define LASTHEARD_AGE_WIDEST "99h"
+
+static uint8_t _ui_lastHeardCallType(const struct dmrLastHeardEntry *entry)
+{
+    if(entry->flco == 3)
+        return PRIVATE;
+    if(entry->dst == DMR_ID_MAX)
+        return ALL;
+    return GROUP;
+}
+
+int _ui_getLastHeardEntryName(char *buf, uint8_t max_len, uint8_t index)
+{
+    struct dmrLastHeardEntry entry;
+    char who[DMR_DEST_NAME_LEN];
+
+    if(dmrLastHeard_get(index, &entry) == false)
+        return -1;
+
+    if(_ui_dmrContactName(entry.src, PRIVATE, who) == false)
+        sniprintf(who, sizeof(who), "%lu", (unsigned long) entry.src);
+
+    sniprintf(buf, max_len, "%s", who);
+
+    // A name shares its line with the age: cut it until both fit
+    uint16_t usable = CONFIG_SCREEN_WIDTH - 2 * layout.horizontal_pad
+                    - LASTHEARD_GAP
+                    - gfx_getTextWidth(layout.menu_font, LASTHEARD_AGE_WIDEST);
+    size_t len = strlen(buf);
+    while((len > 1) && (gfx_getTextWidth(layout.menu_font, buf) > usable))
+        buf[--len] = '\0';
+
+    return 0;
+}
+
+int _ui_getLastHeardDestName(char *buf, uint8_t max_len, uint8_t index)
+{
+    struct dmrLastHeardEntry entry;
+    char dst[16];
+
+    if(dmrLastHeard_get(index, &entry) == false)
+        return -1;
+
+    _ui_dmrDestString(dst, sizeof(dst), _ui_lastHeardCallType(&entry),
+                      entry.dst);
+    sniprintf(buf, max_len, "-> %s", dst);
+    return 0;
+}
+
+int _ui_getLastHeardValueName(char *buf, uint8_t max_len, uint8_t index)
+{
+    struct dmrLastHeardEntry entry;
+
+    if(dmrLastHeard_get(index, &entry) == false)
+        return -1;
+
+    uint32_t age = ((uint32_t) getTick() - entry.timestamp) / 1000;
+    if(age < 60)
+        sniprintf(buf, max_len, "%lus", (unsigned long) age);
+    else if(age < 3600)
+        sniprintf(buf, max_len, "%lum", (unsigned long) (age / 60));
+    else
+        sniprintf(buf, max_len, "%luh", (unsigned long) (age / 3600));
+
+    return 0;
+}
+
+void _ui_drawDMRLastHeard(ui_state_t* ui_state)
+{
+    gfx_clearScreen();
+    // Print "Last heard" on top bar
+    gfx_print(layout.top_pos, layout.top_font, TEXT_ALIGN_CENTER, color_white,
+              currentLanguage->lastHeard);
+
+    if(dmrLastHeard_count() == 0)
+    {
+        gfx_print(layout.line2_pos, layout.line2_font, TEXT_ALIGN_CENTER,
+                  color_white, currentLanguage->empty);
+        return;
+    }
+
+    // Two menu lines per call, the selection rectangle spanning both;
+    // scrolled by calls like _ui_drawMenuListValue() scrolls by rows
+    point_t pos = layout.line1_pos;
+    uint8_t lines = (CONFIG_SCREEN_HEIGHT - 1 - pos.y) / layout.menu_h + 1;
+    uint8_t calls_in_screen = (lines >= 2) ? (lines / 2) : 1;
+    uint8_t scroll = 0;
+    if(ui_state->menu_selected >= calls_in_screen)
+        scroll = ui_state->menu_selected - calls_in_screen + 1;
+
+    for(uint8_t item = 0; item < calls_in_screen; item++)
+    {
+        uint8_t index = item + scroll;
+        char who[MAX_ENTRY_LEN];
+        char age[MAX_ENTRY_LEN];
+        char dst[MAX_ENTRY_LEN];
+
+        if(_ui_getLastHeardEntryName(who, sizeof(who), index) != 0)
+            break;
+        _ui_getLastHeardValueName(age, sizeof(age), index);
+        _ui_getLastHeardDestName(dst, sizeof(dst), index);
+
+        color_t text_color = color_white;
+        if(index == ui_state->menu_selected)
+        {
+            text_color = color_black;
+            point_t rect_pos = {0, pos.y - layout.menu_h + 3};
+            gfx_drawRect(rect_pos, CONFIG_SCREEN_WIDTH, 2 * layout.menu_h,
+                         color_white, true);
+            announceMenuItemIfNeeded(who, dst, false);
+        }
+
+        gfx_print(pos, layout.menu_font, TEXT_ALIGN_LEFT, text_color, who);
+        gfx_print(pos, layout.menu_font, TEXT_ALIGN_RIGHT, text_color, age);
+        pos.y += layout.menu_h;
+        gfx_print(pos, layout.menu_font, TEXT_ALIGN_LEFT, text_color, dst);
+        pos.y += layout.menu_h;
+    }
+}
+
+/*
+ * Favourites: slot number and the destination held, "Empty" otherwise.
+ */
+int _ui_getFavouriteEntryName(char *buf, uint8_t max_len, uint8_t index)
+{
+    if(index >= DMR_FAV_NUM) return -1;
+    sniprintf(buf, max_len, "%d", index + 1);
+    return 0;
+}
+
+int _ui_getFavouriteValueName(char *buf, uint8_t max_len, uint8_t index)
+{
+    if(index >= DMR_FAV_NUM) return -1;
+
+    uint32_t fav = last_state.settings.dmr_favourites[index];
+    if(fav == 0)
+        sniprintf(buf, max_len, "%s", currentLanguage->empty);
+    else
+        _ui_dmrDestString(buf, max_len, DMR_FAV_TYPE(fav), DMR_FAV_ID(fav));
+
+    return 0;
+}
+
+void _ui_drawDMRFavourites(ui_state_t* ui_state)
+{
+    gfx_clearScreen();
+    // Print "Favourites" on top bar
+    gfx_print(layout.top_pos, layout.top_font, TEXT_ALIGN_CENTER, color_white,
+              currentLanguage->favourites);
+    _ui_drawMenuListValue(ui_state, ui_state->menu_selected,
+                          _ui_getFavouriteEntryName,
+                          _ui_getFavouriteValueName);
+}
 #endif
 
 void _ui_drawFRSCode(ui_state_t* ui_state)
@@ -2012,6 +2288,14 @@ bool _ui_drawMacroMenu(ui_state_t* ui_state)
             gfx_print(pos_2, layout.top_font, TEXT_ALIGN_LEFT,
                       color_white, "       ");
 
+        }
+    #endif
+    #ifdef CONFIG_DMR
+        else if (last_state.channel.mode == OPMODE_DMR)
+        {
+            // Last heard list
+            gfx_print(pos_2, layout.top_font, TEXT_ALIGN_LEFT,
+                      color_white, "  Heard");
         }
     #endif
 

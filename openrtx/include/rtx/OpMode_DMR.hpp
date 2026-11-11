@@ -179,6 +179,16 @@ public:
     static constexpr uint32_t MARKER_TIME_MS = 3000;
 
     /**
+     * How long the TS1/TS2 busy hints taken from a repeater's Activity
+     * Update Short LC stay raised after the last Short LC of any kind (a
+     * Null message included) was received with a good CRC: a repeater
+     * sends one every CACH cycle (four bursts, 120 ms) while it is up, so
+     * two seconds of silence mean the carrier is gone. A retune and a
+     * modem reprogramming clear them at once.
+     */
+    static constexpr uint32_t TS_BUSY_HOLD_MS = 2000;
+
+    /**
      * Constructor.
      */
     OpMode_DMR();
@@ -356,6 +366,32 @@ private:
      */
     void publish(rtxStatus_t *const status);
 
+    /**
+     * Feed the last heard list: one entry per received call, inserted when
+     * the controller opens a call (its headers) and again when a call from
+     * another source or to another destination takes its place, never per
+     * burst. A call reopened after its hang time counts as a new one.
+     *
+     * @param nowMs: current time.
+     */
+    void trackCall(uint32_t nowMs);
+
+    /**
+     * Drop the TS busy hints and the monitor's Short LC: the repeater they
+     * describe is no longer listened to (retune, modem reprogramming).
+     */
+    void forgetShortLc();
+
+    /**
+     * Parse the Short LC of a system event, when the modem reports one:
+     * the 28 bits and the CRC of the snapshot (RX RAM 0x24-0x28) are
+     * verified, an Activity Update (TS 102 361-2 §7.1.3.2) sets the TS1/TS2
+     * busy hints, and the message and its counters go to the monitor block.
+     *
+     * @param nowMs: current time.
+     */
+    void parseShortLc(uint32_t nowMs);
+
     DmrModemAdapter port;            ///< Modem port towards dmr_baseband.h
     DmrAudioLink audioLink;          ///< Voice sink towards dmr_audio
     DMR::CallController ctrl;        ///< Slot state machine
@@ -377,6 +413,12 @@ private:
     uint32_t txTimeoutMs;            ///< T_TO for the next transmission
     uint8_t rfState;                 ///< RfState of the RF stage
     uint8_t markers;                 ///< Markers published to the UI
+    uint8_t tsBusy;                  ///< TS1/TS2 busy hints, bit0 = TS1
+    uint32_t tsBusyMs;               ///< When the last good Short LC arrived
+    uint32_t rxFrequency;            ///< RX frequency of the configuration
+    bool callTracked;                ///< Current call is in last heard
+    uint32_t trackedSrc;             ///< Source of the tracked call
+    uint32_t trackedDst;             ///< Destination of the tracked call
 };
 
 #endif /* OPMODE_DMR_H */

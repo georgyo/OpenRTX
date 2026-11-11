@@ -145,6 +145,20 @@ void vp_announceBank(const uint16_t bank, const enum vpQueueFlags flags);
 /**
  *
  */
+/**
+ * Announce a received DMR call: the source ID, digit by digit, then the
+ * destination ("talkgroup" and its number, "private" and the ID, or
+ * "broadcast"). With vpqIncludeDescriptions the source ID is introduced by
+ * the "source ID" prompt.
+ *
+ * @param src: source DMR ID.
+ * @param dst: destination ID.
+ * @param callType: dmrContactType_t GROUP, PRIVATE or ALL.
+ * @param flags: queue flags.
+ */
+void vp_announceDmrCall(uint32_t src, uint32_t dst, uint8_t callType,
+                        const enum vpQueueFlags flags);
+
 void vp_announceM17Info(const channel_t *channel, bool isEditing,
                         const enum vpQueueFlags flags);
 

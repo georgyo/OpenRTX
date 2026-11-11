@@ -436,6 +436,11 @@ int dmrbb_init(void)
     running = false;
     replayTicks = 0;
 
+    /* An untouched SYS line knob reads its default (see dmrEmu_reset) */
+    if (regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] == 0)
+        regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] =
+            DMRBB_SYS_LINE_PINMAP;
+
     /* The interrupt counters start from zero, as on the radio */
     tsCount = 0;
     sysCount = 0;
@@ -640,6 +645,9 @@ void dmrEmu_reset(void)
     script.clear();
     memset(&rec, 0x00, sizeof(rec));
     memset(regs, 0x00, sizeof(regs));
+    /* The SYS line knob reads its default, as on the CS7000 driver; a
+     * write is accepted and logged like any other and changes nothing */
+    regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] = DMRBB_SYS_LINE_PINMAP;
     initResult = 0;
     running = false;
     tcNext = 0;

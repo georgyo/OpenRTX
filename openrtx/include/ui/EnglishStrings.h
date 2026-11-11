@@ -126,6 +126,10 @@ const stringsTable_t englishStrings =
     .twoPointTest      = "Two-point",
     .lcssMode          = "LCSS mode",
     .rfAdvance         = "RF advance",
+    .sysLine           = "SYS line",
     .dmrRfFailed       = "RF failed",
+    .lastHeard         = "Last heard",
+    .favourites        = "Favourites",
+    .empty             = "Empty",
 };
 #endif  // ENGLISHSTRINGS_H

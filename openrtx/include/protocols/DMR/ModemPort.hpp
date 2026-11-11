@@ -153,6 +153,7 @@ static constexpr uint8_t R82_PHY_RX = 0x01;        /* test mode only     */
  */
 static constexpr uint8_t R86_TX_COMPLETE = 0x80; /* service TX finished  */
 static constexpr uint8_t R86_RDY_LST = 0x10;     /* per-slot deadline    */
+static constexpr uint8_t R86_SHORT_LC = 0x04;    /* Short LC received    */
 
 /*
  * Register 0x51 fields (G4EML).

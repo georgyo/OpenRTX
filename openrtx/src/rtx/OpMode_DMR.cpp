@@ -9,10 +9,12 @@
 #ifdef CONFIG_DMR
 
 #include <cstring>
+#include "core/dmr_lastheard.h"
 #include "core/state.h"
 #include "interfaces/delays.h"
 #include "interfaces/platform.h"
 #include "interfaces/radio.h"
+#include "protocols/DMR/FEC/ShortLc.hpp"
 #include "protocols/DMR/LinkControl.hpp"
 #include "rtx/OpMode_DMR.hpp"
 #include "rtx/rtx.h"
@@ -34,6 +36,12 @@ OpMode_DMR::OpMode_DMR()
     , txTimeoutMs(T_TO_S * 1000)
     , rfState(RF_OFF)
     , markers(0)
+    , tsBusy(0)
+    , tsBusyMs(0)
+    , rxFrequency(0)
+    , callTracked(false)
+    , trackedSrc(0)
+    , trackedDst(0)
 {
     memset(&bbCfg, 0x00, sizeof(bbCfg));
     memset(&snap, 0x00, sizeof(snap));
@@ -65,6 +73,8 @@ void OpMode_DMR::enable()
     markerRaised = false;
     rfState = RF_OFF;
     markers = ready ? 0 : DMR_MARK_NOT_SUPPORTED;
+    tsBusy = 0;
+    callTracked = false;
     audioLink.reset();
 
     /* Vocoder backend up, counters cleared, no thread until a call */
@@ -160,6 +170,7 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
                                                LCSS_MODE_CHIP;
 
     struct dmrbbConfig bb;
+    memset(&bb, 0x00, sizeof(bb));
     bb.colorCode = status->dmr_txColorCode & 0x0F;
     bb.timeslot = c.timeslot;
     bb.ownId = c.ownId;
@@ -175,15 +186,34 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
                                               DMRBB_MODE_REG_DEFAULT;
 
     /*
+     * RF_TX_INTER advance word 0x12, same rule: the driver default unless
+     * the monitor screen chose the other word, which the driver then
+     * rewrites after its table on every reconfiguration (UNVERIFIED on
+     * hardware which advance the CS7000 needs).
+     */
+    bb.rfAdvance = (status->dmr_rfAdvance != 0) ? status->dmr_rfAdvance :
+                                                  DMRBB_RF_ADVANCE_DEFAULT;
+
+    /*
      * A reconfiguration deferred by an earlier call stays due: cfg/bbCfg
      * already hold the new values, so the comparison alone would miss it.
      */
-    bool modemChange = force || !cfgValid || cfgPending
-                    || (c.colorCode != cfg.colorCode)
-                    || (c.timeslot != cfg.timeslot) || (c.ownId != cfg.ownId)
-                    || (c.polite != cfg.polite)
-                    || (bb.colorCode != bbCfg.colorCode)
-                    || (bb.modeReg != bbCfg.modeReg);
+    bool modemChange =
+        force || !cfgValid || cfgPending || (c.colorCode != cfg.colorCode)
+        || (c.timeslot != cfg.timeslot) || (c.ownId != cfg.ownId)
+        || (c.polite != cfg.polite) || (bb.colorCode != bbCfg.colorCode)
+        || (bb.modeReg != bbCfg.modeReg) || (bb.rfAdvance != bbCfg.rfAdvance);
+
+    /*
+     * The Activity Update describes the repeater whose CACH it came from:
+     * once the RX frequency changes the TS busy hints and the monitor's
+     * Short LC belong to a channel no longer listened to and are dropped
+     * (a modem reprogramming drops them too, see reprogramModem()). Any
+     * other reconfiguration keeps them.
+     */
+    if (cfgValid && (status->rxFrequency != rxFrequency))
+        forgetShortLc();
+    rxFrequency = status->rxFrequency;
 
     cfg = c;
     bbCfg = bb;
@@ -230,6 +260,16 @@ void OpMode_DMR::reprogramModem(uint32_t nowMs)
     dmrAudio_stop();
     dmrbb_configure(&bbCfg);
     ctrl.enable(nowMs);
+
+    /* The restarted modem starts without a repeater's Short LC */
+    forgetShortLc();
+}
+
+void OpMode_DMR::forgetShortLc()
+{
+    tsBusy = 0;
+    tsBusyMs = 0;
+    mon.shortLc = 0;
 }
 
 void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
@@ -277,6 +317,12 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
 
     followState(now);
     monitor(ev);
+    trackCall(now);
+
+    /* A repeater that stopped sending Short LCs is no longer busy */
+    if ((tsBusy != 0) && ((now - tsBusyMs) >= TS_BUSY_HOLD_MS))
+        tsBusy = 0;
+
     publish(status);
 
     /* Operating status for the RSSI filter and the UI: TX while keyed */
@@ -510,7 +556,65 @@ void OpMode_DMR::monitor(uint32_t ev)
             if (parsed)
                 mon.lcValid |= 0x02;
         }
+
+        /*
+         * UNVERIFIED on hardware: the chip reports a received Short LC
+         * through 0x82 bit5 with 0x86 bit2 set (G4EML table, "ShortLC
+         * received"), the same interrupt as the end of an own
+         * transmission; the driver reads RX RAM 0x24-0x28 on it.
+         */
+        if (((snap.irq82 & R82_TX_END) != 0)
+            && ((snap.sub86 & R86_SHORT_LC) != 0))
+            parseShortLc((uint32_t)getTick());
     }
+}
+
+void OpMode_DMR::parseShortLc(uint32_t nowMs)
+{
+    uint32_t message = 0;
+
+    if (!FEC::ShortLc::fromChipBytes(snap.shortLc, message)) {
+        if (mon.shortLcBad < UINT16_MAX)
+            mon.shortLcBad++;
+        return;
+    }
+
+    mon.shortLc = message;
+    if (mon.shortLcOk < UINT16_MAX)
+        mon.shortLcOk++;
+
+    /*
+     * Any Short LC with a good CRC proves the repeater is still on the
+     * air: the hold of the busy hints restarts from it, so that a Null
+     * message (which says nothing about the slots) keeps the hints alive
+     * rather than letting them expire while the carrier is up.
+     */
+    tsBusyMs = nowMs;
+
+    /*
+     * Activity Update: what the repeater says about its two slots. A Null
+     * message leaves the hints as they are; a repeater that has gone idle
+     * sends "no activity" on both anyway.
+     */
+    ActivityUpdate au;
+    if (au.unpack(message))
+        tsBusy = (au.busy(1) ? 0x01 : 0x00) | (au.busy(2) ? 0x02 : 0x00);
+}
+
+void OpMode_DMR::trackCall(uint32_t nowMs)
+{
+    const CallController::Report &r = ctrl.report();
+    bool rx = (r.callState == DMR_CALL_RX) && r.lcOk;
+
+    if (rx
+        && (!callTracked || (r.rxSrc != trackedSrc)
+            || (r.rxDst != trackedDst))) {
+        dmrLastHeard_insert(r.rxSrc, r.rxDst, r.rxFlco, nowMs);
+        trackedSrc = r.rxSrc;
+        trackedDst = r.rxDst;
+    }
+
+    callTracked = rx;
 }
 
 void OpMode_DMR::publish(rtxStatus_t *const status)
@@ -527,6 +631,7 @@ void OpMode_DMR::publish(rtxStatus_t *const status)
     status->dmr_callState = r.callState;
     status->dmr_slotLock = r.slotLock;
     status->dmr_markers = markers;
+    status->dmr_tsBusy = tsBusy;
     status->dmr_mon = mon;
     dmrAudio_getStats(&status->dmr_audio);
 }
