@@ -48,13 +48,17 @@ void platform_init()
     gpio_setMode(GPIOEXT_DAT, OUTPUT);
 
     /*
-     * HR_C6000 interrupt lines PC0..PC3, floating inputs: the C6000 drives
-     * them with active-low pulses (manual §4.4, push-pull as far as the
-     * manual says: no pull-up is documented) and the DMR modem driver attaches
-     * falling-edge interrupts to all four during bring-up. No pull resistor on
-     * purpose: on the CS7000-M17 Plus schematic PC1 is the 2T/5T analogue
-     * tone detector output, a pull-up would load it.
+     * HR_C6000 interrupt lines, floating inputs: the C6000 drives them
+     * with active-low pulses (manual §4.4). RF_TX_INTER and SYS_INTER are
+     * on the PC2_C and PC3_C pads, which reach the PC2 and PC3 port logic
+     * through the analogue switches of SYSCFG_PMCR (RM0433 §12.3.1): close
+     * them, whatever the reset value or the bootloader left there. Nothing
+     * on this board uses the ADC inputs behind the two pads.
      */
+    RCC->APB4ENR |= RCC_APB4ENR_SYSCFGEN;
+    __DSB();
+    SYSCFG->PMCR &= ~(SYSCFG_PMCR_PC2SO | SYSCFG_PMCR_PC3SO);
+
     gpio_setMode(DMR_TS_INT,      INPUT);
     gpio_setMode(DMR_SYS_INT,     INPUT);
     gpio_setMode(DMR_TX_INT,      INPUT);

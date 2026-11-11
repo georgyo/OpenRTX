@@ -23,13 +23,10 @@
  *    falling-edge EXTI shim of gpio_irq_stm32.cpp. The callbacks run in
  *    interrupt context and only latch: an event bit in `pending`, a counter
  *    per line and the tick of the slot interrupt. PC0..PC3 are all four
- *    attached, each with its own counter, because the schematic of the
- *    CS7000-M17 Plus (V01) and the pinmap disagree on which pin carries
- *    SYS_INTER (PC3_C versus PC1, see pinmap.h) and nothing has been
- *    validated yet: the dispatch to the event bits uses the pinmap
- *    constants DMR_TS_INT / DMR_TX_INT and, for SYS_INTER, a runtime
- *    choice between DMR_SYS_INT (default) and DMR_SYS_INT_ALT made from
- *    the monitor screen's "SYS line" action (DMRBB_DRV_SYS_LINE,
+ *    attached, each with its own counter: TIME_SLOT_INTER and RF_TX_INTER
+ *    are dispatched with the pinmap constants DMR_TS_INT / DMR_TX_INT,
+ *    SYS_INTER with DMR_SYS_INT unless the monitor screen's "SYS line"
+ *    action switched it to DMR_SYS_INT_ALT (DMRBB_DRV_SYS_LINE,
  *    interfaces/dmr_baseband.h); the line not chosen only counts.
  *
  *  - Bus access. All the SPI traffic happens in the thread calling
@@ -138,10 +135,16 @@ static constexpr uint8_t IRQ_ABNORMAL_EXIT = HR_C6000::IRQ_ABNORMAL_EXIT;
 /* Register 0x86 sub-status, bit 2 "Short LC received" (G4EML table) */
 static constexpr uint8_t SUB86_SHORT_LC = HR_C6000::SUB86_SHORT_LC;
 
-/* Register 0x51 fields, G4EML table */
-static constexpr uint8_t R51_CRC_BAD = 0x04;
+/*
+ * Register 0x51 fields, manual chapter 8: [1:0] sync class (00 no sync, 01
+ * voice, 10 data, 11 RC), [6:4] voice burst number 1 to 6 for A to F
+ */
 static constexpr uint8_t R51_CLASS_MASK = 0x03;
+static constexpr uint8_t R51_CLASS_NONE = 0x00;
 static constexpr uint8_t R51_CLASS_VOICE = 0x01;
+static constexpr uint8_t R51_VOICE_SEQ_SHIFT = 4;
+static constexpr uint8_t R51_VOICE_SEQ_MASK = 0x07;
+static constexpr uint8_t R51_VOICE_SEQ_MAX = 6;
 
 /* Voice payload transport, DMRBB_DRV_VOICE_PATH */
 static constexpr uint8_t VOICE_PATH_VSPI = 0;
@@ -153,8 +156,8 @@ static constexpr unsigned WAIT_POLL_MS = 1;
 /*
  * Interrupt lines. The four EXTI lines PC0..PC3 are all attached; the
  * mapping of the C6000 pins on them comes from pinmap.h, with the SYS_INTER
- * line selectable at runtime between the pinmap constant (SYS_LINE, default)
- * and the schematic's alternative (ALT_LINE), see DMRBB_DRV_SYS_LINE.
+ * line selectable at runtime between DMR_SYS_INT (SYS_LINE, default) and
+ * DMR_SYS_INT_ALT (ALT_LINE), see DMRBB_DRV_SYS_LINE.
  */
 static constexpr unsigned NUM_LINES = 4;
 static constexpr uint8_t TS_LINE = PIN_NUMBER(DMR_TS_INT);
@@ -166,10 +169,14 @@ static_assert(TS_LINE < NUM_LINES, "DMR_TS_INT must be PC0..PC3");
 static_assert(SYS_LINE < NUM_LINES, "DMR_SYS_INT must be PC0..PC3");
 static_assert(TX_LINE < NUM_LINES, "DMR_TX_INT must be PC0..PC3");
 static_assert(ALT_LINE < NUM_LINES, "DMR_SYS_INT_ALT must be PC0..PC3");
-static_assert(SYS_LINE == DMRBB_SYS_LINE_PINMAP,
-              "DMRBB_SYS_LINE_PINMAP must match DMR_SYS_INT");
-static_assert(ALT_LINE == DMRBB_SYS_LINE_SCHEMATIC,
-              "DMRBB_SYS_LINE_SCHEMATIC must match DMR_SYS_INT_ALT");
+static_assert((SYS_LINE == DMRBB_SYS_LINE_PC1)
+                  || (SYS_LINE == DMRBB_SYS_LINE_PC3),
+              "DMR_SYS_INT must be PC1 or PC3");
+static_assert((ALT_LINE == DMRBB_SYS_LINE_PC1)
+                  || (ALT_LINE == DMRBB_SYS_LINE_PC3),
+              "DMR_SYS_INT_ALT must be PC1 or PC3");
+static_assert(SYS_LINE != ALT_LINE,
+              "DMR_SYS_INT and DMR_SYS_INT_ALT must differ");
 
 static const struct gpioPin irqPins[NUM_LINES] = {
     { &GpioC, 0 },
@@ -178,8 +185,9 @@ static const struct gpioPin irqPins[NUM_LINES] = {
     { &GpioC, 3 },
 };
 
-/* V_SPI chip select, driven by hand around each transfer */
+/* V_SPI chip select and clock, driven by hand around each transfer */
 static const struct gpioPin vocCs = { &GpioB, PIN_NUMBER(VOC_CS) };
+static const struct gpioPin vocSck = { &GpioB, PIN_NUMBER(VOC_SCK) };
 
 /* Interrupt mailbox, written in ISR context and read under interrupt lock */
 static volatile uint32_t pending = 0;
@@ -198,9 +206,8 @@ static bool attached = false;
 static volatile uint8_t voicePath = VOICE_PATH_VSPI;
 
 /*
- * Line dispatched as SYS_INTER, read in interrupt context: SYS_LINE (the
- * pinmap, PC1) unless the monitor screen switched it to ALT_LINE (the
- * schematic, PC3_C). UNVERIFIED on hardware which one each board needs.
+ * Line dispatched as SYS_INTER, read in interrupt context: SYS_LINE unless
+ * the monitor screen switched it to ALT_LINE.
  */
 static volatile uint8_t sysLine = SYS_LINE;
 
@@ -236,10 +243,8 @@ static void lineIsr(void *arg)
     }
 
     /*
-     * The line not selected as SYS_INTER (PC3 by default, PC1 after the
-     * switch) only counts: the monitor screen shows which line pulses
-     * every 60ms, the knob follows it, then DMR_SYS_INT is fixed per
-     * target in pinmap.h.
+     * The line not selected as SYS_INTER only counts: the monitor screen
+     * shows which line pulses every 60ms.
      */
 }
 
@@ -296,6 +301,13 @@ static void vspiRead(uint8_t *buf)
     gpioPin_clear(&vocCs);
     spi_send(spi, cmd, sizeof(cmd));
     spi_receive(spi, buf, 27);
+
+    /*
+     * The bit-bang driver leaves the clock high after the last bit: put it
+     * back to the idle level of SPI mode 0 before the chip select rises,
+     * so that the next transfer does not open with a falling edge.
+     */
+    gpioPin_clear(&vocSck);
     gpioPin_set(&vocCs);
     spi_release(spi);
 }
@@ -317,6 +329,13 @@ static void vspiWrite(const uint8_t *buf)
     gpioPin_clear(&vocCs);
     spi_send(spi, cmd, sizeof(cmd));
     spi_send(spi, buf, 27);
+
+    /*
+     * The bit-bang driver leaves the clock high after the last bit: put it
+     * back to the idle level of SPI mode 0 before the chip select rises,
+     * so that the next transfer does not open with a falling edge.
+     */
+    gpioPin_clear(&vocSck);
     gpioPin_set(&vocCs);
     spi_release(spi);
 }
@@ -329,10 +348,21 @@ static void vspiWrite(const uint8_t *buf)
  * and FSK error count, then 0x83 acknowledging exactly the flags read.
  *
  * @param s: snapshot to fill.
+ * @return false when register 0x82 holds no flag, the snapshot is then left
+ * untouched.
  */
-static void readSysEvent(struct dmrbbSnapshot *s)
+static bool readSysEvent(struct dmrbbSnapshot *s)
 {
     const uint8_t irq = C6000.readIrqFlags();
+
+    /*
+     * No flag raised: the pulse did not come from the chip (noise on the
+     * line, or the SYS_INTER line is the wrong one of the two). The
+     * snapshot keeps the last real event.
+     */
+    if (irq == 0)
+        return false;
+
     s->irq82 = irq;
 
     if (irq & IRQ_TX_START)
@@ -366,13 +396,18 @@ static void readSysEvent(struct dmrbbSnapshot *s)
         C6000.readDataRam(RAM_LC_ADDR, s->lc, sizeof(s->lc));
 
     /*
-     * Voice burst: sync class 01 with a good CRC, reported together with the
-     * "received data" flag. The read happens before the acknowledge so that
-     * the chip cannot overwrite the payload with the next burst in between.
+     * Voice burst: burst A reads sync class 01, bursts B to F class 00, all
+     * six with their number in 0x51[6:4]. The read happens before the
+     * acknowledge so that the chip cannot overwrite the payload with the
+     * next burst in between.
      */
+    const uint8_t cls = s->r51 & R51_CLASS_MASK;
+    const uint8_t seq = (s->r51 >> R51_VOICE_SEQ_SHIFT) & R51_VOICE_SEQ_MASK;
+
     s->voiceValid = false;
-    if ((irq & IRQ_RX_DATA) && ((s->r51 & R51_CLASS_MASK) == R51_CLASS_VOICE)
-        && ((s->r51 & R51_CRC_BAD) == 0)) {
+    if ((irq & IRQ_RX_DATA)
+        && ((cls == R51_CLASS_NONE) || (cls == R51_CLASS_VOICE)) && (seq >= 1)
+        && (seq <= R51_VOICE_SEQ_MAX)) {
         if (voicePath == VOICE_PATH_RAM)
             C6000.readDataRam(RAM_VOICE_ADDR, s->voice, sizeof(s->voice));
         else
@@ -387,6 +422,8 @@ static void readSysEvent(struct dmrbbSnapshot *s)
     s->fskErr = C6000.readCfgRegister(0x0F);
 
     C6000.clearIrq(irq);
+
+    return true;
 }
 
 int dmrbb_init(void)
@@ -550,9 +587,10 @@ void dmrbb_writeVoice(const uint8_t ambe[27])
 uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
 {
     const long long deadline = getTick() + static_cast<long long>(timeoutMs);
-    uint32_t ev = 0;
 
     for (;;) {
+        uint32_t ev = 0;
+
         {
             miosix::FastInterruptDisableLock dLock;
             ev = pending;
@@ -565,29 +603,28 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
                 s->lineCount[i] = lineCount[i];
         }
 
+        /*
+         * Slot tick: timecode and slot status for the tracking of the next
+         * slot. When a SYS event is pending as well, its reads below
+         * refresh 0x52/0x42 once more.
+         */
+        if (ev & DMRBB_EV_TS) {
+            s->r52 = C6000.readCfgRegister(0x52);
+            s->r42 = C6000.readCfgRegister(0x42);
+        }
+
+        /* A SYS pulse without any flag in register 0x82 is not an event */
+        if ((ev & DMRBB_EV_SYS) && (readSysEvent(s) == false))
+            ev &= ~static_cast<uint32_t>(DMRBB_EV_SYS);
+
         if (ev != 0)
-            break;
+            return ev;
 
         if (getTick() >= deadline)
             return DMRBB_EV_TIMEOUT;
 
         sleepFor(0u, WAIT_POLL_MS);
     }
-
-    /*
-     * Slot tick: timecode and slot status for the tracking of the next
-     * slot. When a SYS event is pending as well, its reads below refresh
-     * 0x52/0x42 once more.
-     */
-    if (ev & DMRBB_EV_TS) {
-        s->r52 = C6000.readCfgRegister(0x52);
-        s->r42 = C6000.readCfgRegister(0x42);
-    }
-
-    if (ev & DMRBB_EV_SYS)
-        readSysEvent(s);
-
-    return ev;
 }
 
 uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)

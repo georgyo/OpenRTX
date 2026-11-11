@@ -667,7 +667,7 @@ TEST_CASE("radio_enableTx does nothing with txDisable set", "[radio_cs7000]")
     REQUIRE(radio_getStatus() == RX);
 }
 
-TEST_CASE("DMR radio_disableRtx idles the modem before dropping the PA",
+TEST_CASE("DMR radio_disableRtx drops the PA and leaves the modem alone",
           "[radio_cs7000][dmr]")
 {
     bringUp(OPMODE_DMR);
@@ -677,12 +677,15 @@ TEST_CASE("DMR radio_disableRtx idles the modem before dropping the PA",
     radio_disableRtx();
     REQUIRE(radio_getStatus() == OFF);
 
-    REQUIRE(events.size() >= 3);
-    REQUIRE(events[0] == Event{ Ev::DMRBB_IDLE, 0, 0 });
-    REQUIRE(events[1] == gpioClear(PIN_TX_PWR_EN));
-    REQUIRE(events[2] == gpioClear(PIN_RX_PWR_EN));
+    REQUIRE(events.size() >= 2);
+    REQUIRE(events[0] == gpioClear(PIN_TX_PWR_EN));
+    REQUIRE(events[1] == gpioClear(PIN_RX_PWR_EN));
 
-    /* No analog TX stop (0x60 = 0x00 / 0xE0 / 0x34 of stopAnalogTx) */
+    /*
+     * The modem belongs to the DMR opMode handler; no analog TX stop
+     * either (0x60 = 0x00 / 0xE0 / 0x34 of stopAnalogTx)
+     */
+    REQUIRE(has({ Ev::DMRBB_IDLE, 0, 0 }) == false);
     for (const auto &e : events)
         REQUIRE(e.type != Ev::REG_WRITE);
 }
@@ -701,7 +704,7 @@ TEST_CASE("FM radio_disableRtx drops the PA then stops the analog TX",
     REQUIRE(has({ Ev::DMRBB_IDLE, 0, 0 }) == false);
 }
 
-TEST_CASE("DMR radio_enableRx drops the PA, retunes, then starts the modem RX",
+TEST_CASE("DMR radio_enableRx drops the PA and retunes, modem untouched",
           "[radio_cs7000][dmr]")
 {
     bringUp(OPMODE_DMR);
@@ -715,10 +718,12 @@ TEST_CASE("DMR radio_enableRx drops the PA, retunes, then starts the modem RX",
     REQUIRE(has(gpioSet(PIN_VCOVCC_SW)));
     REQUIRE(has({ Ev::PLL_FREQ, 433500000 - 49950000, 0 }));
     REQUIRE(has(gpioSet(PIN_RX_PWR_EN)));
-    REQUIRE(events.back() == Event{ Ev::DMRBB_RX, 0, 0 });
-    REQUIRE(indexOf(gpioSet(PIN_RX_PWR_EN)) < indexOf({ Ev::DMRBB_RX, 0, 0 }));
 
-    /* The FM RX filter register 0x34 is not touched in DMR */
+    /*
+     * A configuration update lands here too: the sync search is not
+     * restarted, and the FM RX filter register 0x34 is not touched
+     */
+    REQUIRE(has({ Ev::DMRBB_RX, 0, 0 }) == false);
     for (const auto &e : events)
         REQUIRE(e.type != Ev::REG_WRITE);
 }
@@ -760,23 +765,16 @@ TEST_CASE("radio_updateConfiguration while transmitting in DMR re-keys",
     REQUIRE(analogTxStarted() == false);
 }
 
-TEST_CASE("radio_setOpmode configures the modem from the rtx status",
+TEST_CASE("radio_setOpmode leaves the modem to the DMR opMode handler",
           "[radio_cs7000][dmr]")
 {
     resetAll();
     rtxCfg.opMode = OPMODE_DMR;
-    rtxCfg.dmr_polite = 0;
-    rtxCfg.dmr_txColorCode = 7;
     radio_init(&rtxCfg);
     events.clear();
 
     radio_setOpmode(OPMODE_DMR);
-    REQUIRE(has({ Ev::DMRBB_CFG, 0, 0 }));
-    REQUIRE(lastBbConfig.colorCode == 7);
-    REQUIRE(lastBbConfig.timeslot == 2);
-    REQUIRE(lastBbConfig.ownId == 2345678);
-    REQUIRE(lastBbConfig.polite == false);
-    REQUIRE(lastBbConfig.modeReg == DMRBB_MODE_REG_DEFAULT);
+    REQUIRE(events.empty());
 
     /* Back to FM: the modem driver is terminated before fmMode() */
     events.clear();

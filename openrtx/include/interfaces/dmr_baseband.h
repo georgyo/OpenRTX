@@ -342,19 +342,16 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs);
 
 /*
  * DMRBB_DRV_SYS_LINE (read/write): EXTI line (PC0..PC3 pin number) the
- * CS7000 driver dispatches as SYS_INTER, a bring-up knob of the DMR monitor
- * screen's "SYS line" action. DMRBB_SYS_LINE_PINMAP (1, PC1, the default:
- * the pinmap constant DMR_SYS_INT from the reverse engineering of the F405
- * CS7000 firmware) or DMRBB_SYS_LINE_SCHEMATIC (3, PC3_C: the CS7000-M17
- * Plus schematic V01, pinmap constant DMR_SYS_INT_ALT); any other value is
- * ignored. The choice survives a reconfiguration and is forgotten at power
- * off. Drivers without selectable lines (emulator, stub) accept the write
- * and do nothing with it. UNVERIFIED on hardware which line each board
- * needs, see docs/dmr_bringup.md checks 1.2 and 3.1.
+ * CS7000 driver dispatches as SYS_INTER, DMRBB_SYS_LINE_PC1 or
+ * DMRBB_SYS_LINE_PC3; any other value is ignored. The driver starts from
+ * the DMR_SYS_INT pin of the target's pinmap.h and the "SYS line" action
+ * of the DMR monitor screen switches to the other one, until power off.
+ * Drivers without selectable lines (emulator, stub) accept the write and
+ * do nothing with it.
  */
 #define DMRBB_DRV_SYS_LINE 0x02
-#define DMRBB_SYS_LINE_PINMAP 1
-#define DMRBB_SYS_LINE_SCHEMATIC 3
+#define DMRBB_SYS_LINE_PC1 1
+#define DMRBB_SYS_LINE_PC3 3
 
 /**
  * Raw register access for the DMR monitor screen only.

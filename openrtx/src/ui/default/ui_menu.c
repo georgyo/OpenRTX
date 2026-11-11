@@ -1001,9 +1001,9 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
                 // the one the next ENTER selects (same rule as ui.c: PC3
                 // unless PC3 is in force)
                 uint8_t line = dmrMonReadback[6];
-                uint8_t next = (line == DMRBB_SYS_LINE_SCHEMATIC)
-                             ? DMRBB_SYS_LINE_PINMAP
-                             : DMRBB_SYS_LINE_SCHEMATIC;
+                uint8_t next = (line == DMRBB_SYS_LINE_PC3)
+                             ? DMRBB_SYS_LINE_PC1
+                             : DMRBB_SYS_LINE_PC3;
                 sniprintf(buf, max_len, "PC%u->PC%u", line, next);
             }
             else

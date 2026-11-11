@@ -1673,8 +1673,8 @@ static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
             // at power off. The emulator and the stub accept the write
             // and do nothing with it
             value = dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE);
-            value = (value == DMRBB_SYS_LINE_SCHEMATIC)
-                  ? DMRBB_SYS_LINE_PINMAP : DMRBB_SYS_LINE_SCHEMATIC;
+            value = (value == DMRBB_SYS_LINE_PC3)
+                  ? DMRBB_SYS_LINE_PC1 : DMRBB_SYS_LINE_PC3;
             dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE, value);
             break;
 

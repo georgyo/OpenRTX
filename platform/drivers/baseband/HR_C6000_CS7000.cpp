@@ -198,6 +198,19 @@ void HR_Cx000< M >::dmrMode()
     // alternative 0x01 with voice through TX RAM 0x30
     writeReg(M::CONFIG, 0x06, 0x21);
 
+    // Vocoder decoder started, encoder stopped: the value init() ends with
+    // (O; M chapter 8: bit 7 EncodeStart, bit 6 EncodeStop, bit 5
+    // DecodeStart, bit 4 DecodeStop). fmMode() leaves both stopped, 0x46;
+    // dmrTxStart() starts the encoder for a transmission
+    writeReg(M::CONFIG, 0x22, 0x26);
+
+    // FM filters, deviation and limiter back to the init values (O
+    // initSeq2), FM tone generators off: FM and M17 leave their own there
+    writeReg(M::CONFIG, 0x34, 0xF0);
+    writeReg(M::CONFIG, 0x35, 0x28);
+    writeReg(M::CONFIG, 0x3F, 0x10);
+    writeReg(M::CONFIG, 0xA1, 0x00);
+
     // Voice superframe timeout (O initSeq2, GD)
     writeReg(M::CONFIG, 0x0D, 0x10);
 

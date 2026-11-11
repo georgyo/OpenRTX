@@ -24,11 +24,8 @@
  * STM32H743 note: on the CS7000-PLUS the C6000 lines RF_TX_INTER and
  * SYS_INTER land on the pads PC2_C and PC3_C (schematic V01), which reach
  * the PC2/PC3 GPIO logic through the analogue switches controlled by
- * SYSCFG_PMCR PC2SO/PC3SO (DS12110 pin table, note 6). The switches are
- * closed at reset and nothing in the tree opens them, so the pads behave as
- * ordinary GPIO/EXTI inputs; this driver deliberately does not touch
- * SYSCFG_PMCR.
- * UNVERIFIED on hardware: EXTI on PC2_C/PC3_C with the switches closed.
+ * SYSCFG_PMCR PC2SO/PC3SO (DS12110 pin table, note 6). Closing them is a
+ * board matter: platform_init() of the target does it, not this driver.
  *
  * The handlers run in the Miosix "naked" form, with the thread context saved
  * around the dispatcher: a callback may therefore wake a thread with

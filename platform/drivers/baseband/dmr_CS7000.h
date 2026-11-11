@@ -21,17 +21,11 @@
  *
  *  - DMRBB_DRV_SYS_LINE (read/write, defined with its values in
  *    interfaces/dmr_baseband.h so that the monitor screen's "SYS line"
- *    action can write it): EXTI line (PC0..PC3 pin number) the driver
- *    dispatches as SYS_INTER, DMRBB_SYS_LINE_PINMAP (1, PC1, the default:
- *    the pinmap constant DMR_SYS_INT) or DMRBB_SYS_LINE_SCHEMATIC (3, PC3_C:
- *    the schematic, pinmap constant DMR_SYS_INT_ALT). Any other value is
- *    ignored. All four lines PC0..PC3 stay attached and counted whatever
- *    the choice, only the line raising DMRBB_EV_SYS (and the register reads
- *    behind it) moves, so a tester can switch on the radio without
- *    reflashing once the counters of the monitor screen tell which line
- *    pulses. UNVERIFIED on hardware: which of the two is right, per board,
- *    see docs/dmr_bringup.md checks 1.2 and 3.1. The knob survives a
- *    reconfiguration and is forgotten at power off.
+ *    action can write it): EXTI line the driver dispatches as SYS_INTER,
+ *    DMRBB_SYS_LINE_PC1 or DMRBB_SYS_LINE_PC3. The default is the DMR_SYS_INT
+ *    pin of the target's pinmap.h, the other one is DMR_SYS_INT_ALT. All
+ *    four lines PC0..PC3 stay attached and counted whatever the choice.
+ *    The knob survives a reconfiguration and is forgotten at power off.
  *
  *  - DMRBB_DRV_RFTX_TICK(b) (read only): byte b (0 = least significant) of
  *    the 32-bit getTick() value latched by the last RF_TX_INTER interrupt.

@@ -259,6 +259,13 @@ void OpMode_DMR::reprogramModem(uint32_t nowMs)
      */
     dmrAudio_stop();
     dmrbb_configure(&bbCfg);
+
+    /*
+     * The modem table resets the blocks of the chip: the settings the radio
+     * driver derives from the calibration (modulation amplitudes) are
+     * written again after it, as they are after every other mode setup.
+     */
+    radio_updateConfiguration();
     ctrl.enable(nowMs);
 
     /* The restarted modem starts without a repeater's Short LC */

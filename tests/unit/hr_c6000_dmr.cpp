@@ -317,7 +317,7 @@ static void resetAll()
     dmrbb_terminate();
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 0);
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE,
-                        DMRBB_SYS_LINE_PINMAP);
+                        DMRBB_SYS_LINE_PC1);
 
     uspi.reset();
     vspi.reset();
@@ -367,18 +367,20 @@ static void requireTx(const Transaction &t, const std::vector<uint8_t> &bytes)
 static const std::vector<std::vector<uint8_t>> dmrModeStream = {
     cfgWrite(0x00, 0x3F), cfgWrite(0x10, 0x6E), cfgWrite(0x11, 0x80),
     cfgWrite(0x01, 0xB0), cfgWrite(0x07, 0x0B), cfgWrite(0x08, 0xB8),
-    cfgWrite(0x09, 0x00), cfgWrite(0x06, 0x21), cfgWrite(0x0D, 0x10),
-    cfgWrite(0x12, 0x98), cfgWrite(0x13, 0x00), cfgWrite(0x14, 0x00),
-    cfgWrite(0x15, 0x00), cfgWrite(0x16, 0x00), cfgWrite(0x1A, 0xFF),
-    cfgWrite(0x1B, 0xFF), cfgWrite(0x1C, 0xFF), cfgWrite(0x1D, 0xFF),
-    cfgWrite(0x1E, 0xFF), cfgWrite(0x1F, 0x10), cfgWrite(0x20, 0x00),
-    cfgWrite(0x21, 0xA0), cfgWrite(0x2E, 0x04), cfgWrite(0x4B, 0x1B),
-    cfgWrite(0x4C, 0x00), cfgWrite(0x5F, 0xF0), cfgWrite(0x36, 0x10),
-    cfgWrite(0x25, 0x0E), cfgWrite(0x26, 0xFD), cfgWrite(0xE0, 0x8B),
-    cfgWrite(0xE2, 0x06), cfgWrite(0xE3, 0x52), cfgWrite(0xE5, 0x1A),
-    cfgWrite(0x83, 0xFF), cfgWrite(0x81, 0xFE), cfgWrite(0x85, 0xFF),
-    cfgWrite(0x87, 0xFF), cfgWrite(0xC0, 0x0A), cfgWrite(0x60, 0x00),
-    cfgWrite(0x40, 0x03), cfgWrite(0x41, 0x00),
+    cfgWrite(0x09, 0x00), cfgWrite(0x06, 0x21), cfgWrite(0x22, 0x26),
+    cfgWrite(0x34, 0xF0), cfgWrite(0x35, 0x28), cfgWrite(0x3F, 0x10),
+    cfgWrite(0xA1, 0x00), cfgWrite(0x0D, 0x10), cfgWrite(0x12, 0x98),
+    cfgWrite(0x13, 0x00), cfgWrite(0x14, 0x00), cfgWrite(0x15, 0x00),
+    cfgWrite(0x16, 0x00), cfgWrite(0x1A, 0xFF), cfgWrite(0x1B, 0xFF),
+    cfgWrite(0x1C, 0xFF), cfgWrite(0x1D, 0xFF), cfgWrite(0x1E, 0xFF),
+    cfgWrite(0x1F, 0x10), cfgWrite(0x20, 0x00), cfgWrite(0x21, 0xA0),
+    cfgWrite(0x2E, 0x04), cfgWrite(0x4B, 0x1B), cfgWrite(0x4C, 0x00),
+    cfgWrite(0x5F, 0xF0), cfgWrite(0x36, 0x10), cfgWrite(0x25, 0x0E),
+    cfgWrite(0x26, 0xFD), cfgWrite(0xE0, 0x8B), cfgWrite(0xE2, 0x06),
+    cfgWrite(0xE3, 0x52), cfgWrite(0xE5, 0x1A), cfgWrite(0x83, 0xFF),
+    cfgWrite(0x81, 0xFE), cfgWrite(0x85, 0xFF), cfgWrite(0x87, 0xFF),
+    cfgWrite(0xC0, 0x0A), cfgWrite(0x60, 0x00), cfgWrite(0x40, 0x03),
+    cfgWrite(0x41, 0x00),
 };
 
 TEST_CASE("HR_C6000 dmrMode() emits the table 4.1 byte stream in order",
@@ -416,9 +418,10 @@ TEST_CASE("HR_C6000 DMR register helpers", "[hr_c6000][dmr]")
         cfgWrite(0x1F, 0x70), cfgWrite(0x14, 0x56), cfgWrite(0x15, 0x34),
         cfgWrite(0x16, 0x12), cfgWrite(0x20, 0x00), cfgWrite(0x21, 0x00),
         cfgWrite(0x81, 0xFE), cfgWrite(0x83, 0x08), cfgWrite(0x40, 0xC3),
-        cfgWrite(0x41, 0x20), cfgWrite(0x41, 0x50), cfgWrite(0x40, 0x03),
-        cfgWrite(0x21, 0xA2), cfgWrite(0x40, 0xE3), cfgWrite(0x21, 0x02),
-        cfgWrite(0x40, 0xC3), { 0x01, 0x54, 0x78 },
+        cfgWrite(0x41, 0x20), cfgWrite(0x41, 0x00), cfgWrite(0x41, 0x20),
+        cfgWrite(0x41, 0x50), cfgWrite(0x40, 0x03), cfgWrite(0x21, 0xA2),
+        cfgWrite(0x22, 0x86), cfgWrite(0x40, 0xE3), cfgWrite(0x21, 0x02),
+        cfgWrite(0x22, 0x86), cfgWrite(0x40, 0xC3), { 0x01, 0x54, 0x78 },
     };
 
     /* Register 0x82 flag readers */
@@ -554,10 +557,12 @@ TEST_CASE("dmrbb slot and mode control emit the documented bytes",
     dmrbb_setTxFrameType(0x08 | (3 << 4));
 
     std::vector<std::vector<uint8_t>> expected = {
-        cfgWrite(0x40, 0xC3), cfgWrite(0x41, 0x20), cfgWrite(0x41, 0x50),
-        cfgWrite(0x21, 0xA2), cfgWrite(0x40, 0xE3), cfgWrite(0x21, 0xA2),
-        cfgWrite(0x40, 0xC3), cfgWrite(0x40, 0x03), cfgWrite(0x41, 0x80),
-        cfgWrite(0x41, 0x00), cfgWrite(0x50, 0x10), cfgWrite(0x50, 0x38),
+        cfgWrite(0x40, 0xC3), cfgWrite(0x41, 0x20), cfgWrite(0x41, 0x00),
+        cfgWrite(0x41, 0x20), cfgWrite(0x41, 0x50), cfgWrite(0x21, 0xA2),
+        cfgWrite(0x22, 0x86), cfgWrite(0x40, 0xE3), cfgWrite(0x21, 0xA2),
+        cfgWrite(0x22, 0x86), cfgWrite(0x40, 0xC3), cfgWrite(0x40, 0x03),
+        cfgWrite(0x41, 0x80), cfgWrite(0x41, 0x00), cfgWrite(0x50, 0x10),
+        cfgWrite(0x50, 0x38),
     };
 
     REQUIRE(uspi.log.size() == expected.size());
@@ -571,9 +576,10 @@ TEST_CASE("dmrbb slot and mode control emit the documented bytes",
     cfg.polite = false;
     bringUp(cfg);
     dmrbb_startTx(false);
-    REQUIRE(uspi.log.size() == 2);
+    REQUIRE(uspi.log.size() == 3);
     requireTx(uspi.log[0], cfgWrite(0x21, 0x02));
-    requireTx(uspi.log[1], cfgWrite(0x40, 0xC3));
+    requireTx(uspi.log[1], cfgWrite(0x22, 0x86));
+    requireTx(uspi.log[2], cfgWrite(0x40, 0xC3));
 
     dmrbb_terminate();
 }
@@ -635,6 +641,41 @@ TEST_CASE("dmrbb_writeVoice uses V_SPI, or the TX RAM when selected",
     requireTx(uspi.log[0], expected);
 
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 0);
+    dmrbb_terminate();
+}
+
+TEST_CASE("dmrbb_waitEvent drops a SYS pulse without flags in register 0x82",
+          "[dmr_cs7000]")
+{
+    bringUp();
+
+    struct dmrbbSnapshot s;
+    memset(&s, 0, sizeof(s));
+    s.irq82 = 0x08;
+    s.r51 = 0x12;
+
+    /* A pulse on the SYS line while the chip has nothing to report */
+    uspi.pages[4][0x82] = 0x00;
+    uspi.pages[4][0x51] = 0x61;
+    fireLine(1);
+    uint32_t ev = dmrbb_waitEvent(&s, 30);
+
+    /* Only register 0x82 was read, nothing acknowledged, snapshot kept */
+    REQUIRE(ev == DMRBB_EV_TIMEOUT);
+    REQUIRE(uspi.log.size() == 1);
+    requireTx(uspi.log[0], { 0x84, 0x82, 0x00 });
+    REQUIRE(s.irq82 == 0x08);
+    REQUIRE(s.r51 == 0x12);
+    REQUIRE(s.sysCount == 1);
+
+    /* Together with a slot tick only the tick is reported */
+    uspi.log.clear();
+    fireLine(0);
+    fireLine(1);
+    ev = dmrbb_waitEvent(&s, 30);
+    REQUIRE(ev == DMRBB_EV_TS);
+    REQUIRE(s.irq82 == 0x08);
+
     dmrbb_terminate();
 }
 
@@ -761,7 +802,7 @@ TEST_CASE("dmrbb_waitEvent reads the voice payload of a good voice burst",
     bringUp();
 
     uspi.pages[4][0x82] = 0x08;
-    uspi.pages[4][0x51] = 0x21; /* voice sequence 2, CRC ok, class voice */
+    uspi.pages[4][0x51] = 0x20; /* voice burst B: sequence 2, no sync */
     uspi.pages[4][0x52] = 0x10;
     for (uint8_t i = 0; i < 27; i++)
         vspi.pages[3][i] = (uint8_t)(0x80 + i);
@@ -795,10 +836,19 @@ TEST_CASE("dmrbb_waitEvent reads the voice payload of a good voice burst",
     REQUIRE(lcIdx < ackIdx);
     requireTx(uspi.log[ackIdx], cfgWrite(0x83, 0x08));
 
-    /* A bad CRC leaves the payload alone */
+    /* Burst A carries the voice sync, bit 7 may come set (manual) */
     uspi.log.clear();
     vspi.log.clear();
-    uspi.pages[4][0x51] = 0x25;
+    uspi.pages[4][0x51] = 0x91;
+    fireLine(1);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
+    REQUIRE(s.voiceValid == true);
+    REQUIRE(vspi.log.size() == 1);
+
+    /* A terminator, data sync class and type 2, has no payload */
+    uspi.log.clear();
+    vspi.log.clear();
+    uspi.pages[4][0x51] = 0x22;
     fireLine(1);
     REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
     REQUIRE(s.voiceValid == false);
@@ -1067,11 +1117,15 @@ TEST_CASE("The TX arming, slot and return-to-RX sequence of a call",
     lcWrite.insert(lcWrite.end(), lc, lc + 12);
 
     std::vector<std::vector<uint8_t>> expected = {
-        cfgWrite(0x21, 0xA2), cfgWrite(0x40, 0xE3), lcWrite,
-        cfgWrite(0x50, 0x10), cfgWrite(0x41, 0x80), cfgWrite(0x41, 0x00),
-        cfgWrite(0x50, 0x08), cfgWrite(0x41, 0x80), cfgWrite(0x50, 0x20),
-        cfgWrite(0x41, 0x80), cfgWrite(0x41, 0x00), cfgWrite(0x40, 0xC3),
-        cfgWrite(0x41, 0x20), cfgWrite(0x41, 0x50),
+        cfgWrite(0x21, 0xA2), cfgWrite(0x22, 0x86),
+        cfgWrite(0x40, 0xE3), lcWrite,
+        cfgWrite(0x50, 0x10), cfgWrite(0x41, 0x80),
+        cfgWrite(0x41, 0x00), cfgWrite(0x50, 0x08),
+        cfgWrite(0x41, 0x80), cfgWrite(0x50, 0x20),
+        cfgWrite(0x41, 0x80), cfgWrite(0x41, 0x00),
+        cfgWrite(0x40, 0xC3), cfgWrite(0x41, 0x20),
+        cfgWrite(0x41, 0x00), cfgWrite(0x41, 0x20),
+        cfgWrite(0x41, 0x50),
     };
 
     REQUIRE(uspi.log.size() == expected.size());
@@ -1270,7 +1324,7 @@ TEST_CASE("The SYS line knob moves the SYS_INTER dispatch between PC1 and PC3",
 
     /* Default: the pinmap line, PC1 */
     REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
-            == DMRBB_SYS_LINE_PINMAP);
+            == DMRBB_SYS_LINE_PC1);
 
     uspi.pages[4][0x82] = 0x08;
     struct dmrbbSnapshot s;
@@ -1285,9 +1339,9 @@ TEST_CASE("The SYS line knob moves the SYS_INTER dispatch between PC1 and PC3",
     /* Switch to the schematic line, PC3: it raises the event and the
      * register reads, PC1 only counts */
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE,
-                        DMRBB_SYS_LINE_SCHEMATIC);
+                        DMRBB_SYS_LINE_PC3);
     REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
-            == DMRBB_SYS_LINE_SCHEMATIC);
+            == DMRBB_SYS_LINE_PC3);
 
     fireLine(3);
     REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
@@ -1312,24 +1366,24 @@ TEST_CASE("The SYS line knob moves the SYS_INTER dispatch between PC1 and PC3",
     /* Values other than the two candidates are ignored */
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE, 0);
     REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
-            == DMRBB_SYS_LINE_SCHEMATIC);
+            == DMRBB_SYS_LINE_PC3);
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE, 2);
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE, 7);
     REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
-            == DMRBB_SYS_LINE_SCHEMATIC);
+            == DMRBB_SYS_LINE_PC3);
 
     /* The knob survives a reconfiguration, like the other driver knobs */
     struct dmrbbConfig cfg = defaultConfig();
     dmrbb_configure(&cfg);
     REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
-            == DMRBB_SYS_LINE_SCHEMATIC);
+            == DMRBB_SYS_LINE_PC3);
     uspi.log.clear();
     fireLine(3);
     REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
 
     /* And back to the pinmap line */
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE,
-                        DMRBB_SYS_LINE_PINMAP);
+                        DMRBB_SYS_LINE_PC1);
     uspi.log.clear();
     fireLine(1);
     REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);

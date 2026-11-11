@@ -1578,20 +1578,19 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
             == DMRMON_ACT_SYSLINE - DMRMON_ACTION_FIRST);
     REQUIRE(_ui_dmrMonitorSelectedAction() == DMRMON_ACTION_NUM - 1);
     REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
-            == DMRBB_SYS_LINE_PINMAP);
+            == DMRBB_SYS_LINE_PC1);
     REQUIRE(monitorValue(DMRMON_ACT_SYSLINE) == "PC1->PC3");
     sync = press(KEY_ENTER);
     REQUIRE(sync == false);
     REQUIRE(rec->regWrites == 31);
-    requireDriverWrite(lastWrite(), DMRBB_DRV_SYS_LINE,
-                       DMRBB_SYS_LINE_SCHEMATIC);
+    requireDriverWrite(lastWrite(), DMRBB_DRV_SYS_LINE, DMRBB_SYS_LINE_PC3);
     REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE)
-            == DMRBB_SYS_LINE_SCHEMATIC);
+            == DMRBB_SYS_LINE_PC3);
     render();
     REQUIRE(monitorValue(DMRMON_ACT_SYSLINE) == "PC3->PC1");
     sync = press(KEY_ENTER);
     REQUIRE(sync == false);
-    requireDriverWrite(lastWrite(), DMRBB_DRV_SYS_LINE, DMRBB_SYS_LINE_PINMAP);
+    requireDriverWrite(lastWrite(), DMRBB_DRV_SYS_LINE, DMRBB_SYS_LINE_PC1);
     REQUIRE(rec->regWrites == 32);
     render();
     REQUIRE(monitorValue(DMRMON_ACT_SYSLINE) == "PC1->PC3");

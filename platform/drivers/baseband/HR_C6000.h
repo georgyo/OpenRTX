@@ -289,12 +289,19 @@ public:
     /**
      * Arm DMR transmission: register 0x21 = 0xA2 (polite to own colour
      * code, bit 1 "clear the vocoder encode buffer", self-clearing) or 0x02
-     * (impolite), then register 0x40 = 0xE3 (TxEn + RxEn, active timing:
-     * direct mode, the chip generates the 30ms time axis) or 0xC3 (TxEn +
-     * RxEn, passive timing: repeater mode, bursts aligned to the received
-     * sync). Nothing is radiated until register 0x41 = 0x80 selects a TX
-     * slot. G4EML table and OpenGD77 values; UNVERIFIED on hardware: manual
-     * §5.4.5 arms with 0x40 = 0xA3 (TxEn without RxEn).
+     * (impolite), register 0x22 = 0x86 (bit 7 EncodeStart, bits 2 and 1
+     * the I2S setup of the OEM init sequence), then register 0x40 = 0xE3
+     * (TxEn + RxEn, active timing: direct mode, the chip generates the 30ms
+     * time axis) or 0xC3 (TxEn + RxEn, passive timing: repeater mode,
+     * bursts aligned to the received sync). Nothing is radiated until
+     * register 0x41 = 0x80 selects a TX slot.
+     *
+     * EncodeStart: with the vocoder under MCU control (register 0x06 bit 0)
+     * the chip takes voice payloads from the vocoder port only once the
+     * encoder is started, manual §5.4.5 "Voice transmission" step 4 and
+     * register table (0x22 bit 7 "start of vocoder coding", bit 6 "end of
+     * vocoder coding"). fmMode() leaves the encoder stopped (0x22 = 0x46),
+     * so the write is needed after every visit to FM.
      *
      * @param activeTiming: true for direct mode, false for repeater mode.
      * @param polite: true for polite to own colour code, false for impolite.
@@ -302,20 +309,23 @@ public:
     inline void dmrTxStart(const bool activeTiming, const bool polite)
     {
         writeCfgRegister(0x21, polite ? 0xA2 : 0x02);
+        writeCfgRegister(0x22, 0x86);
         writeCfgRegister(0x40, activeTiming ? 0xE3 : 0xC3);
     }
 
     /**
      * Start DMR reception with passive timing: register 0x40 = 0xC3 (TxEn +
-     * RxEn, timing derived from the received sync), then 0x41 = 0x20
-     * (SyncFail: search a new sync) and 0x41 = 0x50 (RxNxtSlotEn +
-     * begin_v_layer2, received voice routed to the vocoder port).
-     * UNVERIFIED on hardware: manual §5.4.5 gives 0x40 = 0x43 / 0x41 = 0x40
-     * as the minimal form, the values here are the OpenGD77 ones.
+     * RxEn, timing derived from the received sync), then register 0x41
+     * pulsed twice through 0x20 (SyncFail: drop the timing, search a new
+     * sync) and left at 0x50 (RxNxtSlotEn + begin_v_layer2, received voice
+     * routed to the vocoder port). Manual §5.4.4 gives 0x40 = 0x43 and
+     * 0x41 = 0x40 as the minimal form.
      */
     inline void dmrRxStart()
     {
         writeCfgRegister(0x40, 0xC3);
+        writeCfgRegister(0x41, 0x20);
+        writeCfgRegister(0x41, 0x00);
         writeCfgRegister(0x41, 0x20);
         writeCfgRegister(0x41, 0x50);
     }
