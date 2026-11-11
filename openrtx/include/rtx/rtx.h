@@ -53,6 +53,31 @@ typedef struct
     char     M17_link[10];             /**  M17 LSF traffic originator */
     char     M17_refl[10];             /**  M17 LSF reflector module   */
     char     M17_meta_text[53];        /**< M17 Meta Text              */
+
+    /* DMR configuration, pushed by the UI thread */
+    uint32_t dmr_srcId;        /**< DMR own ID, settings.dmr_id            */
+    uint32_t dmr_dstId;        /**< DMR talkgroup or target ID             */
+    uint8_t  dmr_callType;     /**< DMR call type, enum dmrContactType_t   */
+    uint8_t  dmr_rxColorCode;  /**< DMR RX colour code, 0-15               */
+    uint8_t  dmr_txColorCode;  /**< DMR TX colour code, 0-15               */
+    uint8_t  dmr_timeslot;     /**< DMR timeslot, 1 or 2                   */
+    uint8_t  dmr_monitor;      /**< DMR monitor: 0 CC+TS+address filter,
+                                    1 own CC any TG, 2 any CC/TS           */
+    uint8_t  dmr_polite;       /**< DMR channel access: 1 polite to own CC,
+                                    0 impolite                             */
+
+    /* DMR receive report, written by the DMR opMode handler */
+    bool     dmr_lcOk;         /**< DMR Full LC with valid CRC is held     */
+    uint32_t dmr_rxSrcId;      /**< DMR source ID of the received call     */
+    uint32_t dmr_rxDstId;      /**< DMR destination ID of the received call*/
+    uint8_t  dmr_rxFlco;       /**< DMR FLCO of the received LC: 0 group,
+                                    3 unit-to-unit, 4-7 talker alias, 8 GPS*/
+    uint8_t  dmr_rxColorCodeSeen; /**< DMR colour code of the received burst*/
+    uint8_t  dmr_rxTimeslot;   /**< DMR timeslot of the received call      */
+    uint8_t  dmr_rxSyncType;   /**< DMR sync seen: 0 MS/DMO, 1 BS/RMO      */
+    uint8_t  dmr_callState;    /**< DMR call state, enum dmrCallState      */
+    uint8_t  dmr_slotLock;     /**< DMR timing: 0 none, 1 synced,
+                                    2 timecode locked                      */
 }
 rtxStatus_t;
 
@@ -74,6 +99,19 @@ enum opmode
     OPMODE_FM   = 1,        /**< Analog FM          */
     OPMODE_DMR  = 2,        /**< DMR                */
     OPMODE_M17  = 3         /**< M17                */
+};
+
+/**
+ * \enum dmrCallState Enumeration type defining the state of a DMR call, as
+ * reported by the DMR opMode handler in rtxStatus_t::dmr_callState.
+ */
+enum dmrCallState
+{
+    DMR_CALL_IDLE      = 0,     /**< No call in progress                  */
+    DMR_CALL_RX        = 1,     /**< Receiving a call                     */
+    DMR_CALL_RX_HANG   = 2,     /**< Call ended, hang time running        */
+    DMR_CALL_TX        = 3,     /**< Transmitting                         */
+    DMR_CALL_TX_WAKEUP = 4      /**< Waking up a repeater before TX       */
 };
 
 /**

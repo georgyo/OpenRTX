@@ -24,6 +24,52 @@ static OpMode_FM  fmMode;               // FM mode handler
 static OpMode_M17 m17Mode;              // M17 mode handler
 #endif
 
+/**
+ * \internal
+ * DMR receive report fields of rtxStatus_t. These are owned by the DMR opMode
+ * handler, which updates them on every update() pass: a configuration pushed
+ * by the UI thread must not clear them. Kept small on purpose, it lives on the
+ * stack of the rtx thread.
+ */
+struct DmrReport
+{
+    bool     lcOk;
+    uint32_t rxSrcId;
+    uint32_t rxDstId;
+    uint8_t  rxFlco;
+    uint8_t  rxColorCodeSeen;
+    uint8_t  rxTimeslot;
+    uint8_t  rxSyncType;
+    uint8_t  callState;
+    uint8_t  slotLock;
+};
+
+static void saveDmrReport(DmrReport *report, const rtxStatus_t *status)
+{
+    report->lcOk            = status->dmr_lcOk;
+    report->rxSrcId         = status->dmr_rxSrcId;
+    report->rxDstId         = status->dmr_rxDstId;
+    report->rxFlco          = status->dmr_rxFlco;
+    report->rxColorCodeSeen = status->dmr_rxColorCodeSeen;
+    report->rxTimeslot      = status->dmr_rxTimeslot;
+    report->rxSyncType      = status->dmr_rxSyncType;
+    report->callState       = status->dmr_callState;
+    report->slotLock        = status->dmr_slotLock;
+}
+
+static void restoreDmrReport(rtxStatus_t *status, const DmrReport *report)
+{
+    status->dmr_lcOk            = report->lcOk;
+    status->dmr_rxSrcId         = report->rxSrcId;
+    status->dmr_rxDstId         = report->rxDstId;
+    status->dmr_rxFlco          = report->rxFlco;
+    status->dmr_rxColorCodeSeen = report->rxColorCodeSeen;
+    status->dmr_rxTimeslot      = report->rxTimeslot;
+    status->dmr_rxSyncType      = report->rxSyncType;
+    status->dmr_callState       = report->callState;
+    status->dmr_slotLock        = report->slotLock;
+}
+
 
 void rtx_init(pthread_mutex_t *m)
 {
@@ -53,6 +99,23 @@ void rtx_init(pthread_mutex_t *m)
     rtxStatus.M17_link[0]   = '\0';
     rtxStatus.M17_refl[0]   = '\0';
     rtxStatus.M17_meta_text[0] = '\0';
+    rtxStatus.dmr_srcId     = 0;
+    rtxStatus.dmr_dstId     = 0;
+    rtxStatus.dmr_callType  = 0;
+    rtxStatus.dmr_rxColorCode = 1;
+    rtxStatus.dmr_txColorCode = 1;
+    rtxStatus.dmr_timeslot  = 1;
+    rtxStatus.dmr_monitor   = 0;
+    rtxStatus.dmr_polite    = 1;
+    rtxStatus.dmr_lcOk      = false;
+    rtxStatus.dmr_rxSrcId   = 0;
+    rtxStatus.dmr_rxDstId   = 0;
+    rtxStatus.dmr_rxFlco    = 0;
+    rtxStatus.dmr_rxColorCodeSeen = 0;
+    rtxStatus.dmr_rxTimeslot = 0;
+    rtxStatus.dmr_rxSyncType = 0;
+    rtxStatus.dmr_callState = DMR_CALL_IDLE;
+    rtxStatus.dmr_slotLock  = 0;
     currMode = &noMode;
 
     /*
@@ -102,10 +165,15 @@ void rtx_task()
     {
         if(newCnf != NULL)
         {
-            // Copy new configuration and override opStatus flags
+            // Copy new configuration and override opStatus flags. The DMR
+            // receive report is owned by the opMode handler and survives the
+            // copy as well: the UI thread never writes those fields.
             uint8_t tmp = rtxStatus.opStatus;
+            DmrReport dmrReport;
+            saveDmrReport(&dmrReport, &rtxStatus);
             memcpy(&rtxStatus, newCnf, sizeof(rtxStatus_t));
             rtxStatus.opStatus = tmp;
+            restoreDmrReport(&rtxStatus, &dmrReport);
 
             reconfigure = true;
             newCnf = NULL;
@@ -144,6 +212,12 @@ void rtx_task()
                 case OPMODE_FM:   currMode = &fmMode;  break;
                 #ifdef CONFIG_M17
                 case OPMODE_M17:  currMode = &m17Mode; break;
+                #endif
+                #ifdef CONFIG_DMR
+                // The DMR opMode handler arrives with the next stage of the
+                // DMR series: until then selecting DMR keeps the RTX stage
+                // idle on the empty handler, which is harmless.
+                case OPMODE_DMR:  currMode = &noMode;  break;
                 #endif
                 default:   currMode = &noMode;
             }

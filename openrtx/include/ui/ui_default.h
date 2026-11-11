@@ -15,6 +15,7 @@
 #include "core/event.h"
 #include "hwconfig.h"
 #include "core/ui.h"
+#include "rtx/rtx.h"
 
 // Maximum menu entry length
 #define MAX_ENTRY_LEN 21
@@ -56,6 +57,7 @@ enum uiScreen
     MAIN_FRS_INPUT,
     FRS_CODE,
     SETTINGS_FRS,
+    SETTINGS_DMR,
     LOW_BAT
 };
 
@@ -92,6 +94,9 @@ enum settingsItems
     S_RADIO,
 #ifdef CONFIG_M17
     S_M17,
+#endif
+#ifdef CONFIG_DMR
+    S_DMR,
 #endif
     S_FM,
     S_FRS,
@@ -161,6 +166,21 @@ enum settingsFRSItems
     FRS_MODE = 0,
     FRS_RESET_CODES
 };
+
+enum settingsDMRItems
+{
+    DMR_ID = 0,
+    DMR_TALKGROUP,
+    DMR_CALLTYPE,
+    DMR_COLORCODE,
+    DMR_TIMESLOT,
+    DMR_MONITOR,
+    DMR_ACCESS,
+    DMR_HANGTIME
+};
+
+// Longest DMR ID or talkgroup entry, in digits: DMR_ID_MAX is 16777215
+#define DMR_ID_DIGITS 8
 
 // FRS channel number entry: auto-accept timeout after the first digit, in ms
 #define FRS_INPUT_TIMEOUT 2000
@@ -245,6 +265,9 @@ typedef struct ui_state_t
     char new_time_buf[9];
 #endif
     char new_callsign[10];
+    // DMR ID or talkgroup being typed, with the number of digits entered
+    uint32_t new_dmr_number;
+    uint8_t new_dmr_digits;
     freq_t new_offset;
     // Which state to return to when we exit menu
     uint8_t last_main_state;
@@ -279,6 +302,7 @@ extern const char *settings_radio_items[];
 extern const char *settings_m17_items[];
 extern const char *settings_fm_items[];
 extern const char *settings_frs_items[];
+extern const char *settings_dmr_items[];
 extern const char * settings_accessibility_items[];
 extern const char *backup_restore_items[];
 extern const char *info_items[];
@@ -291,10 +315,36 @@ extern const uint8_t settings_radio_num;
 extern const uint8_t settings_m17_num;
 extern const uint8_t settings_fm_num;
 extern const uint8_t settings_frs_num;
+extern const uint8_t settings_dmr_num;
 extern const uint8_t settings_accessibility_num;
 extern const uint8_t backup_restore_num;
 extern const uint8_t info_num;
 extern const uint8_t author_num;
+
+/**
+ * Check whether the DMR opMode handler reports a call being received: while it
+ * does, the main screen shows the caller in place of the frequency.
+ *
+ * @param status: rtx status.
+ * @return true during a received call and its hang time.
+ */
+static inline bool _ui_dmrCallReceived(const rtxStatus_t *status)
+{
+    return (status->dmr_lcOk != false) &&
+           ((status->dmr_callState == DMR_CALL_RX) ||
+            (status->dmr_callState == DMR_CALL_RX_HANG));
+}
+
+/**
+ * Draw the DMR lines of the main screen: destination, colour code and
+ * timeslot when idle or transmitting, caller and destination during a
+ * received call. Implemented in ui_main.c, exposed for the unit tests.
+ *
+ * @param ui_state: UI state, for the number being typed.
+ * @param status: rtx status the call information is taken from.
+ */
+void _ui_drawModeInfoDMR(ui_state_t *ui_state, const rtxStatus_t *status);
+
 extern const color_t color_black;
 extern const color_t color_grey;
 extern const color_t color_white;
