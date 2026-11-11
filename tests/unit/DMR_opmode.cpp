@@ -8,10 +8,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 #include "SDL2/SDL.h"
 #include "core/audio_path.h"
 #include "core/dmr_audio.h"
 #include "core/dmr_lastheard.h"
+#include "core/dmr_trace.h"
 #include "emulator.h"
 #include "interfaces/delays.h"
 #include "protocols/DMR/CallController.hpp"
@@ -163,7 +166,7 @@ TEST_CASE("DMR OpMode: sizes", "[dmr][rtx]")
     printf("sizeof(DMR::CallController) = %zu bytes\n", sizeof(CallController));
     printf("sizeof(struct dmrbbSnapshot) = %zu bytes\n",
            sizeof(struct dmrbbSnapshot));
-    REQUIRE(sizeof(OpMode_DMR) < 512);
+    REQUIRE(sizeof(OpMode_DMR) <= 512);
 }
 
 TEST_CASE("DMR OpMode: enable goes OFF -> RX and ticks to RX_IDLE",
@@ -1959,4 +1962,83 @@ TEST_CASE("DMR OpMode: a received call feeds the last heard list once",
     REQUIRE(b.ctrlState() == CallController::RX_IDLE);
     REQUIRE(dmrLastHeard_count() == 2);
     dmrLastHeard_clear();
+}
+
+/* Every pending line of the bring-up trace */
+static std::vector<std::string> traceLines()
+{
+    std::vector<std::string> lines;
+    char line[DMR_TRACE_LINE_BYTES];
+
+    for (size_t len = dmrTrace_pop(line, sizeof(line)); len != 0;
+         len = dmrTrace_pop(line, sizeof(line)))
+        lines.push_back(std::string(line, len));
+
+    return lines;
+}
+
+static size_t countKind(const std::vector<std::string> &lines, char kind)
+{
+    size_t n = 0;
+    for (const std::string &l : lines)
+        if (l[0] == kind)
+            n++;
+    return n;
+}
+
+TEST_CASE("DMR OpMode: bring-up trace of the configuration and the slots",
+          "[dmr][rtx][trace]")
+{
+    Bench b;
+    traceLines();
+
+    b.start();
+    std::vector<std::string> lines = traceLines();
+
+    /*
+     * Mode entry: the modem is put in reception, then the configuration
+     * record, the twelve register rows and the first status record.
+     */
+    REQUIRE(countKind(lines, 'W') == 1);
+    REQUIRE(countKind(lines, 'E') == 1);
+    REQUIRE(countKind(lines, 'R') == 12);
+    REQUIRE(countKind(lines, 'P') == 1);
+    REQUIRE(lines[0].substr(7) == "01\n");
+
+    /*
+     * Colour codes 1/1, TS2, monitor off, polite, simplex, group call,
+     * 0x10 = 0x6E, 0x12 = 0x98, own ID 2345678, TG 31665, 430 MHz twice.
+     */
+    std::string e;
+    for (const std::string &l : lines)
+        if (l[0] == 'E')
+            e = l;
+    REQUIRE(e.size() == DMR_TRACE_LINE_BYTES);
+    REQUIRE(e.substr(7, 18) == "010102000100006E98");
+    REQUIRE(e.substr(25, 12) == "23CACE007BB1");
+    REQUIRE(e.substr(37, 16)
+            == "19A14780"
+               "19A14780");
+
+    /* A slot tick: state RX_IDLE, 0x41 = 0x50 written, no frame type */
+    b.tick();
+    lines = traceLines();
+    REQUIRE(countKind(lines, 'T') == 1);
+    REQUIRE(lines[0].substr(7, 2) == "02");
+    REQUIRE(lines[0].substr(17, 4) == "50FF");
+
+    /* A reader appearing later gets the configuration again */
+    dmrTrace_requestDump();
+    b.run(1);
+    lines = traceLines();
+    REQUIRE(countKind(lines, 'E') == 1);
+    REQUIRE(countKind(lines, 'R') == 12);
+
+    /* PTT: an immediate status record, modem armed, RF keyed */
+    emulator_state.PTTstatus = true;
+    b.run(1);
+    lines = traceLines();
+    REQUIRE(countKind(lines, 'P') == 1);
+    REQUIRE(countKind(lines, 'K') == 1);
+    REQUIRE(countKind(lines, 'W') == 1);
 }

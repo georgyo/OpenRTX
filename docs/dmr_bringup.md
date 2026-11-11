@@ -41,13 +41,63 @@ PTT is refused and `No DMR ID` is shown for three seconds):
    speech is never heard.
 2. Transmission: `TS` counts 33 per second while the PTT is held, `TX
    bursts` counts 16 per second, `RFTX` and `PC2` count with it. The other
-   radio shows the ID and opens on silence. `RF failed` in the top bar
+   radio shows the ID and opens on silence, or on a tone with
+   `Settings > DMR > Test tone` on. `RF failed` in the top bar
    means the chip gave no timeslot interrupts, `Busy` that it refused the
    channel (`Settings > DMR > Access` set to impolite rules that out).
 3. If the other radio still does not open while `TS` and `TX bursts`
    count: the PA is keyed for the whole call while the chip gates its
    modulation DACs per slot (5.1); keying per slot from RF_TX_INTER, which
    needs `RFTX` to count, is the next change to make.
+
+### 0.1 Second run and the trace on the USB serial port
+
+A second run with those fixes gave the same two symptoms: nothing decoded
+by the other radio, and on reception with the monitor set to any colour
+code the main screen showed the colour code and the error count changing
+from burst to burst. Again nothing was read back, so the firmware now
+records what the modem does and sends it out by itself.
+
+While the radio is in DMR mode the CS7000-M17 Plus sends a trace on its USB
+serial port (`CONFIG_DMR_TRACE`, `openrtx/src/core/dmr_trace.c`): one text
+line per record, written by the DMR opMode handler and sent by the device
+thread. Capture and decode it on a Linux host with:
+
+```
+stty -F /dev/ttyACM0 raw -echo
+cat /dev/ttyACM0 > dmr-trace.log
+python3 scripts/dmr_trace.py dmr-trace.log
+```
+
+The `stty` line matters: with the default settings the host echoes every
+line back to the radio. Records written while nobody reads the port are
+dropped; when a reader appears the configuration and the registers are
+recorded again, so the capture can be started at any time.
+
+A line is the kind, one letter, then six hexadecimal digits of time in
+milliseconds, then the data bytes, two digits each:
+
+| Kind | When | Data bytes |
+|---|---|---|
+| `E` | modem programmed, or a reader appeared | RX colour code, TX colour code, timeslot, monitor, polite, repeater, call type, 0x10 word, 0x12 word, own ID (3), destination (3), RX frequency (4), TX frequency (4), hang time in seconds, test tone, SYS line, voice path |
+| `R` | after every `E`, twelve of them | first register address, then sixteen registers of U_SPI page 4 read back from the chip: rows 0x00 to 0x60, 0x80, 0xA0, 0xB0, 0xC0 and 0xE0 |
+| `T` | timeslot interrupt, after the controller ran | controller state, local timecode, slot lock, 0x52, 0x42, 0x41 written for the next slot (`FF` none), 0x50 written (`FF` none), TS count (2), TS tick (2), SYS count (2), RF_TX count (2) |
+| `S` | system interrupt, after the controller ran | controller state, local timecode, 0x82, 0x51, 0x52, 0x5F, 0x42, 0x84, 0x86, 0x90, 0x98, RSSI (2), 0x0F, voice payload read, LC RAM (12) |
+| `V` | system interrupt that read a voice payload | the 27 bytes |
+| `W` | modem control call | 1 start RX, 2 start TX with passive timing, 3 start TX with active timing, 4 idle |
+| `K` | RF stage keyed or released | key asked, RF state after, status of the radio driver |
+| `P` | every second and on a PTT change | controller state, RF state, PTT, markers, call state, slot lock, counters of PC0 to PC3 (2 each), voice bursts asked for transmission (2), of which filled by the encoder (2), voice bursts received (2), RSSI in dBm (2, signed), audio thread running, audio failures |
+| `D` | records were lost | their number, eight digits, in place of the time |
+
+Multi-byte values are most significant byte first. The sub-status bytes of
+an `S` record are fresh only when their flag in 0x82 is set.
+
+The transmit side of the test tone makes the result audible on the other
+radio: with `Settings > DMR > Test tone` on, the voice bursts carry the
+AMBE+2 frames of a 1031 Hz tone instead of the silence pattern, so a
+receiver that decodes the transmission plays a tone. The `V` records of a
+reception show the same nine bytes when the other radio is this firmware,
+and `B9E881526173002A6B` when it sends silence.
 
 ## 1. GPIO external interrupts (`platform/drivers/GPIO/gpio_irq_stm32.cpp`)
 

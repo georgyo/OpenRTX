@@ -14,6 +14,8 @@
 #include <cstdint>
 #include "core/audio_path.h"
 #include "core/dmr_audio.h"
+#include "core/dmr_trace.h"
+#include "interfaces/delays.h"
 #include "interfaces/dmr_baseband.h"
 #include "protocols/DMR/CallController.hpp"
 #include "protocols/DMR/ModemPort.hpp"
@@ -30,11 +32,13 @@ class DmrModemAdapter : public DMR::ModemPort
 public:
     void setNextSlot(uint8_t r41) override
     {
+        lastR41 = r41;
         dmrbb_setNextSlot(r41);
     }
 
     void setTxFrameType(uint8_t r50) override
     {
+        lastR50 = r50;
         dmrbb_setTxFrameType(r50);
     }
 
@@ -69,17 +73,41 @@ public:
 
     void startRx() override
     {
+        traceControl(TRACE_START_RX);
         dmrbb_startRx();
     }
 
     void startTx(bool activeTiming) override
     {
+        traceControl(activeTiming ? TRACE_START_TX_ACTIVE :
+                                    TRACE_START_TX_PASSIVE);
         dmrbb_startTx(activeTiming);
     }
 
     void idle() override
     {
+        traceControl(TRACE_IDLE);
         dmrbb_idle();
+    }
+
+    /** Value of a slot register not written since the last trace record. */
+    static constexpr uint8_t NOT_WRITTEN = 0xFF;
+
+    /** Modem control calls, the data byte of the 'W' trace record. */
+    enum TraceControl : uint8_t {
+        TRACE_START_RX = 1,
+        TRACE_START_TX_PASSIVE = 2,
+        TRACE_START_TX_ACTIVE = 3,
+        TRACE_IDLE = 4
+    };
+
+    uint8_t lastR41 = NOT_WRITTEN; ///< Last next-slot word, for the trace
+    uint8_t lastR50 = NOT_WRITTEN; ///< Last TX frame type, for the trace
+
+private:
+    void traceControl(uint8_t what)
+    {
+        dmrTrace_put('W', (uint32_t)getTick(), &what, 1);
     }
 };
 
@@ -392,6 +420,18 @@ private:
      */
     void parseShortLc(uint32_t nowMs);
 
+    /**
+     * Trace records of the bring-up trace (core/dmr_trace.h, layouts in
+     * docs/dmr_bringup.md): the configuration with a dump of the modem
+     * registers, a slot tick, a system event with the voice payload it
+     * brought, the once-per-second status and an RF keying.
+     */
+    void traceConfig(uint32_t nowMs);
+    void traceSlot(uint32_t nowMs);
+    void traceSys(uint32_t nowMs);
+    void traceStatus(uint32_t nowMs, bool ptt);
+    void traceRfKey(uint32_t nowMs, bool key);
+
     DmrModemAdapter port;            ///< Modem port towards dmr_baseband.h
     DmrAudioLink audioLink;          ///< Voice sink towards dmr_audio
     DMR::CallController ctrl;        ///< Slot state machine
@@ -416,6 +456,9 @@ private:
     uint8_t tsBusy;                  ///< TS1/TS2 busy hints, bit0 = TS1
     uint32_t tsBusyMs;               ///< When the last good Short LC arrived
     uint32_t rxFrequency;            ///< RX frequency of the configuration
+    uint32_t txFrequency;            ///< TX frequency of the configuration
+    uint32_t traceStatusMs;          ///< Time of the last status record
+    bool tracePtt;                   ///< PTT of the last status record
     bool callTracked;                ///< Current call is in last heard
     uint32_t trackedSrc;             ///< Source of the tracked call
     uint32_t trackedDst;             ///< Destination of the tracked call
