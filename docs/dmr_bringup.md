@@ -1,15 +1,53 @@
 # DMR bring-up checklist
 
-Nothing of the DMR series has been run on a radio. This document lists, in
-the order in which they should be checked, every assumption that comes from
-the HR_C6000 manual, the CS7000-M17 Plus schematic or the observation of other
-firmwares but has not been confirmed on a CS7000 or CS7000-M17 Plus. Each
-entry names the code that carries the matching `UNVERIFIED on hardware`
-comment, what to observe, and what to change if the observation disagrees.
+This document lists, in the order in which they should be checked, every
+assumption of the DMR series that comes from the HR_C6000 manual, the
+CS7000-M17 Plus schematic or the observation of other firmwares and has not
+been confirmed on a CS7000 or CS7000-M17 Plus. Each entry names the code that
+carries the matching `UNVERIFIED on hardware` comment, what to observe, and
+what to change if the observation disagrees.
 
 The list grows with the stages of the series (see [dmr_mode.md](dmr_mode.md));
 an entry is removed, and the comment in the code with it, once somebody has
 checked it on a radio and recorded the result here.
+
+## 0. First run on a radio (2026-11)
+
+A first attempt on a CS7000-M17 Plus, simplex on TG 1 / TS 1 / CC 1 against
+a second DMR radio, gave no decodable transmission and an unstable display
+on reception. No register was read back on that occasion. The review that
+followed found these defects, all fixed since:
+
+| Defect | Effect | Fix |
+|---|---|---|
+| SYS_INTER was dispatched from PC1, which on the Plus carries the 2T/5T analogue audio node; the schematic puts SYS_INTER on PC3_C | every edge of the received audio ran the system event reads at an arbitrary time | `DMR_SYS_INT` is PC3 on the Plus, a pulse that finds register 0x82 empty is dropped |
+| register 0x51 sync class 00 ("no sync", voice bursts B to F) was read as "data burst", burst B as a terminator | a received call was closed on its second burst and reopened by the next late entry | `r51VoiceSeq()`, header and terminator are class 10 |
+| register 0x22 was never written in DMR and FM leaves both vocoder directions stopped (0x46) | no voice payload taken for transmission nor delivered on reception after a visit to FM | `dmrMode()` writes 0x26 (decoder started), `dmrTxStart()` 0x86 (encoder started) |
+| `radio_enableRx()` restarted the sync search on every configuration update and after every transmission | a call being received was dropped by a key press | the DMR opMode handler is the only owner of the modem |
+| the first LC after every return to reception was discarded | a call opened by late entry only | discarded only after the modem was programmed |
+| a PTT released before the first burst stayed latched | the next press was ignored | latch cleared on release |
+| settings saved by an older firmware loaded the DMR fields as zero | hang time 0, colour code 0, impolite access | fields missing from the record keep their defaults |
+
+What to check first with the fixed firmware, on the DMR monitor screen
+(section 2) and with a DMR ID set in `Settings > DMR` (without one the
+PTT is refused and `No DMR ID` is shown for three seconds):
+
+1. Reception of the other radio: `SYS` and `PC3` count about 16 per second
+   and `PC1` no longer matters; `0x51` reads `12` (header), then `11`,
+   `20`, `30`, `40`, `50`, `60` (voice A to F, possibly with bit 7 set:
+   `91`, `A0` ...), then `22` (terminator); the main screen shows the
+   caller and holds it. With `Settings > DMR > Test tone` on, a 1 kHz tone
+   plays for the duration of the call: the tree has no AMBE vocoder, so
+   speech is never heard.
+2. Transmission: `TS` counts 33 per second while the PTT is held, `TX
+   bursts` counts 16 per second, `RFTX` and `PC2` count with it. The other
+   radio shows the ID and opens on silence. `RF failed` in the top bar
+   means the chip gave no timeslot interrupts, `Busy` that it refused the
+   channel (`Settings > DMR > Access` set to impolite rules that out).
+3. If the other radio still does not open while `TS` and `TX bursts`
+   count: the PA is keyed for the whole call while the chip gates its
+   modulation DACs per slot (5.1); keying per slot from RF_TX_INTER, which
+   needs `RFTX` to count, is the next change to make.
 
 ## 1. GPIO external interrupts (`platform/drivers/GPIO/gpio_irq_stm32.cpp`)
 
@@ -39,8 +77,8 @@ fault.
   routes RF_TX_INTER and SYS_INTER to the pads PC2_C and PC3_C. The datasheet
   (DS12110, pin table note 6) says the `_C` pads reach the PC2/PC3 digital
   logic through analogue switches controlled by `SYSCFG_PMCR` bits `PC2SO` and
-  `PC3SO`, which are closed at reset. Nothing in the tree opens them, and the
-  driver deliberately never writes `SYSCFG_PMCR`, so a falling-edge EXTI on
+  `PC3SO`. `platform_init()` of the CS7000-PLUS target clears both bits
+  (switches closed) whatever the reset value, so a falling-edge EXTI on
   PC2 or PC3 should see the pulses.
 - Check: in DMR receive near an active repeater or hotspot, the per-line
   counters of the DMR monitor screen (section 2, rows `PC0`..`PC3`) must
@@ -59,10 +97,11 @@ fault.
 - Where: `platform/targets/CS7000/pinmap.h` and
   `platform/targets/CS7000-PLUS/pinmap.h` (`DMR_SYS_INT`), attached by the
   stage-3 modem driver (part B).
-- Assumption: the pinmaps say TS = PC0, SYS = PC1, TX = PC2 (from the reverse
-  engineering of the F405 CS7000 firmware); the CS7000-M17 Plus schematic says
-  TS = PC0, RF_TX = PC2_C, SYS = PC3_C and puts the 2T/5T analogue tone
-  detector on PC1. The two boards may differ.
+- Assumption: the CS7000 pinmap says TS = PC0, SYS = PC1, TX = PC2 (from
+  the reverse engineering of the F405 CS7000 firmware); the CS7000-M17 Plus
+  pinmap follows its schematic, TS = PC0, RF_TX = PC2_C, SYS = PC3_C, PC1
+  being the 2T/5T analogue tone node. `DMR_SYS_INT_ALT` names the other
+  candidate on each board.
 - Check: the counters of check 1.1 tell which line pulses every 60 ms, see
   3.1.
 - If wrong: switch the driver to the other line at runtime with the
@@ -156,7 +195,7 @@ on a radio without a DMR modem the value column of the action page reads
 | Two-point | 0x12 bit6 toggled (read-modify-write) | 40 Hz square wave on MOD1/MOD2 to balance the two-point modulation |
 | LCSS mode | no register write: `state.dmr_lcssMode` toggled, pushed to the RTX stage as `rtxStatus_t::dmr_lcssMode` | Convention of the LCSS bits of register 0x50 in voice bursts, applied by the call controller to the next transmission without reprogramming the modem: `50 chip` = 0x08 \| seq << 4 with LCSS 00, the chip filling the embedded LC fragments (OpenGD77, default); `50 manual` = the manual's 5.4.5 sequence 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58. The value column names the convention the next ENTER selects; forgotten at power off |
 | RF advance | 0x12[5:0] and bit7 = 0x98 or 0x15, alternately (read-modify-write, bit6 preserved); the word without bit6 is also pushed to the RTX stage as `rtxStatus_t::dmr_rfAdvance` | RF_TX_INTER advance: the OEM init word 0x98 (2.4 ms, RF ramp smoothing) or OpenGD77's 0x15 (2.1 ms, no smoothing); the OEM word when the register holds neither. The `Two-point` bit is left as it is in the immediate write, so the two can be combined until the next reconfiguration; the opMode handler reprograms the modem with the chosen word (`dmrbbConfig::rfAdvance`, 6.4) and keeps it through the watchdog reconfigurations until power off |
-| SYS line | driver pseudo page 0xFF, `DMRBB_DRV_SYS_LINE` (0x02) = 3 (PC3) or 1 (PC1), alternately; the value column reads `PC1->PC3` / `PC3->PC1` | Which EXTI line the CS7000 driver dispatches as SYS_INTER: PC1 (the pinmap, default) or PC3_C (the schematic), see 1.2, 3.1 and 6.3. Not a chip register: the choice survives the modem reconfigurations on its own and is forgotten at power off; the emulator and the stub accept the write and ignore it |
+| SYS line | driver pseudo page 0xFF, `DMRBB_DRV_SYS_LINE` (0x02) = 3 (PC3) or 1 (PC1), alternately; the value column reads `PC1->PC3` / `PC3->PC1` | Which EXTI line the CS7000 driver dispatches as SYS_INTER: PC3_C (the schematic, default on the Plus) or PC1 (default on the CS7000), see 1.2, 3.1 and 6.3. Not a chip register: the choice survives the modem reconfigurations on its own and is forgotten at power off; the emulator and the stub accept the write and ignore it |
 
 Two things to keep in mind:
 
@@ -195,11 +234,11 @@ where if it fails. Record the outcome in the table of section 7.
   receiving, then `RFTX` and `PC2` both counting about 16 per second after
   the transmission. `0x82` shows `08` (control frame) or `10` (late entry)
   during the call.
-- If wrong: `PC3` counts and `PC1` stays at 0 on the Plus: switch the
-  driver to PC3 with the `SYS line` action of the monitor screen (6.3) and
-  check that `SYS` now counts with `PC3`; then set `DMR_SYS_INT` to PC3 in the
-  CS7000-PLUS pinmap (the schematic). `PC1` counts: the pinmap is right
-  for that board. Neither counts while `PC0`
+- If wrong: the line that counts with the call is not the one `SYS`
+  follows: switch the driver with the `SYS line` action of the monitor
+  screen (6.3), check that `SYS` now counts, then fix `DMR_SYS_INT` in the
+  pinmap of that target. On the Plus `PC1` counting on its own means
+  nothing, it carries receive audio. Neither line counts while `PC0`
   does: SYS interrupts are masked, see 3.5. `PC0` never counts: no sync, see
   3.3 and 3.7. `PC2` never counts during TX while `RFTX` is expected: the
   `_C` pad switch, check 1.1; if `PC2` counts but `RFTX` does not, the
@@ -223,12 +262,13 @@ where if it fails. Record the outcome in the table of section 7.
 - Where: `DMR::R41_RX` in `openrtx/include/protocols/DMR/ModemPort.hpp`,
   `dmrbb_startRx()` in the driver.
 - Do: during a call, section 2: watch `0x51` and `SYS`.
-- Expect: `0x51` cycling through `10` (voice LC header, class 00), then
-  `11`, `21`, ... `61` (voice bursts A..F, class 01), then `20`
+- Expect: `0x51` cycling through `12` (voice LC header, data sync class
+  10), then `11` (voice burst A, voice sync class 01), `20`, `30`, `40`,
+  `50`, `60` (bursts B..F, class 00 "no sync"; bit 7 may be set), then `22`
   (terminator); `SYS` counting per burst. With 0x50 the voice payload is
   routed to the vocoder port as well (bit4 "begin_v_layer2"), which stage 4
   needs: whether V_SPI then returns non-zero payloads is a stage-4 check.
-- If wrong: headers appear (`0x51` = `10`) but no voice-class events
+- If wrong: headers appear (`0x51` = `12`) but no voice events
   follow: try `R41_RX` = 0x40 (blind reception of the manual's minimal
   sequence) in `ModemPort.hpp` and the driver, rebuild; `Resync` after
   changing nothing else re-runs the sync search on the current values.
@@ -259,7 +299,7 @@ where if it fails. Record the outcome in the table of section 7.
   `Lock` = 2 and `Timecode` matching the slot the call is on; section 3
   shows a `Src` / `Dst` that matches the hotspot's log.
 - If wrong: the colour code appears in the low nibble, the sequence never
-  reaches `61`, or `CRC` reads `bad` on every header: fix the constants in
+  reaches `60`, or `CRC` reads `bad` on every header: fix the constants in
   `ModemPort.hpp` (bit positions of CC, TC, CRC, sync class) and the
   parsing in `CallController.cpp`. `Src` / `Dst` swapped or shifted: the
   12-octet LC RAM layout assumed by `FullLC::fromChipLc()`
@@ -455,8 +495,8 @@ combination.
 ### 4.3 V_SPI voice payload logging: the bytes must vary per burst
 
 - Where: `dmrbb_waitEvent()` of `dmr_CS7000.cpp` (V_SPI command 0x83, 27
-  bytes into `dmrbbSnapshot::voice`, `voiceValid` on a voice sync class
-  with a good CRC), register 0x06 (0x21 = V_SPI, 0x01 = RX RAM 0x30 over
+  bytes into `dmrbbSnapshot::voice`, `voiceValid` on a voice burst (0x51
+  class 00 or 01 with burst number 1 to 6), register 0x06 (0x21 = V_SPI, 0x01 = RX RAM 0x30 over
   U_SPI, the `DMRBB_DRV_VOICE_PATH` driver knob).
 - Do: receive a call from a hotspot running MMDVMHost with `Debug=1` in
   the DMR section (it dumps the AMBE bytes of every burst) and watch
@@ -469,7 +509,7 @@ combination.
   bytes, MMDVMHost prints them in air order).
 - If wrong:
   - `Aud RX` at 0 during a call: `voiceValid` is never set. The sync class
-    of 0x51 or the CRC bit is misread (3.5), or V_SPI returns nothing with
+    or the burst number of 0x51 is misread (3.5), or V_SPI returns nothing with
     0x06 = 0x21. Bit3 of 0x06 (SPIFrom) is already 0 in 0x21, which the
     manual gives as "V_SPI out = received DMR payload", and every value
     the `Reg 0x06` action cycles (0x21, 0x01, 0x24, 0x20, 0x00) keeps it
@@ -840,16 +880,16 @@ on hardware`.
 ### 6.3 The SYS line knob (`DMRBB_DRV_SYS_LINE`)
 
 - Where: `openrtx/include/interfaces/dmr_baseband.h` (`DMRBB_DRV_SYS_LINE`
-  = 0x02 on the driver pseudo page 0xFF, values `DMRBB_SYS_LINE_PINMAP` =
-  1 and `DMRBB_SYS_LINE_SCHEMATIC` = 3), the ISR of `dmr_CS7000.cpp`, the
+  = 0x02 on the driver pseudo page 0xFF, values `DMRBB_SYS_LINE_PC1` =
+  1 and `DMRBB_SYS_LINE_PC3` = 3), the ISR of `dmr_CS7000.cpp`, the
   `SYS line` action of the monitor screen (section 2), which toggles the
   knob between the two lines and shows the line in force (`PC1->PC3`: PC1
   now, ENTER selects PC3). The host tests `tests/unit/hr_c6000_dmr.cpp`
   (driver) and `tests/unit/ui_dmr.cpp` (action) exercise it.
 - Assumption: PC0..PC3 are all attached and counted whatever the choice;
   only the line that raises `DMRBB_EV_SYS` (and the 0x82 reads behind it)
-  moves. The default is the pinmap constant `DMR_SYS_INT` (PC1); the
-  alternative is `DMR_SYS_INT_ALT` (PC3_C, the schematic). Any other value
+  moves. The default is the pinmap constant `DMR_SYS_INT` (PC3_C on the
+  Plus, PC1 on the CS7000); the alternative is `DMR_SYS_INT_ALT`. Any other value
   is ignored. The knob survives a reconfiguration and is forgotten at
   power off.
 - Do: check 3.1 first. If `PC3` counts while `SYS` stays at 0 (the
