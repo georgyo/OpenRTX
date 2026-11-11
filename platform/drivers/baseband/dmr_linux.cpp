@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include "core/dmr_audio.h"
+#include "core/dmr_vocoder.h"
 #include "emulator/emulator.h"
 #include "interfaces/delays.h"
 #include "interfaces/dmr_baseband.h"
@@ -97,6 +99,21 @@ constexpr unsigned TICK_US = 30000;
 constexpr uint32_t REPLAY_FIRST_TICKS = 67;
 constexpr uint32_t REPLAY_PERIOD_TICKS = 300;
 constexpr unsigned REPLAY_BURSTS = 50;
+constexpr uint32_t REPLAY_REPORT_TICKS = 67; /* audio report 2 s after */
+
+/*
+ * Voice payloads of a synthetic call. With the loopback vocoder each burst
+ * carries a tone descriptor, so the call is audible through the emulator's
+ * speaker: 1 kHz on bursts A..C and 700 Hz on D..F at about -12 dBFS, a
+ * 180 ms alternation that makes the superframe cadence audible, the level
+ * stepping down by an inaudible notch from A to F so that every burst
+ * differs from the previous one (the "varying" counter of the audio layer
+ * then follows the burst count). Without the loopback vocoder the payload is
+ * a recognisable pattern (0xA1..0xA6) that any decoder plays as silence.
+ */
+constexpr uint16_t REPLAY_TONE_HI_HZ = 1000;
+constexpr uint16_t REPLAY_TONE_LO_HZ = 700;
+constexpr int16_t REPLAY_LEVEL_STEP = 64;
 
 pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
@@ -121,6 +138,8 @@ uint32_t tsEpoch = 0; /* tick of slot zero, see pushTsEvent()    */
 uint32_t replaySrc = 0;
 uint32_t replayDst = 0;
 uint32_t replayTicks = 0;
+uint32_t reportTicks = 0; /* ticks left before the audio report, 0 = none */
+bool replayed = false;    /* a replayed call is being played              */
 
 /*
  * Helpers, all called with the mutex held.
@@ -269,13 +288,20 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
         scriptBurst(cc, ts, s);
     }
 
-    /* Voice bursts A..F, the payload is a recognisable pattern */
+    /* Voice bursts A..F */
     for (unsigned i = 0; i < bursts; i++) {
         uint8_t seq = (uint8_t)((i % SUPERFRAME_BURST) + 1);
         struct dmrbbSnapshot s = bsBurst(cc, ts);
         s.r51 = (uint8_t)((seq << 4) | R51_CLASS_VOICE);
         s.voiceValid = true;
+#ifdef CONFIG_DMR_VOCODER_LOOPBACK
+        dmrVocoderLoopback_tonePayload(
+            (seq <= 3) ? REPLAY_TONE_HI_HZ : REPLAY_TONE_LO_HZ,
+            (int16_t)(DMR_VOCODER_TONE_AMPLITUDE - (seq * REPLAY_LEVEL_STEP)),
+            s.voice);
+#else
         memset(s.voice, (int)(0xA0 | seq), VOICE_PAYLOAD_BYTES);
+#endif
         scriptBurst(cc, ts, s);
     }
 
@@ -297,6 +323,23 @@ void classifyTxSlot()
         rec.csbks++;
     else if (rec.r50 & R50_VOICE)
         rec.voiceBursts++;
+}
+
+/*
+ * What the audio layer did with the last replayed call, printed once the
+ * call is over: the headless check of the emulator's audio path
+ * (SDL_AUDIODRIVER=dummy), one 480-sample block out per voice burst.
+ */
+void reportAudio()
+{
+    struct dmrAudioStats a;
+    dmrAudio_getStats(&a);
+    printf("dmr_linux: audio %s: rx %lu, tx %lu, blocks out %lu, "
+           "underruns %lu, overruns %lu, varying %lu\n",
+           dmrAudio_backendName(), (unsigned long)a.framesRx,
+           (unsigned long)a.framesTx, (unsigned long)a.blocksOut,
+           (unsigned long)a.underruns, (unsigned long)a.overruns,
+           (unsigned long)a.varying);
 }
 
 void *clockLoop(void *arg)
@@ -322,10 +365,21 @@ void *clockLoop(void *arg)
                            (unsigned long)replaySrc, (unsigned long)replayDst);
                     scriptGroupCall(replaySrc, replayDst, rec.config.colorCode,
                                     rec.config.timeslot, REPLAY_BURSTS);
+                    replayed = true;
+                } else if ((replayTicks == 1) && replayed) {
+                    /* The call is fully queued: report a while later */
+                    replayed = false;
+                    reportTicks = REPLAY_REPORT_TICKS;
                 }
             }
 
             tick();
+        }
+
+        if (reportTicks != 0) {
+            reportTicks--;
+            if (reportTicks == 0)
+                reportAudio();
         }
         pthread_mutex_unlock(&mtx);
     }
@@ -594,6 +648,8 @@ void dmrEmu_reset(void)
     replaySrc = 0;
     replayDst = 0;
     replayTicks = 0;
+    reportTicks = 0;
+    replayed = false;
     pthread_mutex_unlock(&mtx);
 }
 

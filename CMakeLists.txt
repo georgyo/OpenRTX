@@ -97,6 +97,8 @@ target_sources(app
     openrtx/src/core/audio_codec.c
     openrtx/src/core/audio_stream.c
     openrtx/src/core/audio_path.cpp
+    openrtx/src/core/dmr_vocoder_null.c
+    openrtx/src/core/dmr_audio.c
     openrtx/src/core/data_conversion.c
     openrtx/src/core/memory_profiling.cpp
     openrtx/src/core/voicePrompts.c
@@ -127,6 +129,7 @@ target_sources(app
     openrtx/src/protocols/DMR/FEC/Emb.cpp
     openrtx/src/protocols/DMR/LinkControl.cpp
     openrtx/src/protocols/DMR/CallController.cpp
+    openrtx/src/protocols/DMR/Silence.c
 
     openrtx/src/ui/default/ui.c
     openrtx/src/ui/default/ui_main.c

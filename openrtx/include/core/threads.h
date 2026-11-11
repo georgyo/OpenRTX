@@ -17,6 +17,15 @@
 #define CODEC2_THREAD_STKSIZE 16384
 #define AUDIO_THREAD_STKSIZE  512
 
+/*
+ * DMR audio thread (core/dmr_audio.c): sized for the in-tree vocoder
+ * backends, null and loopback, which keep a 27 byte payload, the DSP state
+ * of the microphone conditioning and a few scalars on the stack (the stream
+ * buffers are static or heap allocated). An out-of-tree backend needing more
+ * documents its own figure and this value is raised with it.
+ */
+#define DMR_AUDIO_THREAD_STKSIZE 4096
+
 /**
  * Thread priority levels, UNIX-like: lower level, higher thread priority
  */
