@@ -47,6 +47,18 @@ void platform_init()
     gpio_setMode(GPIOEXT_CLK, OUTPUT);
     gpio_setMode(GPIOEXT_DAT, OUTPUT);
 
+    /*
+     * PWR_CR3 is cleared only by a power-on reset (RM0433, description of
+     * the register), so a USB regulator enable left there by the bootloader,
+     * which upgrades the firmware over USB, is still set when the firmware
+     * starts after flashing and through every later reset. With the
+     * regulator on, the battery sense line never falls below the power-off
+     * threshold of platform_pwrButtonStatus(), see usb_serial_init(): the
+     * radio could then be switched off only by removing the battery. Turn
+     * the regulator off before the first battery reading.
+     */
+    PWR->CR3 &= ~PWR_CR3_USBREGEN;
+
     spi_init((const struct spiDevice *) &spiSr);
     gpioShiftReg_init(&extGpio);
 
