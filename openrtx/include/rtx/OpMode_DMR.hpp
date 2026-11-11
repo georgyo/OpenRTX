@@ -255,7 +255,17 @@ private:
     void followState(uint32_t nowMs);
 
     /**
-     * Copy the controller's report into the RTX status.
+     * Update the bring-up monitor block from the last modem event: the
+     * interrupt counters, the registers the event refers to and the link
+     * control RAM of the last header. Published by publish().
+     *
+     * @param ev: event mask returned by dmrbb_waitEvent().
+     */
+    void monitor(uint32_t ev);
+
+    /**
+     * Copy the controller's report and the monitor block into the RTX
+     * status.
      *
      * @param status: RTX status to update.
      */
@@ -267,6 +277,7 @@ private:
     DMR::CallController::Config cfg; ///< Controller configuration
     struct dmrbbConfig bbCfg;        ///< Modem configuration
     struct dmrbbSnapshot snap;       ///< Last modem event
+    dmrMonitor_t mon;                ///< Bring-up counters for the UI
     pathId rxAudioPath;              ///< Audio path ID for RX
     pathId txAudioPath;              ///< Audio path ID for TX
     bool ready;                      ///< Modem driver initialised

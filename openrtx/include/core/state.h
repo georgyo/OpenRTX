@@ -51,6 +51,9 @@ typedef struct {
     bool restore_eflash;
     bool txDisable;
     uint8_t step_index;
+    // DMR modem mode register (HR_C6000 0x10) override set by the DMR
+    // monitor screen, 0 = driver default. Not saved.
+    uint8_t dmr_modeReg;
 } state_t;
 
 extern const uint32_t freq_steps[];

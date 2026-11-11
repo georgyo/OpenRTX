@@ -1,0 +1,568 @@
+/*
+ * SPDX-FileCopyrightText: Copyright 2020-2026 OpenRTX Contributors
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
+ * HR_C6000 DMR modem driver of the Connect Systems CS7000 and CS7000-M17
+ * Plus: the interfaces/dmr_baseband.h implementation shared by the two
+ * targets, whose C6000 wiring is identical (same "user" SPI on SPI2, same
+ * V_SPI pins PB3..PB6, same interrupt pins PC0..PC3).
+ *
+ * Register numbers and sequences come from the HR_C6000 User Manual (OpenGD77
+ * team translation), the G4EML register table and the OEM capture in
+ * HR_C6000_CS7000.cpp, with OpenGD77 as confirmation only. Nothing has been
+ * run on a radio: every "UNVERIFIED on hardware" comment is an entry of
+ * docs/dmr_bringup.md.
+ *
+ * Structure:
+ *
+ *  - Interrupt mailbox. The C6000 signals the slot timing and the Layer-2
+ *    events with ~300ns active-low pulses (manual §4.4) caught by the
+ *    falling-edge EXTI shim of gpio_irq_stm32.cpp. The callbacks run in
+ *    interrupt context and only latch: an event bit in `pending`, a counter
+ *    per line and the tick of the slot interrupt. PC0..PC3 are all four
+ *    attached during bring-up, each with its own counter, because the
+ *    schematic of the CS7000-M17 Plus (V01) and the pinmap disagree on which
+ *    pin carries SYS_INTER (PC3_C versus PC1, see pinmap.h); the dispatch to
+ *    the event bits uses the pinmap constants DMR_TS_INT / DMR_SYS_INT /
+ *    DMR_TX_INT, the fourth line only counts.
+ *
+ *  - Bus access. All the SPI traffic happens in the thread calling
+ *    dmrbb_waitEvent() (the rtx thread): the "user" SPI is shared with the
+ *    4ms OpenMusic refill of the audio thread through the c6000_spi mutex
+ *    and the 2us chip select guards of ScopedChipSelect, none of which is
+ *    usable from an interrupt.
+ *
+ *  - Waiting. Miosix (the version in this tree) has no timed variant of
+ *    Thread::IRQwait(), and a thread in Thread::sleep() is not released by
+ *    IRQwakeup(), so dmrbb_waitEvent() polls the mailbox every millisecond
+ *    with the interrupts latched by the ISRs in between. The 1ms latency is
+ *    small against the t2 = 27ms window the chip gives to program the next
+ *    slot (manual Figure 5.12) and the slot tick itself is timestamped in
+ *    the ISR.
+ *
+ *  - Voice payload. 27 bytes per voice burst (three AMBE+2 frames, manual
+ *    §4.6.1) exchanged on the vocoder SPI port ("V_SPI", C6000 slave) with
+ *    a bit-banged master on the spi_bitbang driver: read command 0x83,
+ *    address 0x00, 27 bytes; write command 0x03, address 0x00, 27 bytes, one
+ *    operation per chip select. UNVERIFIED on hardware, with the TX RAM
+ *    0x30 / RX RAM 0x30 transport over the "user" SPI as the selectable
+ *    alternative (DMRBB_PAGE_DRIVER / DMRBB_DRV_VOICE_PATH).
+ *
+ *  - Ownership of the chip. dmrbb_configure() puts the C6000 in DMR mode and
+ *    marks the driver active; dmrbb_terminate() idles the chip and marks it
+ *    inactive, after which the slot/mode writes are no-ops. This matters
+ *    because rtx.cpp calls radio_setOpmode() for the new mode (fmMode())
+ *    before disabling the old one: radio_CS7000.cpp terminates this driver
+ *    before fmMode() and the later dmrbb_idle()/dmrbb_terminate() of
+ *    OpMode_DMR::disable() must not touch the FM configuration. The same
+ *    two calls tell the OpenMusic DAC driver (Cx000_dac.cpp) whether the
+ *    vocoder bits of register 0x06 must survive a beep: only while this
+ *    driver owns the chip, FM and M17 keep their wholesale 0x22 / 0x20.
+ */
+
+#include <miosix.h>
+#include <stdint.h>
+#include <string.h>
+#include "drivers/SPI/spi_bitbang.h"
+#include "drivers/audio/Cx000_dac.h"
+#include "drivers/baseband/HR_C6000.h"
+#include "hwconfig.h"
+#include "interfaces/delays.h"
+#include "interfaces/dmr_baseband.h"
+#include "peripherals/gpio.h"
+#include "peripherals/gpio_irq.h"
+
+/*
+ * Pin number of a pinmap entry of the form "GPIOx,n": the argument is
+ * expanded to "GPIOx,n" before being substituted, so the inner macro sees
+ * two arguments.
+ */
+#define PIN_OF_PAIR(port, pin) (pin)
+#define PIN_NUMBER(x) PIN_OF_PAIR(x)
+
+/* V_SPI command bytes, manual §4.6.1 Figure 4.17 */
+static constexpr uint8_t VSPI_CMD_READ = 0x83;
+static constexpr uint8_t VSPI_CMD_WRITE = 0x03;
+static constexpr uint8_t VSPI_ADDR = 0x00;
+
+/* TX/RX RAM address of the 216-bit voice payload (manual Table 5.2) */
+static constexpr uint8_t RAM_VOICE_ADDR = 0x30;
+static constexpr uint8_t RAM_LC_ADDR = 0x00;
+
+/* Register 0x82 flags, manual §5.1.1 */
+static constexpr uint8_t IRQ_TX_START = 0x40;
+static constexpr uint8_t IRQ_TX_END = 0x20;
+static constexpr uint8_t IRQ_LATE_ENTRY = 0x10;
+static constexpr uint8_t IRQ_RX_DATA = 0x08;
+static constexpr uint8_t IRQ_RX_INFO = 0x04;
+static constexpr uint8_t IRQ_ABNORMAL_EXIT = 0x02;
+
+/* Register 0x51 fields, G4EML table */
+static constexpr uint8_t R51_CRC_BAD = 0x04;
+static constexpr uint8_t R51_CLASS_MASK = 0x03;
+static constexpr uint8_t R51_CLASS_VOICE = 0x01;
+
+/* Voice payload transport, DMRBB_DRV_VOICE_PATH */
+static constexpr uint8_t VOICE_PATH_VSPI = 0;
+static constexpr uint8_t VOICE_PATH_RAM = 1;
+
+/* Polling period of dmrbb_waitEvent(), milliseconds */
+static constexpr unsigned WAIT_POLL_MS = 1;
+
+/*
+ * Interrupt lines. The four EXTI lines PC0..PC3 are attached during
+ * bring-up; the mapping of the C6000 pins on them comes from pinmap.h.
+ */
+static constexpr unsigned NUM_LINES = 4;
+static constexpr uint8_t TS_LINE = PIN_NUMBER(DMR_TS_INT);
+static constexpr uint8_t SYS_LINE = PIN_NUMBER(DMR_SYS_INT);
+static constexpr uint8_t TX_LINE = PIN_NUMBER(DMR_TX_INT);
+static constexpr uint8_t ALT_LINE = PIN_NUMBER(DMR_SYS_INT_ALT);
+
+static_assert(TS_LINE < NUM_LINES, "DMR_TS_INT must be PC0..PC3");
+static_assert(SYS_LINE < NUM_LINES, "DMR_SYS_INT must be PC0..PC3");
+static_assert(TX_LINE < NUM_LINES, "DMR_TX_INT must be PC0..PC3");
+static_assert(ALT_LINE < NUM_LINES, "DMR_SYS_INT_ALT must be PC0..PC3");
+
+static const struct gpioPin irqPins[NUM_LINES] = {
+    { &GpioC, 0 },
+    { &GpioC, 1 },
+    { &GpioC, 2 },
+    { &GpioC, 3 },
+};
+
+/* V_SPI chip select, driven by hand around each transfer */
+static const struct gpioPin vocCs = { &GpioB, PIN_NUMBER(VOC_CS) };
+
+/* Interrupt mailbox, written in ISR context and read under interrupt lock */
+static volatile uint32_t pending = 0;
+static volatile uint32_t tsCount = 0;
+static volatile uint32_t sysCount = 0;
+static volatile uint32_t rftxCount = 0;
+static volatile uint32_t lineCount[NUM_LINES] = { 0, 0, 0, 0 };
+static volatile uint32_t tsTick = 0;
+
+/* Driver state, rtx thread only */
+static struct dmrbbConfig config;
+static bool active = false;
+static bool attached = false;
+static volatile uint8_t voicePath = VOICE_PATH_VSPI;
+
+/**
+ * Interrupt callback shared by the four lines, interrupt context: latch and
+ * count, nothing else.
+ *
+ * @param arg: line number, 0..3.
+ */
+static void lineIsr(void *arg)
+{
+    const uint8_t line = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(arg));
+
+    lineCount[line] += 1;
+
+    if (line == TS_LINE) {
+        tsCount += 1;
+        tsTick = static_cast<uint32_t>(getTick());
+        pending |= DMRBB_EV_TS;
+    } else if (line == SYS_LINE) {
+        sysCount += 1;
+        pending |= DMRBB_EV_SYS;
+    } else if (line == TX_LINE) {
+        rftxCount += 1;
+        pending |= DMRBB_EV_RFTX;
+    }
+
+    /*
+     * Any other line (DMR_SYS_INT_ALT, PC3) only counts: the monitor screen
+     * shows which line pulses every 60ms, then DMR_SYS_INT is fixed per
+     * target in pinmap.h.
+     */
+}
+
+/**
+ * Detach the interrupt lines.
+ */
+static void detachLines()
+{
+    if (attached == false)
+        return;
+
+    for (unsigned i = 0; i < NUM_LINES; i++)
+        gpioIrq_detach(&irqPins[i]);
+
+    attached = false;
+}
+
+/**
+ * Attach the four interrupt lines, falling edge, dropping whatever is still
+ * pending from a previous configuration.
+ */
+static void attachLines()
+{
+    detachLines();
+
+    {
+        miosix::FastInterruptDisableLock dLock;
+        pending = 0;
+    }
+
+    for (unsigned i = 0; i < NUM_LINES; i++) {
+        gpioPin_setMode(&irqPins[i], INPUT);
+        gpioIrq_attach(&irqPins[i], GPIO_IRQ_FALLING, lineIsr,
+                       reinterpret_cast<void *>(static_cast<uintptr_t>(i)));
+    }
+
+    attached = true;
+}
+
+/**
+ * V_SPI read of one voice burst: command 0x83, address 0x00, then 27 bytes
+ * with the chip select held low (manual §4.6.1).
+ * UNVERIFIED on hardware: command format, clock phase and pin orientation.
+ *
+ * @param buf: destination of the 27 bytes.
+ */
+static void vspiRead(uint8_t *buf)
+{
+    const struct spiDevice *spi =
+        reinterpret_cast<const struct spiDevice *>(&voc_spi);
+    const uint8_t cmd[2] = { VSPI_CMD_READ, VSPI_ADDR };
+
+    spi_acquire(spi);
+    gpioPin_clear(&vocCs);
+    spi_send(spi, cmd, sizeof(cmd));
+    spi_receive(spi, buf, 27);
+    gpioPin_set(&vocCs);
+    spi_release(spi);
+}
+
+/**
+ * V_SPI write of one voice burst: command 0x03, address 0x00, then 27 bytes
+ * with the chip select held low (manual §4.6.1).
+ * UNVERIFIED on hardware, see vspiRead().
+ *
+ * @param buf: the 27 bytes to be sent.
+ */
+static void vspiWrite(const uint8_t *buf)
+{
+    const struct spiDevice *spi =
+        reinterpret_cast<const struct spiDevice *>(&voc_spi);
+    const uint8_t cmd[2] = { VSPI_CMD_WRITE, VSPI_ADDR };
+
+    spi_acquire(spi);
+    gpioPin_clear(&vocCs);
+    spi_send(spi, cmd, sizeof(cmd));
+    spi_send(spi, buf, 27);
+    gpioPin_set(&vocCs);
+    spi_release(spi);
+}
+
+/**
+ * Register reads of a SYS event, in the documented order: 0x82, the
+ * sub-status registers whose bit is set, 0x51/0x52/0x5F/0x42, the RX RAM
+ * link control when a control frame was parsed (or a late entry happened),
+ * the voice payload when the burst is a voice burst with a good CRC, RSSI
+ * and FSK error count, then 0x83 acknowledging exactly the flags read.
+ *
+ * @param s: snapshot to fill.
+ */
+static void readSysEvent(struct dmrbbSnapshot *s)
+{
+    const uint8_t irq = C6000.readIrqFlags();
+    s->irq82 = irq;
+
+    if (irq & IRQ_TX_START)
+        s->sub84 = C6000.readCfgRegister(0x84);
+    if (irq & IRQ_TX_END)
+        s->sub86 = C6000.readCfgRegister(0x86);
+    if (irq & IRQ_RX_INFO)
+        s->sub90 = C6000.readCfgRegister(0x90);
+    if (irq & IRQ_ABNORMAL_EXIT)
+        s->sub98 = C6000.readCfgRegister(0x98);
+
+    s->r51 = C6000.readCfgRegister(0x51);
+    s->r52 = C6000.readCfgRegister(0x52);
+    s->r5f = C6000.readCfgRegister(0x5F);
+    s->r42 = C6000.readCfgRegister(0x42);
+
+    if (irq & (IRQ_RX_DATA | IRQ_LATE_ENTRY))
+        C6000.readDataRam(RAM_LC_ADDR, s->lc, sizeof(s->lc));
+
+    /*
+     * Voice burst: sync class 01 with a good CRC, reported together with the
+     * "received data" flag. The read happens before the acknowledge so that
+     * the chip cannot overwrite the payload with the next burst in between.
+     */
+    s->voiceValid = false;
+    if ((irq & IRQ_RX_DATA) && ((s->r51 & R51_CLASS_MASK) == R51_CLASS_VOICE)
+        && ((s->r51 & R51_CRC_BAD) == 0)) {
+        if (voicePath == VOICE_PATH_RAM)
+            C6000.readDataRam(RAM_VOICE_ADDR, s->voice, sizeof(s->voice));
+        else
+            vspiRead(s->voice);
+
+        s->voiceValid = true;
+    }
+
+    const uint8_t rssiHi = C6000.readCfgRegister(0x43);
+    const uint8_t rssiLo = C6000.readCfgRegister(0x44);
+    s->rssi = static_cast<uint16_t>((rssiHi << 8) | rssiLo);
+    s->fskErr = C6000.readCfgRegister(0x0F);
+
+    C6000.clearIrq(irq);
+}
+
+int dmrbb_init(void)
+{
+    /*
+     * V_SPI master: clock and MOSI outputs low, MISO input, chip select
+     * high. The lines stay driven after dmrbb_terminate() as well, a floating
+     * V_SCLK would clock garbage into the vocoder port of the C6000.
+     */
+    spiBitbang_init(&voc_spi);
+    gpioPin_setMode(&vocCs, OUTPUT);
+    gpioPin_set(&vocCs);
+
+    {
+        miosix::FastInterruptDisableLock dLock;
+        pending = 0;
+        tsCount = 0;
+        sysCount = 0;
+        rftxCount = 0;
+        tsTick = 0;
+        for (unsigned i = 0; i < NUM_LINES; i++)
+            lineCount[i] = 0;
+    }
+
+    return 0;
+}
+
+void dmrbb_terminate(void)
+{
+    detachLines();
+
+    if (active) {
+        C6000.dmrIdle();
+        active = false;
+    }
+
+    Cx000dac_setVocoderBits(false);
+}
+
+void dmrbb_configure(const struct dmrbbConfig *cfg)
+{
+    config = *cfg;
+
+    C6000.dmrMode();
+
+    /*
+     * The mode word is part of the dmrMode() table with its default; the
+     * monitor screen can try the manual's 0x6A through dmrbbConfig::modeReg.
+     */
+    if (cfg->modeReg != DMRBB_MODE_REG_DEFAULT)
+        C6000.writeCfgRegister(0x10, cfg->modeReg);
+
+    C6000.setColorCode(cfg->colorCode);
+    C6000.setLocalAddress(cfg->ownId);
+    C6000.setAccessPolicy(cfg->polite);
+
+    /* Beeps and audio streams must leave the vocoder bits of 0x06 alone */
+    Cx000dac_setVocoderBits(true);
+
+    attachLines();
+    active = true;
+}
+
+void dmrbb_startRx(void)
+{
+    if (active == false)
+        return;
+
+    C6000.dmrRxStart();
+}
+
+void dmrbb_startTx(bool activeTiming)
+{
+    if (active == false)
+        return;
+
+    /*
+     * Register 0x21: access policy plus "clear the vocoder encode buffer"
+     * (bit 1, self-clearing), 0xA2 polite to own colour code or 0x02
+     * impolite (G4EML table, OpenGD77). Register 0x40: TxEn + RxEn with
+     * active timing (0xE3, direct mode: the chip generates the 30ms time
+     * axis) or passive timing (0xC3, repeater mode: bursts aligned to the
+     * received sync). UNVERIFIED on hardware: manual §5.4.5 uses 0xA3.
+     */
+    C6000.writeCfgRegister(0x21, config.polite ? 0xA2 : 0x02);
+    C6000.writeCfgRegister(0x40, activeTiming ? 0xE3 : 0xC3);
+}
+
+void dmrbb_idle(void)
+{
+    if (active == false)
+        return;
+
+    C6000.dmrIdle();
+}
+
+void dmrbb_setNextSlot(uint8_t r41)
+{
+    if (active == false)
+        return;
+
+    C6000.writeCfgRegister(0x41, r41);
+}
+
+void dmrbb_setTxFrameType(uint8_t r50)
+{
+    if (active == false)
+        return;
+
+    C6000.writeCfgRegister(0x50, r50);
+}
+
+void dmrbb_writeTxLc(const uint8_t lc[12])
+{
+    if (active == false)
+        return;
+
+    /* TX RAM 0x00-0x0B, one transfer with the chip select held low */
+    C6000.writeDataRam(RAM_LC_ADDR, lc, 12);
+}
+
+void dmrbb_writeVoice(const uint8_t ambe[27])
+{
+    if (active == false)
+        return;
+
+    /*
+     * UNVERIFIED on hardware: V_SPI is the transport selected by register
+     * 0x06 = 0x21; the TX RAM 0x30-0x4A alternative (manual Table 5.2) is
+     * reachable from the monitor screen through DMRBB_DRV_VOICE_PATH.
+     */
+    if (voicePath == VOICE_PATH_RAM)
+        C6000.writeDataRam(RAM_VOICE_ADDR, ambe, 27);
+    else
+        vspiWrite(ambe);
+}
+
+uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
+{
+    const long long deadline = getTick() + static_cast<long long>(timeoutMs);
+    uint32_t ev = 0;
+
+    for (;;) {
+        {
+            miosix::FastInterruptDisableLock dLock;
+            ev = pending;
+            pending = 0;
+            s->tsCount = tsCount;
+            s->sysCount = sysCount;
+            s->rftxCount = rftxCount;
+            s->tsTick = tsTick;
+            for (unsigned i = 0; i < NUM_LINES; i++)
+                s->lineCount[i] = lineCount[i];
+        }
+
+        if (ev != 0)
+            break;
+
+        if (getTick() >= deadline)
+            return DMRBB_EV_TIMEOUT;
+
+        sleepFor(0u, WAIT_POLL_MS);
+    }
+
+    /*
+     * Slot tick: timecode and slot status for the tracking of the next
+     * slot. When a SYS event is pending as well, its reads below refresh
+     * 0x52/0x42 once more.
+     */
+    if (ev & DMRBB_EV_TS) {
+        s->r52 = C6000.readCfgRegister(0x52);
+        s->r42 = C6000.readCfgRegister(0x42);
+    }
+
+    if (ev & DMRBB_EV_SYS)
+        readSysEvent(s);
+
+    return ev;
+}
+
+uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
+{
+    if (page == DMRBB_PAGE_DRIVER) {
+        if (addr == DMRBB_DRV_VOICE_PATH)
+            return voicePath;
+
+        for (unsigned i = 0; i < NUM_LINES; i++) {
+            const uint8_t base = static_cast<uint8_t>(DMRBB_DRV_LINE_COUNT(i));
+            if ((addr >= base) && (addr < (base + 4))) {
+                uint32_t cnt;
+                {
+                    miosix::FastInterruptDisableLock dLock;
+                    cnt = lineCount[i];
+                }
+
+                return static_cast<uint8_t>(cnt >> (8 * (addr - base)));
+            }
+        }
+
+        return 0;
+    }
+
+    switch (page) {
+        case static_cast<uint8_t>(C6000_SpiOpModes::AUX):
+            return C6000.readAuxRegister(addr);
+
+        case static_cast<uint8_t>(C6000_SpiOpModes::DATA): {
+            uint8_t value = 0;
+            C6000.readDataRam(addr, &value, 1);
+            return value;
+        }
+
+        case static_cast<uint8_t>(C6000_SpiOpModes::CONFIG):
+            return C6000.readCfgRegister(addr);
+
+        case static_cast<uint8_t>(C6000_SpiOpModes::DATA_R):
+            return C6000.readPageRegister(page, addr);
+
+        default:
+            return 0;
+    }
+}
+
+void dmrbb_writeRegister(uint8_t page, uint8_t addr, uint8_t v)
+{
+    if (page == DMRBB_PAGE_DRIVER) {
+        if (addr == DMRBB_DRV_VOICE_PATH)
+            voicePath = (v != 0) ? VOICE_PATH_RAM : VOICE_PATH_VSPI;
+
+        return;
+    }
+
+    switch (page) {
+        case static_cast<uint8_t>(C6000_SpiOpModes::AUX):
+            C6000.writeAuxRegister(addr, v);
+            break;
+
+        case static_cast<uint8_t>(C6000_SpiOpModes::DATA):
+            C6000.writeDataRam(addr, &v, 1);
+            break;
+
+        case static_cast<uint8_t>(C6000_SpiOpModes::CONFIG):
+            C6000.writeCfgRegister(addr, v);
+            break;
+
+        case static_cast<uint8_t>(C6000_SpiOpModes::DATA_R):
+            C6000.writePageRegister(page, addr, v);
+            break;
+
+        default:
+            break;
+    }
+}
