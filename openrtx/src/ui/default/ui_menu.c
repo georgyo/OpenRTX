@@ -663,6 +663,7 @@ static rtxStatus_t dmrMonStatus;
 static bool dmrMonReady = false;    // RTX in DMR on a working modem
 static uint8_t dmrMonModeReg = DMRBB_MODE_REG_DEFAULT;
 static uint8_t dmrMonR06 = 0;
+static uint8_t dmrMonLcss = 0;
 static uint8_t dmrMonPage = 0;
 static uint8_t dmrMonSelected = 0;
 static uint8_t dmrMonReadback[6];   // 0x10, 0x06, 0x12, 0x14, 0x15, 0x16
@@ -685,16 +686,28 @@ static uint8_t _ui_dmrMonitorRowsPerPage()
     return (CONFIG_SCREEN_HEIGHT - 1 - layout.line1_pos.y) / layout.menu_h + 1;
 }
 
+/*
+ * The action section is a single page whatever the display height: more
+ * actions than rows scroll behind the selection, see _ui_drawDMRMonitor().
+ * The value sections split over as many pages as their rows need.
+ */
+static uint8_t _ui_dmrMonitorSectionPages(uint8_t sec, uint8_t rows)
+{
+    uint8_t n = dmrMonSectionFirst[sec + 1] - dmrMonSectionFirst[sec];
+
+    if(dmrMonSectionFirst[sec] >= DMRMON_ACTION_FIRST)
+        return 1;
+
+    return (n + rows - 1) / rows;
+}
+
 uint8_t _ui_dmrMonitorPages()
 {
     uint8_t rows = _ui_dmrMonitorRowsPerPage();
     uint8_t pages = 0;
 
     for(uint8_t sec = 0; sec < DMRMON_SECTION_NUM; sec++)
-    {
-        uint8_t n = dmrMonSectionFirst[sec + 1] - dmrMonSectionFirst[sec];
-        pages += (n + rows - 1) / rows;
-    }
+        pages += _ui_dmrMonitorSectionPages(sec, rows);
 
     return pages;
 }
@@ -707,7 +720,10 @@ void _ui_dmrMonitorPageRows(uint8_t page, uint8_t *first, uint8_t *count)
     for(uint8_t sec = 0; sec < DMRMON_SECTION_NUM; sec++)
     {
         uint8_t n = dmrMonSectionFirst[sec + 1] - dmrMonSectionFirst[sec];
-        uint8_t sectionPages = (n + rows - 1) / rows;
+        uint8_t sectionPages = _ui_dmrMonitorSectionPages(sec, rows);
+
+        if(dmrMonSectionFirst[sec] >= DMRMON_ACTION_FIRST)
+            rows = n;
 
         if(page < sectionPages)
         {
@@ -735,8 +751,8 @@ int _ui_getDMRMonitorEntryName(char *buf, uint8_t max_len, uint8_t index)
         "rd 0x10", "rd 0x06", "rd 0x12", "rd 0x14-16",
         "LC 0-5", "LC 6-11", "Src", "Dst", "FLCO", "FID", "CRC",
         "Vocoder", "Aud RX", "Aud vary", "Aud out", "Aud TX", "Underrun",
-        "Overrun",
-        "", "Mode 0x10", "Reg 0x06", "", ""
+        "Overrun", "TX bursts", "TX silent", "TX under", "RF keyed",
+        "", "Mode 0x10", "Reg 0x06", "", "", "", ""
     };
 
     if(index >= DMRMON_ROWS_NUM) return -1;
@@ -751,6 +767,12 @@ int _ui_getDMRMonitorEntryName(char *buf, uint8_t max_len, uint8_t index)
             break;
         case DMRMON_ACT_TWOPOINT:
             sniprintf(buf, max_len, "%s", currentLanguage->twoPointTest);
+            break;
+        case DMRMON_ACT_LCSS:
+            sniprintf(buf, max_len, "%s", currentLanguage->lcssMode);
+            break;
+        case DMRMON_ACT_RFADV:
+            sniprintf(buf, max_len, "%s", currentLanguage->rfAdvance);
             break;
         default:
             sniprintf(buf, max_len, "%s", names[index]);
@@ -892,6 +914,18 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
             sniprintf(buf, max_len, "%lu",
                       (unsigned long) dmrMonStatus.dmr_audio.overruns);
             break;
+        case DMRMON_AUD_TXBURSTS:
+            sniprintf(buf, max_len, "%lu", (unsigned long) mon->txBursts);
+            break;
+        case DMRMON_AUD_TXSILENT:
+            sniprintf(buf, max_len, "%lu", (unsigned long) mon->txSilent);
+            break;
+        case DMRMON_AUD_TXUNDER:
+            sniprintf(buf, max_len, "%u", mon->txUnderruns);
+            break;
+        case DMRMON_RFKEYED:
+            sniprintf(buf, max_len, "%u", mon->rfKeyed);
+            break;
         // Actions: the registers the next ENTER writes, or the hint that
         // ui.c refuses them because the RTX stage is not running DMR
         case DMRMON_ACT_RESYNC:
@@ -899,6 +933,8 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
         case DMRMON_ACT_R06:
         case DMRMON_ACT_BER:
         case DMRMON_ACT_TWOPOINT:
+        case DMRMON_ACT_LCSS:
+        case DMRMON_ACT_RFADV:
             if(dmrMonReady == false)
             {
                 sniprintf(buf, max_len, "DMR off");
@@ -920,6 +956,25 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
             else if(index == DMRMON_ACT_BER)
             {
                 sniprintf(buf, max_len, "81 10 40 41");
+            }
+            else if(index == DMRMON_ACT_LCSS)
+            {
+                // The convention the next ENTER selects: "chip" fills the
+                // embedded LC itself (0x50 = 0x08 | seq << 4), "manual"
+                // is the 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58 sequence
+                sniprintf(buf, max_len, "50 %s",
+                          (dmrMonLcss != 0) ? "chip" : "manual");
+            }
+            else if(index == DMRMON_ACT_RFADV)
+            {
+                // The 0x12 word the next ENTER writes: the other one of
+                // the pair than what is read back now, the two-point bit
+                // kept as it is (same rule as the action in ui.c)
+                uint8_t r12 = dmrMonReadback[2];
+                uint8_t adv = ((r12 & ~DMRMON_R12_TWOPOINT) == DMRMON_R12_OEM)
+                            ? DMRMON_R12_GD77 : DMRMON_R12_OEM;
+                sniprintf(buf, max_len, "12<-%02X",
+                          (r12 & DMRMON_R12_TWOPOINT) | adv);
             }
             else
             {
@@ -947,11 +1002,25 @@ void _ui_drawDMRMonitor(ui_state_t* ui_state)
                && ((dmrMonStatus.dmr_markers & DMR_MARK_NOT_SUPPORTED) == 0);
     dmrMonModeReg = ui_state->dmr_mon_modeReg;
     dmrMonR06 = ui_state->dmr_mon_r06 % DMRMON_R06_VARIANTS;
+    dmrMonLcss = ui_state->dmr_mon_lcss;
     ui_state->dmr_mon_page %= pages;
     _ui_dmrMonitorPageRows(ui_state->dmr_mon_page, &first, &count);
     bool actions = (first >= DMRMON_ACTION_FIRST);
     dmrMonPage = ui_state->dmr_mon_page;
     dmrMonSelected = ui_state->menu_selected;
+
+    // The action page scrolls so that the selected action is visible
+    uint8_t rows = _ui_dmrMonitorRowsPerPage();
+    uint8_t scroll = 0;
+    if(actions)
+    {
+        if(ui_state->menu_selected >= rows)
+            scroll = ui_state->menu_selected - rows + 1;
+        first += scroll;
+        count -= scroll;
+        if(count > rows)
+            count = rows;
+    }
 
     // Live readback of the registers the actions and the driver write
     dmrMonReadback[0] = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x10);
@@ -974,7 +1043,7 @@ void _ui_drawDMRMonitor(ui_state_t* ui_state)
         _ui_getDMRMonitorEntryName(entry_buf, sizeof(entry_buf), first + i);
         _ui_getDMRMonitorValueName(value_buf, sizeof(value_buf), first + i);
 
-        if(actions && (i == ui_state->menu_selected))
+        if(actions && ((i + scroll) == ui_state->menu_selected))
         {
             // Selected action, drawn as a selected menu entry
             text_color = color_black;

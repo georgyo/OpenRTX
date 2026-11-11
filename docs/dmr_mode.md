@@ -11,22 +11,25 @@ in, and the rules the series follows.
 
 ## Read this first: status of the series
 
-DMR support lands in six stages. **Stages 1 to 4 are in the tree.** With
+DMR support lands in six stages. **Stages 1 to 5 are in the tree.** With
 them, DMR is a mode the user can select and configure, the RTX stage runs
 the complete Layer-2 call state machine (`OpMode_DMR` in `rtx.cpp`) against
 an abstract modem interface, stage 3 adds what is needed to bring that
 interface up on the CS7000 radios: the STM32 external interrupt shim
 (`openrtx/include/peripherals/gpio_irq.h`), the HR_C6000 DMR modem driver,
 and the DMR monitor screen with its bring-up checklist
-([dmr_bringup.md](dmr_bringup.md)), and stage 4 the audio plumbing around a
+([dmr_bringup.md](dmr_bringup.md)), stage 4 the audio plumbing around a
 pluggable vocoder whose in-tree backends are not codecs (see
 [Vocoder](#vocoder)): a received call plays silence, the test tone, or on
-the emulator a tone, at the right times. On the Linux emulator the modem is
-a scriptable fake, so calls are received and transmitted headlessly and a
-replayed call is audible. Nothing has been run on a radio: the analog FM
-and M17 modes keep working after visiting DMR, and the monitor screen
-exists so that the first person with a radio can find out which of the
-documented assumptions hold.
+the emulator a tone, at the right times, and stage 5 the transmit side: the
+RF stage keyed around a standards-conformant voice call (headers, voice
+superframes, terminator) in direct mode or through a repeater, with the
+knobs the on-air test needs (see [Stage 5](#stage-5-tx-voice-calls-the-rf-stage-around-the-call-and-the-repeater-wake-up)).
+On the Linux emulator the modem is a scriptable fake, so calls are received
+and transmitted headlessly and a replayed call is audible. Nothing has been
+run on a radio: the analog FM and M17 modes keep working after visiting
+DMR, and the monitor screen exists so that the first person with a radio
+can find out which of the documented assumptions hold.
 
 | Stage | Title | Status |
 |---|---|---|
@@ -34,7 +37,7 @@ documented assumptions hold.
 | 2 | Call-control state machine, `dmr_baseband` interface, `OpMode_DMR` and the emulator modem model | in tree |
 | 3 | HR_C6000 DMR driver, EXTI shim, `radio_CS7000` branches and the DMR monitor screen (RX sync, colour code, slot and LC with caller display, no audio) | in tree |
 | 4 | RX voice plumbing: vocoder backend interface, `dmr_audio` thread, PCM to the speaker through the C6000 DAC, and the internal-vocoder experiment | in tree (the vocoder seam, the null / loopback backends, the audio thread and the emulator demo; the internal-vocoder experiment is a bring-up check, see [dmr_bringup.md](dmr_bringup.md)) |
-| 5 | TX voice calls: simplex (DMO, active timing) first, then repeater (RMO, passive timing with wake-up) | planned |
+| 5 | TX voice calls: simplex (DMO, active timing) first, then repeater (RMO, passive timing with wake-up) | in tree (the call flow, the RF keying around it, T_TO, the busy and wake-up outcomes, the LCSS and RF-advance knobs of the monitor screen; the CS7000 RF chain for DMR TX is the driver side, see [dmr_bringup.md](dmr_bringup.md)) |
 | 6 | Contacts and talkgroup UI, last heard, private calls from history, voice prompts and documentation polish | planned |
 
 **Nothing of the DMR series has been verified on a radio.** Every value that
@@ -148,10 +151,12 @@ timeslot and system passes, the last link control RAM with its decoded
 fields) and from `dmrbb_readRegister()` for a few registers read back at
 every redraw.
 
-The rows are grouped in five sections of 12, 13, 7, 7 and 5 rows, each
-starting on a new page; a section spans as many pages as the display height
-needs (six rows per page on 160x128: 2 + 3 + 2 + 2 + 1 = 10 pages; five on
-128x64: 3 + 3 + 2 + 2 + 1 = 11 pages), the top bar reading `DMR monitor n/N`:
+The rows are grouped in five sections of 12, 13, 7, 11 and 7 rows, each
+starting on a new page; a value section spans as many pages as the display
+height needs, the action section is always one page whose rows scroll
+behind the selection (six rows per page on 160x128: 2 + 3 + 2 + 2 + 1 = 10
+pages; five on 128x64: 3 + 3 + 2 + 3 + 1 = 12 pages), the top bar reading
+`DMR monitor n/N`:
 
 1. counters: `TS`, `SYS`, `RFTX` interrupts, `PC0`..`PC3` pulses per EXTI
    line, slot lock, timecode, last `0x82` / `0x84` / `0x86`;
@@ -161,15 +166,28 @@ needs (six rows per page on 160x128: 2 + 3 + 2 + 2 + 1 = 10 pages; five on
 3. link control: the 12 LC RAM octets in hex, source, destination, FLCO, FID
    and the CRC verdict of the last header;
 4. audio (stage 4): the vocoder backend name and the `dmr_audio` counters,
-   see [Counters and the monitor screen](#counters-and-the-monitor-screen);
+   see [Counters and the monitor screen](#counters-and-the-monitor-screen),
+   and since stage 5 the transmit side: `TX bursts` (own voice bursts
+   sent), `TX silent` (of which carrying the AMBE silence pattern because
+   the audio layer had no payload: all of them with the null backend),
+   `TX under` (silence sent while the encoder thread was running, i.e. the
+   microphone stream fell behind) and `RF keyed` (how many times the RF
+   stage was keyed for transmission);
 5. actions: `Resync` (0x81 = 0xFE, the Layer-2 mask of `dmrMode()`, then
    0x41 = 0x20), `Mode 0x10` (0x6E / 0x6A, also pushed to the RTX stage as
    `rtxStatus_t::dmr_modeReg` so that it survives the modem reconfigurations
    until power off), `Reg 0x06` (cycles 0x21, 0x01, 0x24, 0x20, 0x00),
    `BER test` (0x83 = 0xFF and 0x81 = 0xFF to unmask the PHY-only interrupt
-   the test reports on, then 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41) and
-   `Two-point` (0x12 bit6 toggled); the value column shows the register and
-   the value the next ENTER writes. The actions run only while the RTX stage
+   the test reports on, then 0x10 = 0x02, 0x40 = 0x40, 0x41 = 0x41),
+   `Two-point` (0x12 bit6 toggled), and since stage 5 `LCSS mode` (the
+   register 0x50 convention of the voice bursts, `50 manual` / `50 chip`
+   naming what the next ENTER selects; not a register write, the choice
+   reaches the call controller through `rtxStatus_t::dmr_lcssMode` like the
+   mode word, see [Stage 5](#the-lcss-question-register-0x50)) and `RF
+   advance` (register 0x12 alternating between the OEM init word 0x98 and
+   OpenGD77's 0x15, written at once and undone by the next modem
+   reconfiguration like `Reg 0x06`); the value column shows the register
+   and the value the next ENTER writes. The actions run only while the RTX stage
    is in DMR on a working modem: elsewhere (the screen is reachable from
    `Settings > DMR` in any mode) the column reads `DMR off` and ENTER writes
    nothing, so that FM and M17 are never left with a chip taken out of FM
@@ -203,15 +221,18 @@ the current size.
 
 `rtxStatus_t` carries the DMR configuration the UI thread pushes on every
 synchronisation (`dmr_srcId`, `dmr_dstId`, `dmr_callType`, `dmr_rxColorCode`,
-`dmr_txColorCode`, `dmr_timeslot`, `dmr_monitor`, `dmr_polite`, and
+`dmr_txColorCode`, `dmr_timeslot`, `dmr_monitor`, `dmr_polite`,
 `dmr_modeReg`, the mode word override of the monitor screen, 0 for the driver
-default), a receive report the DMR opMode handler fills (`dmr_lcOk`,
-`dmr_rxSrcId`, `dmr_rxDstId`, `dmr_rxFlco`, `dmr_rxColorCodeSeen`,
-`dmr_rxTimeslot`, `dmr_rxSyncType`, `dmr_callState`, `dmr_slotLock`,
-`dmr_markers`) and the bring-up block `dmr_mon` (`dmrMonitor_t`, 64 bytes:
-interrupt and EXTI line counters, the last 0x82/0x84/0x86 flags,
-0x51/0x52/0x5F/0x42, RSSI, FSK error, timecode, the last LC RAM with its
-decoded source, destination, FLCO, FID and CRC verdict) and, since stage 4,
+default, and since stage 5 `dmr_lcssMode`, the register 0x50 convention of
+the voice bursts, 0 chip-filled / 1 manual), a receive report the DMR opMode
+handler fills (`dmr_lcOk`, `dmr_rxSrcId`, `dmr_rxDstId`, `dmr_rxFlco`,
+`dmr_rxColorCodeSeen`, `dmr_rxTimeslot`, `dmr_rxSyncType`, `dmr_callState`,
+`dmr_slotLock`, `dmr_markers`) and the bring-up block `dmr_mon`
+(`dmrMonitor_t`, 76 bytes: interrupt and EXTI line counters, the last
+0x82/0x84/0x86 flags, 0x51/0x52/0x5F/0x42, RSSI, FSK error, timecode, the
+last LC RAM with its decoded source, destination, FLCO, FID and CRC verdict,
+and since stage 5 the transmit counters `txBursts`, `txSilent`,
+`txUnderruns` and `rfKeyed`) and, since stage 4,
 the audio layer counters `dmr_audio` (`struct dmrAudioStats` of
 `core/dmr_audio.h`, six 32-bit counters, 24 bytes). The report, the block and the counters are
 owned by the opMode handler: `rtx_task()` keeps them across the
@@ -293,8 +314,10 @@ received payloads counted and dropped: the vocoder seam of stage 4). It
 reads the PTT with `txDisable` honoured on every pass, requests the speaker
 path (`SOURCE_MCU -> SINK_SPK`, priority RX) during a received call and its
 hang time and the microphone path (`SOURCE_MIC -> SINK_MCU`, priority TX)
-during a transmission, keys the RF stage through `radio_enableRx()` /
-`radio_enableTx()`, drives the LEDs (green: call received, red: transmit),
+during a transmission, keys the RF stage through `radio_enableTx()` /
+`radio_disableRtx()` + `radio_enableRx()` as the controller's `rfKey`
+report asks (see [Stage 5](#the-rf-stage-around-a-transmission)), drives
+the LEDs (green: call received, red: transmit),
 and publishes the report into the `dmr_rx*`, `dmr_callState`, `dmr_slotLock`
 and `dmr_markers` fields of `rtxStatus_t`. A change of colour code,
 timeslot, own ID or access policy reprograms the modem (`dmrbb_configure()`)
@@ -312,10 +335,11 @@ The top bar shows, in the place and look of the FRS marker, one of:
 | `No DMR ID` | PTT pressed with `Settings > DMR > DMR ID` unset. Registering an ID with RadioID is required by the networks |
 | `Busy` | The modem rejected the transmission because the channel is busy (polite access) |
 | `Wake-up failed` | A repeater channel did not answer the wake-up after N_Wakeup attempts |
+| `RF failed` | The RF stage refused to key for the transmission (the synthesizer did not lock, `radio_getStatus()` not `TX` after `radio_enableTx()`): aborted at once, nothing on the air |
 | `DMR not supported` | The radio has no DMR modem driver: the mode stays off |
 
-The first three go away at the next PTT press or after three seconds; the
-last one stays as long as DMR is selected.
+All but the last go away at the next PTT press or after three seconds; that
+one stays as long as DMR is selected.
 
 ### On the radios: the stub
 
@@ -476,8 +500,8 @@ rather than what was said while the headers went out, and the queue runs
 at about one payload for the rest of the transmission instead of sitting
 full (three payloads, 180 ms of extra mouth-to-ear delay, no room for
 jitter). With the null backend every payload is the silence pattern, so
-the air interface carries a well-formed call with silence; keying the PA
-for it is stage 5. On the emulator there is no microphone device, the
+the air interface carries a well-formed call with silence; the RF stage
+is keyed around it since stage 5. On the emulator there is no microphone device, the
 start is refused and silence is sent.
 
 ### The `dmr_audio` module
@@ -526,8 +550,8 @@ receive report) and shown by a fifth section of the DMR monitor screen,
 | `Underrun` | `underruns` | silent blocks played between two payloads of the same reception (a lost or late burst); the silence before the first payload and after the last one is not counted |
 | `Overrun` | `overruns` | payloads dropped from a full queue, either direction |
 
-The section moves the actions to the last page as before; the screen has
-10 pages on the 160x128 displays and 11 on 128x64.
+The section moves the actions to the last page as before; with the stage 5
+rows the screen has 10 pages on the 160x128 displays and 12 on 128x64.
 
 ### The emulator demo
 
@@ -599,6 +623,208 @@ talkgroup (or `Settings > DMR > Monitor` set to accept it).
 - `ui_dmr_test`, extended: the audio section's rows, names and values,
   the `Vocoder` row showing the backend the build links (`loopback` with
   `CONFIG_DMR_VOCODER_LOOPBACK`, `null` otherwise, never `none`).
+
+## Stage 5: TX voice calls, the RF stage around the call and the repeater wake-up
+
+Stage 5 completes the transmit side of the core: a PTT press produces a
+standards-conformant voice call on the modem with the RF stage keyed around
+it, in direct mode on a simplex channel and through a repeater on a split
+one, and the outcomes that are not a call (channel busy, repeater silent,
+transmit timeout) are reported on screen. The modem and RF driver work for
+the CS7000 radios (`radio_enableTx()` in DMR, `dmrbb_startTx()`, the
+voice payload transport, the deviation calibration) is documented in
+[dmr_bringup.md](dmr_bringup.md); nothing below has been run on a radio.
+
+### The call flow
+
+`DMR::CallController` already sequenced the call in stage 2; stage 5
+verified it against the text and added what the RF stage needs. On the own
+slot, one burst every 60 ms:
+
+1. **Arm**: on the PTT press the modem is armed (register 0x21 access
+   policy, 0x40 with TxEn) and the RF stage is keyed, before any slot is
+   programmed (`TX_ARM`).
+2. **Voice LC header**, three times (`TX_HEADER`): the `Grp_V_Ch_Usr` or
+   `UU_V_Ch_Usr` full LC (TS 102 361-2 §7.1.1.1 / §7.1.1.2) written to the
+   TX RAM, 0x50 = 0x10, 0x41 = 0x80. TS 102 361-1 §5.1.2.2 (figure 5.4)
+   requires the first burst A to be immediately preceded by a voice LC
+   header; one is enough for the standard, three is the OpenGD77 and
+   MMDVM practice that gives a receiver three chances to open the call.
+3. **Voice superframes** A to F (`TX_VOICE`): the payload popped from the
+   `dmr_audio` encoder queue, or the AMBE+2 silence pattern when the queue
+   is empty (the null backend: always), 27 bytes written per own slot, 0x50
+   per the LCSS convention below, 0x41 = 0x80; the other slot is left idle
+   (0x41 = 0x00).
+4. **End of transmission**: TS 102 361-2 §5.2.1.1 ("EOT shall be
+   accomplished by transmitting the entire last voice superframe (through
+   voice burst F), and then sending the Grp_V_Ch_Usr LC message using the
+   Terminator with LC data type burst", TS 102 361-1 §5.1.2.3 figure 5.8):
+   a PTT release or the T_TO expiry is honoured at the next superframe
+   boundary, at least one superframe going out even when the PTT is
+   released during the headers, then the terminator (`TX_TERM`, 0x50 =
+   0x20, the same LC still in the TX RAM so source, destination and FLCO
+   match the header).
+5. **Back to reception** at the timeslot interrupt where the terminator
+   goes out (0x41 = 0x00, `dmrbb_startRx()`), the hang timer running so
+   that the answer keeps the channel on screen.
+
+T_TO is `DMR::T_TO_S` = 180 s (TS 102 361-2 §6.1 and Annex A.1: the Tier I
+value, the designer's choice up to 180 s for Tier II), applied by
+`OpMode_DMR` to every transmission (`setTxTimeout()` for the tests, a
+settings item may drive it later); the expiry ends the transmission like a
+release and latches the PTT until it is released.
+
+### The RF stage around a transmission
+
+The controller reports `rfKey` next to its state, and `OpMode_DMR` keys the
+RF stage from it: one `radio_enableTx()` when the modem is armed (before
+the first header slot is programmed), one `radio_disableRtx()` followed by
+`radio_enableRx()` when the last burst has gone out. That burst occupies
+the slot after the timeslot interrupt it was programmed at, so the release
+happens at the *following* timeslot interrupt, one slot after the
+controller went back to reception (the terminator is on the air during
+that slot); the chip's TX-end report (0x82 bit5 with sub-status 0x86 bit7,
+"service transmission completely terminated", `R86_TX_COMPLETE`) releases
+it earlier when it comes first, and a timer of one slot plus the jitter
+tolerance (`CallController::RF_UNKEY_MS` = 35 ms) does it when neither
+arrives (a wake-up CSBK on a silent channel: passive timing gives no
+timeslot interrupt afterwards). The other 0x86 sub-interrupts that raise
+the same 0x82 bit, in particular the per-slot Layer 2 deadline (bit4,
+Rdy_lst_inter, given every 30 ms once a time axis exists) and the data
+fragment events, come while the last burst is still on the air and are
+ignored for the release. A rejected transmission (0x82 bit7, channel busy
+under polite access), a PTT released before anything went out, a failed
+wake-up, the timeslot watchdog and `disable()` release it at once; an RF
+stage that refuses to key (the synthesizer did not lock, `radio_getStatus()`
+not `TX` right after `radio_enableTx()`) aborts the transmission before
+anything is programmed, with the `RF failed` marker. `disable()` drops the
+RF before the rest of its teardown when a transmission is in progress (a
+mode or channel change mid-call), and a modem reprogramming releases it
+first too. `rtxStatus_t::opStatus` reads `TX` exactly while the RF is keyed.
+`UNVERIFIED on hardware`: whether one slot of margin after the terminator
+is enough for the PA to see the whole burst (manual §5.4.5 step 12 says
+"after the next or a few 30 ms"), and whether keying the PA for the whole
+call is acceptable for the adjacent-slot emissions of a handheld (the
+per-slot alternative from RF_TX_INTER is a driver follow-up).
+
+A modem reconfiguration requested during a transmission (colour code,
+timeslot, own ID, access policy changed from the UI) waits for the RF to
+be released as well, not only for the controller to leave its TX states.
+
+The microphone path (`SOURCE_MIC -> SINK_MCU`, `PRIO_TX`) is requested when
+the modem is armed and released, with the encoder thread on it stopped,
+once the RF is released (or at once when a call opens in between): no
+payload is requested after the terminator is programmed, and stopping the
+thread joins it, which may block for up to one 60 ms microphone block, a
+stall that must not sit between the terminator write and the idling of the
+slot after it. The counters of the transmit
+side (`DmrAudioLink`: bursts requested, filled by the audio layer, silence
+sent while the encoder ran) go to the monitor screen, see
+[DMR monitor screen](#dmr-monitor-screen).
+
+### Direct mode and repeater mode
+
+On a simplex channel without a base station carrier the transmission uses
+the chip's own time axis (0x40 = 0xE3, "DMO"). On a split channel, or when
+a base station sync is being received with the timecode locked, it uses
+passive timing aligned to the received sync (0x40 = 0xC3, "RMO") and every
+own burst is programmed for the slot whose timecode matches the configured
+timeslot (TS1 = timecode 0, TS2 = timecode 1, the CACH TC of the outbound
+of TS 102 361-1 §7.1.4); the test
+`DMR TX repeater mode: every own burst is programmed for the configured
+timeslot` pins this for both timeslots. A repeater channel whose carrier
+is not up is woken up first: the `BS_Dwn_Act` CSBK (TS 102 361-2 §7.1.2.1,
+CSBKO 111000b, own ID as source) is sent once in the own slot with the
+chip's own timing, the RF released after it, the modem back in reception
+waiting up to T_SyncWu = 360 ms (TS 102 361-1 Annex F.1, the maximum) for
+the repeater's sync and timecode lock; the attempt is repeated N_Wakeup = 2
+times (Annex F.2, "suggested value", TS 102 361-1 §5.2.2.2.4: "if the
+counter is equal to N_Wakeup ... the transmission is denied"), after which
+the `Wake-up failed` marker is raised and the PTT latched. A repeater that
+answers gets the call in passive timing. While the wake-up is on the air
+and the answer awaited the main screen reads `WAKE <destination>` in place
+of `TX -> <destination>`, and `rtxStatus_t::dmr_callState` is
+`DMR_CALL_TX_WAKEUP`.
+
+The polite / impolite access setting is register 0x21 (0xA2 polite to own
+colour code, 0x02 impolite, both also clearing the vocoder encode buffer);
+under polite access the chip refuses to transmit over a call on the own
+colour code and reports it in 0x82 bit7: the controller drops to reception
+at once, the `Busy` marker goes up in the top bar and the PTT is latched
+until released.
+
+### The LCSS question, register 0x50
+
+The chip builds the EMB and the embedded LC fragments of the voice bursts
+itself, but two conventions exist for what the MCU writes to 0x50 per
+burst, and only the on-air test with a hotspot (late entry with
+`EmbeddedLCOnly=1`) tells which one it needs:
+
+| `dmr_lcssMode` | 0x50 for A..F | Source |
+|---|---|---|
+| 0, `LCSS_MODE_CHIP` (default) | 0x08, 0x18, 0x28, 0x38, 0x48, 0x58: bit3 voice, [7:4] the burst, LCSS left at 00, the chip fills the fragments | OpenGD77, known to work on the GD-77 |
+| 1, `LCSS_MODE_MANUAL` | 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58: LCSS 00, 01, 11, 11, 10, 00 supplied per burst | HR_C6000 manual §5.4.5 "Voice transmission", steps 5, 7 and 8 ("reg0x50 is configured to 0x08 ... reg0x50 to 0x19 ... C, D, E, and F frames reg0x50 to 0x2B, 0x3B, 0x4A, and 0x58, respectively") |
+
+The values are `DMR::R50_VOICE_MANUAL[]` and `DMR::r50Voice(seq, mode)` in
+`ModemPort.hpp`; the `LCSS mode` action of the monitor screen switches
+`state.dmr_lcssMode`, pushed to the RTX stage and applied to the next
+transmission without reprogramming the modem. `UNVERIFIED on hardware`.
+
+### What a hotspot or repeater logs
+
+With the null backend every voice burst carries the AMBE+2 silence pattern,
+so a Pi-Star / MMDVMHost hotspot in DMO should log a complete, correct call
+from the radio: `received RF voice header from <ID> to TG <n>` (three
+times or once, the repeats being identical), a stream of voice frames with
+a plausible BER, and `received RF end of voice transmission, <duration>
+seconds, BER: <x>%` whose duration matches the superframes sent (a PTT
+held for two seconds gives about 2.2 s: the completed superframe plus the
+terminator). The talkgroup, the source ID and the call type must be the
+ones of `Settings > DMR`; a late entry (the hotspot started listening
+after the headers) must still show the caller, which is the LCSS check
+above. Through a repeater or BrandMeister the "last heard" entry is the
+same test with a registered ID, and the repeater must be seen rebroadcasting
+(`TS<n>` in its log matching the configured timeslot). No audio is
+expected anywhere: silence is the payload by design, see
+[Vocoder](#vocoder).
+
+### Tests
+
+- `dmr_callctrl_test`: the LCSS conventions (`r50Voice()` values and a
+  transmission in mode 1), the `rfKey` report (keyed at arm, released at
+  the timeslot after the terminator, by the TX-end report, by the timer;
+  released at once by a rejection, a release before the header, the
+  watchdog and `disable()`; through a wake-up: keyed per CSBK, released by
+  the timer on a silent channel and by a timeslot interrupt, keyed again
+  for the call; not keyed while waiting for the timecode lock), and the
+  timeslot alignment of every burst of a repeater mode transmission for
+  both timeslots.
+- `dmr_opmode_test`: on the fake modem and the counting fake RF stage of
+  `radio_linux.cpp` (`radioEmu_record()`): exactly one `radio_enableTx()`
+  before the first header slot, three header slots, voice bursts 0..5 with
+  one 27-byte write per own slot and the silence pattern, a release after
+  burst A completing B..F then the terminator, one `radio_disableRtx()` at
+  the timeslot after the terminator slot (and `opStatus` following the
+  keying), the TX-end report with 0x86 bit7 releasing earlier while the
+  per-slot bit4 sub-interrupt does not, a rejected transmission unkeying
+  at once with the `Busy` marker, T_TO (1 s) ending at the superframe
+  boundary with the PTT latched, a silent repeater channel (wake-up keyed
+  per attempt, released after each CSBK, the marker after two attempts)
+  and one that answers (the call in passive timing), the LCSS convention
+  from the RTX status, the transmit counters of the bring-up block, the
+  encoder and microphone held (no `dmrAudio_stop()`) from the terminator
+  write to the RF release, a configuration change in the slot after the
+  terminator reprogramming the modem only once the RF is off, `disable()`
+  mid-transmission dropping the RF before the modem terminate, an RF stage
+  that refuses to key (`radioEmu_setTxFails()`) aborting with the `RF
+  failed` marker, and a call opening under the still keyed RF taking the
+  microphone down for the playback.
+- `ui_dmr_test`: the `TX -> ` / `WAKE ` (`TX->` / `WAKE:` compact) prefix
+  of the destination line and its width guards for both layouts, the new
+  monitor rows and actions (`LCSS mode` pushing `dmr_lcssMode` to the RTX
+  stage, `RF advance` writing 0x12 = 0x15 / 0x98 with the two-point bit
+  preserved), the scrolling action page, and the marker text of a
+  rejection and of an RF failure.
 
 ## Licensing
 

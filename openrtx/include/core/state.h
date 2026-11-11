@@ -54,6 +54,10 @@ typedef struct {
     // DMR modem mode register (HR_C6000 0x10) override set by the DMR
     // monitor screen, 0 = driver default. Not saved.
     uint8_t dmr_modeReg;
+    // DMR LCSS convention of the voice bursts (register 0x50) set by the
+    // DMR monitor screen: 0 chip-filled (OpenGD77), 1 manual sequence.
+    // Not saved.
+    uint8_t dmr_lcssMode;
 } state_t;
 
 extern const uint32_t freq_steps[];

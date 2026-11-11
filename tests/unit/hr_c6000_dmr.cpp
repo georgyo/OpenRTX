@@ -26,6 +26,7 @@
 
 #include "drivers/audio/Cx000_dac.h"
 #include "drivers/baseband/HR_C6000.h"
+#include "drivers/baseband/dmr_CS7000.h"
 #include "hwconfig.h"
 #include "interfaces/delays.h"
 #include "interfaces/dmr_baseband.h"
@@ -404,6 +405,8 @@ TEST_CASE("HR_C6000 DMR register helpers", "[hr_c6000][dmr]")
     C6000.clearIrq(0x08);
     C6000.dmrRxStart();
     C6000.dmrIdle();
+    C6000.dmrTxStart(true, true);
+    C6000.dmrTxStart(false, false);
     C6000.writeAuxRegister(0x54, 0x78);
 
     std::vector<std::vector<uint8_t>> expected = {
@@ -411,8 +414,17 @@ TEST_CASE("HR_C6000 DMR register helpers", "[hr_c6000][dmr]")
         cfgWrite(0x16, 0x12), cfgWrite(0x20, 0x00), cfgWrite(0x21, 0x00),
         cfgWrite(0x81, 0xFE), cfgWrite(0x83, 0x08), cfgWrite(0x40, 0xC3),
         cfgWrite(0x41, 0x20), cfgWrite(0x41, 0x50), cfgWrite(0x40, 0x03),
-        { 0x01, 0x54, 0x78 },
+        cfgWrite(0x21, 0xA2), cfgWrite(0x40, 0xE3), cfgWrite(0x21, 0x02),
+        cfgWrite(0x40, 0xC3), { 0x01, 0x54, 0x78 },
     };
+
+    /* Register 0x82 flag readers */
+    REQUIRE(HR_C6000::txRejected(0x80));
+    REQUIRE(HR_C6000::txRejected(0x7F) == false);
+    REQUIRE(HR_C6000::txStarted(0x40));
+    REQUIRE(HR_C6000::txStarted(0xBF) == false);
+    REQUIRE(HR_C6000::txEnded(0x20));
+    REQUIRE(HR_C6000::txEnded(0xDF) == false);
 
     REQUIRE(uspi.log.size() == expected.size());
     for (size_t i = 0; i < expected.size(); i++) {
@@ -717,6 +729,13 @@ TEST_CASE("dmrbb_waitEvent reads the sub-status registers whose bit is set",
     REQUIRE(s.sub90 == 0x82);
     REQUIRE(s.sub98 == 0x03);
 
+    /* TX rejected, started (0x84 bit 7 voice) and ended (0x86 bit 7) */
+    REQUIRE(HR_C6000::txRejected(s.irq82));
+    REQUIRE(HR_C6000::txStarted(s.irq82));
+    REQUIRE((s.sub84 & HR_C6000::SUB84_VOICE_TX_START) != 0);
+    REQUIRE(HR_C6000::txEnded(s.irq82));
+    REQUIRE((s.sub86 & HR_C6000::SUB86_TX_COMPLETE) != 0);
+
     requireTx(uspi.log[0], { 0x84, 0x82, 0x00 });
     requireTx(uspi.log[1], { 0x84, 0x84, 0x00 });
     requireTx(uspi.log[2], { 0x84, 0x86, 0x00 });
@@ -970,4 +989,147 @@ TEST_CASE("The OpenMusic DAC keeps the vocoder bits while DMR owns the chip",
     requireTx(uspi.log[0], cfgWrite(0x06, 0x20));
 
     Cx000dac_terminate();
+}
+
+TEST_CASE("dmrbb_setTxFrameType writes register 0x50 as given, whatever "
+          "the LCSS convention",
+          "[dmr_cs7000][tx]")
+{
+    bringUp();
+
+    /* The OpenGD77 convention: 0x08 | seq << 4, LCSS 00 */
+    for (uint8_t seq = 0; seq < 6; seq++)
+        dmrbb_setTxFrameType(0x08 | (seq << 4));
+
+    REQUIRE(uspi.log.size() == 6);
+    for (uint8_t seq = 0; seq < 6; seq++)
+        requireTx(uspi.log[seq], cfgWrite(0x50, 0x08 | (seq << 4)));
+
+    /* The manual's sequence, chosen by the call controller, goes through
+     * untouched: the driver holds no convention of its own */
+    const uint8_t manual[6] = { 0x08, 0x19, 0x2B, 0x3B, 0x4A, 0x58 };
+    uspi.log.clear();
+    for (uint8_t seq = 0; seq < 6; seq++)
+        dmrbb_setTxFrameType(manual[seq]);
+
+    REQUIRE(uspi.log.size() == 6);
+    for (uint8_t seq = 0; seq < 6; seq++) {
+        INFO("burst " << (int)seq);
+        requireTx(uspi.log[seq], cfgWrite(0x50, manual[seq]));
+    }
+
+    /* Header, terminator and CSBK likewise */
+    uspi.log.clear();
+    dmrbb_setTxFrameType(0x10);
+    dmrbb_setTxFrameType(0x20);
+    dmrbb_setTxFrameType(0x30);
+    REQUIRE(uspi.log.size() == 3);
+    requireTx(uspi.log[0], cfgWrite(0x50, 0x10));
+    requireTx(uspi.log[1], cfgWrite(0x50, 0x20));
+    requireTx(uspi.log[2], cfgWrite(0x50, 0x30));
+
+    dmrbb_terminate();
+}
+
+TEST_CASE("The TX arming, slot and return-to-RX sequence of a call",
+          "[dmr_cs7000][tx]")
+{
+    /*
+     * What the call controller does through the ModemPort adapter, in
+     * order: arm (DMO, polite), header slot with the LC in TX RAM, a voice
+     * slot with its payload on V_SPI, terminator, idle slot and back to RX.
+     */
+    bringUp();
+
+    uint8_t lc[12] = { 0x00, 0x00, 0x00, 0x00, 0x7B, 0xA1,
+                       0x23, 0xC3, 0x4E, 0x00, 0x00, 0x00 };
+    uint8_t ambe[27];
+    for (uint8_t i = 0; i < 27; i++)
+        ambe[i] = (uint8_t)(0xA0 + i);
+
+    dmrbb_startTx(true);
+    dmrbb_writeTxLc(lc);
+    dmrbb_setTxFrameType(0x10);
+    dmrbb_setNextSlot(0x80);
+    dmrbb_setNextSlot(0x00);
+    dmrbb_writeVoice(ambe);
+    dmrbb_setTxFrameType(0x08);
+    dmrbb_setNextSlot(0x80);
+    dmrbb_setTxFrameType(0x20);
+    dmrbb_setNextSlot(0x80);
+    dmrbb_setNextSlot(0x00);
+    dmrbb_startRx();
+
+    std::vector<uint8_t> lcWrite = { 0x02, 0x00 };
+    lcWrite.insert(lcWrite.end(), lc, lc + 12);
+
+    std::vector<std::vector<uint8_t>> expected = {
+        cfgWrite(0x21, 0xA2), cfgWrite(0x40, 0xE3), lcWrite,
+        cfgWrite(0x50, 0x10), cfgWrite(0x41, 0x80), cfgWrite(0x41, 0x00),
+        cfgWrite(0x50, 0x08), cfgWrite(0x41, 0x80), cfgWrite(0x50, 0x20),
+        cfgWrite(0x41, 0x80), cfgWrite(0x41, 0x00), cfgWrite(0x40, 0xC3),
+        cfgWrite(0x41, 0x20), cfgWrite(0x41, 0x50),
+    };
+
+    REQUIRE(uspi.log.size() == expected.size());
+    for (size_t i = 0; i < expected.size(); i++) {
+        INFO("transaction " << i);
+        requireTx(uspi.log[i], expected[i]);
+    }
+
+    /* The voice payload went out on V_SPI, one chip select */
+    REQUIRE(vspi.log.size() == 1);
+    std::vector<uint8_t> voice = { 0x03, 0x00 };
+    voice.insert(voice.end(), ambe, ambe + 27);
+    requireTx(vspi.log[0], voice);
+
+    dmrbb_terminate();
+}
+
+TEST_CASE("RF_TX_INTER is counted and timestamped against the slot tick",
+          "[dmr_cs7000][tx]")
+{
+    bringUp();
+
+    auto readWord = [](uint8_t base, unsigned bytes) {
+        uint32_t v = 0;
+        for (unsigned b = 0; b < bytes; b++) {
+            v |= (uint32_t)dmrbb_readRegister(DMRBB_PAGE_DRIVER,
+                                              (uint8_t)(base + b))
+              << (8 * b);
+        }
+        return v;
+    };
+
+    REQUIRE(readWord(DMRBB_DRV_RFTX_TICK(0), 4) == 0);
+    REQUIRE(readWord(DMRBB_DRV_RFTX_LEAD(0), 2) == 0);
+
+    struct dmrbbSnapshot s;
+    memset(&s, 0, sizeof(s));
+
+    /* Slot tick at 7000, own burst announced 27ms later (0x12 = 2.4ms
+     * before the next slot boundary) */
+    fakeTick = 7000;
+    fireLine(0);
+    fakeTick = 7027;
+    fireLine(2);
+    fakeTick = 7028;
+
+    uint32_t ev = dmrbb_waitEvent(&s, 30);
+    REQUIRE(ev == (DMRBB_EV_TS | DMRBB_EV_RFTX));
+    REQUIRE(s.rftxCount == 1);
+    REQUIRE(s.tsTick == 7000);
+    REQUIRE(readWord(DMRBB_DRV_RFTX_TICK(0), 4) == 7027);
+    REQUIRE(readWord(DMRBB_DRV_RFTX_LEAD(0), 2) == 27);
+
+    /* No register traffic for an RF_TX event alone */
+    uspi.log.clear();
+    fakeTick = 0x12345;
+    fireLine(2);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_RFTX);
+    REQUIRE(uspi.log.empty());
+    REQUIRE(s.rftxCount == 2);
+    REQUIRE(readWord(DMRBB_DRV_RFTX_TICK(0), 4) == 0x12345);
+
+    dmrbb_terminate();
 }

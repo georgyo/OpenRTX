@@ -144,6 +144,7 @@ static rtxStatus_t sync_rtx_stage()
     cfg.dmr_monitor = state.settings.dmr_monitor;
     cfg.dmr_polite = state.settings.dmr_polite;
     cfg.dmr_modeReg = state.dmr_modeReg;
+    cfg.dmr_lcssMode = state.dmr_lcssMode;
 
     rtx_configure(&cfg);
     rtx_task();
@@ -805,6 +806,10 @@ TEST_CASE("The DMR top-bar marker follows the RTX marker flags", "[ui][dmr]")
     REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_WAKEUP_FAILED),
                    currentLanguage->dmrWakeupFailed)
             == 0);
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_RF_FAILED),
+                   currentLanguage->dmrRfFailed)
+            == 0);
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_RF_FAILED), "RF failed") == 0);
     REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_NOT_SUPPORTED),
                    currentLanguage->dmrNotSupported)
             == 0);
@@ -981,7 +986,8 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
 
     uint8_t pages = _ui_dmrMonitorPages();
     REQUIRE(pages >= DMRMON_SECTION_NUM);
-    /* 12, 13, 7, 7 and 5 rows in six per page: 2 + 3 + 2 + 2 + 1, as
+    /* 12, 13, 7, 7 and 7 rows in six per page: 2 + 3 + 2 + 2, plus the
+     * single action page (7 actions scrolling behind the selection), as
      * documented */
     if ((CONFIG_SCREEN_WIDTH == 160) && (CONFIG_SCREEN_HEIGHT == 128))
         REQUIRE(pages == 10);
@@ -1057,9 +1063,20 @@ TEST_CASE("DMR monitor: the pages cover every row, section by section",
     REQUIRE(monitorEntry(DMRMON_LC_HI) == "LC 6-11");
     REQUIRE(monitorEntry(DMRMON_AUD_VOCODER) == "Vocoder");
     REQUIRE(monitorEntry(DMRMON_AUD_OVER) == "Overrun");
+    REQUIRE(monitorEntry(DMRMON_AUD_TXBURSTS) == "TX bursts");
+    REQUIRE(monitorEntry(DMRMON_AUD_TXSILENT) == "TX silent");
+    REQUIRE(monitorEntry(DMRMON_AUD_TXUNDER) == "TX under");
+    REQUIRE(monitorEntry(DMRMON_RFKEYED) == "RF keyed");
     REQUIRE(monitorEntry(DMRMON_ACT_RESYNC) == currentLanguage->resync);
     REQUIRE(monitorEntry(DMRMON_ACT_BER) == currentLanguage->berTest);
     REQUIRE(monitorEntry(DMRMON_ACT_TWOPOINT) == currentLanguage->twoPointTest);
+    REQUIRE(monitorEntry(DMRMON_ACT_LCSS) == currentLanguage->lcssMode);
+    REQUIRE(monitorEntry(DMRMON_ACT_RFADV) == currentLanguage->rfAdvance);
+    for (const stringsTable_t *lang = languages;
+         lang < languages + NUM_LANGUAGES; lang++) {
+        REQUIRE(lang->lcssMode != NULL);
+        REQUIRE(lang->rfAdvance != NULL);
+    }
     char buf[MAX_ENTRY_LEN];
     REQUIRE(_ui_getDMRMonitorEntryName(buf, sizeof(buf), DMRMON_ROWS_NUM)
             == -1);
@@ -1157,11 +1174,17 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     REQUIRE(monitorValue(DMRMON_AUD_TX) == "0");
     REQUIRE(monitorValue(DMRMON_AUD_UNDER) == "0");
     REQUIRE(monitorValue(DMRMON_AUD_OVER) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_TXBURSTS) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_TXSILENT) == "0");
+    REQUIRE(monitorValue(DMRMON_AUD_TXUNDER) == "0");
+    REQUIRE(monitorValue(DMRMON_RFKEYED) == "0");
     REQUIRE(monitorValue(DMRMON_ACT_RESYNC) == "41<-20");
     REQUIRE(monitorValue(DMRMON_ACT_MODE) == "10<-6A");
     REQUIRE(monitorValue(DMRMON_ACT_R06) == "06<-21");
     REQUIRE(monitorValue(DMRMON_ACT_BER) == "81 10 40 41");
     REQUIRE(monitorValue(DMRMON_ACT_TWOPOINT) == "12^40");
+    REQUIRE(monitorValue(DMRMON_ACT_LCSS) == "50 manual");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-98");
 
     /* More slots: the screen follows on the next draw */
     for (unsigned i = 0; i < 4; i++) {
@@ -1276,7 +1299,7 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x81) == 0xFF);
 
     /* Resync puts the Layer-2 mask back */
-    pressN(KEY_DOWN, 2);
+    pressN(KEY_DOWN, DMRMON_ACTION_NUM - 3);
     render();
     REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
     press(KEY_ENTER);
@@ -1289,7 +1312,8 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x98);
     press(KEY_DOWN);
     render();
-    REQUIRE(_ui_dmrMonitorSelectedAction() == DMRMON_ACTION_NUM - 1);
+    REQUIRE(_ui_dmrMonitorSelectedAction()
+            == DMRMON_ACT_TWOPOINT - DMRMON_ACTION_FIRST);
     press(KEY_ENTER);
     requireWrite(lastWrite(), 0x12, 0xD8);
     REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12) == 0xD8);
@@ -1307,6 +1331,81 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     REQUIRE(monitorValue(DMRMON_RB14) == "CE CA 23");
     REQUIRE(monitorEntry(DMRMON_RB14) == "rd 0x14-16");
     REQUIRE(rec->regWrites == 23);
+
+    /*
+     * LCSS mode: no register write, the convention goes to the RTX stage
+     * through the state like the mode word; the value column names the
+     * convention the next ENTER selects
+     */
+    press(KEY_DOWN);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction()
+            == DMRMON_ACT_LCSS - DMRMON_ACTION_FIRST);
+    REQUIRE(monitorValue(DMRMON_ACT_LCSS) == "50 manual");
+    REQUIRE(state.dmr_lcssMode == 0);
+    sync = press(KEY_ENTER);
+    REQUIRE(sync == true);
+    REQUIRE(state.dmr_lcssMode == 1);
+    REQUIRE(rec->regWrites == 23);
+    render();
+    REQUIRE(monitorValue(DMRMON_ACT_LCSS) == "50 chip");
+    status = sync_rtx_stage();
+    REQUIRE(status.dmr_lcssMode == 1);
+    REQUIRE(rec->configureCount == configured + 2);
+    sync = press(KEY_ENTER);
+    REQUIRE(sync == true);
+    REQUIRE(state.dmr_lcssMode == 0);
+    render();
+    REQUIRE(monitorValue(DMRMON_ACT_LCSS) == "50 manual");
+    status = sync_rtx_stage();
+    REQUIRE(status.dmr_lcssMode == 0);
+    REQUIRE(rec->regWrites == 23);
+
+    /* RF advance: 0x12 alternates between the OEM and OpenGD77 words */
+    press(KEY_DOWN);
+    render();
+    REQUIRE(_ui_dmrMonitorSelectedAction()
+            == DMRMON_ACT_RFADV - DMRMON_ACTION_FIRST);
+    REQUIRE(_ui_dmrMonitorSelectedAction() == DMRMON_ACTION_NUM - 1);
+    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-15");
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, DMRMON_R12_GD77);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "15");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-98");
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, DMRMON_R12_OEM);
+    REQUIRE(rec->regWrites == 25);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+
+    /* With the two-point test tone on (bit6, 0xD8 as the Two-point action
+     * leaves it) the advance is toggled and the tone bit preserved, both
+     * in the value column and in the write; a register holding neither
+     * word of the pair gets the OEM one */
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0xD8);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "D8");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-55");
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, 0x55);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "55");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-D8");
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, 0xD8);
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x00);
+    render();
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-98");
+    press(KEY_ENTER);
+    requireWrite(lastWrite(), 0x12, DMRMON_R12_OEM);
+    REQUIRE(rec->regWrites == 30);
+    render();
+    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+
+    /* The action page scrolls: the last action is drawn, selected */
+    REQUIRE(_ui_dmrMonitorCurrentPage() == pages - 1);
 
     /* UP and DOWN wrap over the actions, the knob works as well */
     press(KEY_DOWN);
@@ -1329,7 +1428,7 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     press(KEY_LEFT);
     render();
     REQUIRE(_ui_dmrMonitorSelectedAction() == 0);
-    REQUIRE(rec->regWrites == 23);
+    REQUIRE(rec->regWrites == 30);
 
     /* Reopening the screen starts from the mode word in force */
     press(KEY_ESC);
@@ -1373,6 +1472,7 @@ static void requireActionsRefused()
     }
 
     REQUIRE(state.dmr_modeReg == 0);
+    REQUIRE(state.dmr_lcssMode == 0);
 }
 
 TEST_CASE("DMR monitor: the actions are refused unless the RTX runs DMR",
@@ -1430,4 +1530,61 @@ TEST_CASE("DMR monitor: the actions are refused unless the RTX runs DMR",
     press(KEY_ENTER);
     REQUIRE(dmrEmu_record()->regWrites == 2);
     press(KEY_ESC);
+}
+
+TEST_CASE("The main screen destination line says TX or WAKE", "[ui][dmr]")
+{
+    boot_dmr();
+
+    /* The prefix of the destination, both layouts */
+    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_IDLE, false), "") == 0);
+    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_RX, false), "") == 0);
+    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_RX_HANG, true), "") == 0);
+    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX, false), "TX -> ") == 0);
+    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX, true), "TX->") == 0);
+    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX_WAKEUP, false), "WAKE ") == 0);
+    REQUIRE(strcmp(_ui_dmrTxPrefix(DMR_CALL_TX_WAKEUP, true), "WAKE:") == 0);
+
+    /* Both render on the main screen with the longest destination */
+    ui_state_t ui_state;
+    memset(&ui_state, 0, sizeof(ui_state));
+    rtxStatus_t status = rtx_getCurrentStatus();
+    status.opMode = OPMODE_DMR;
+    status.dmr_callType = PRIVATE;
+    status.dmr_dstId = DMR_ID_MAX;
+    status.dmr_callState = DMR_CALL_TX_WAKEUP;
+    _ui_drawModeInfoDMR(&ui_state, &status);
+    status.dmr_callState = DMR_CALL_TX;
+    _ui_drawModeInfoDMR(&ui_state, &status);
+
+    /* The longest line fits the width of this layout, see the idle line
+     * guard above (the compact layout draws the prefix and destination
+     * alone, centred, while transmitting) */
+    char line[32];
+    sniprintf(line, sizeof(line), "%sPC %lu",
+              _ui_dmrTxPrefix(DMR_CALL_TX_WAKEUP, CONFIG_SCREEN_HEIGHT < 128),
+              (unsigned long)DMR_ID_MAX);
+    uint16_t width = gfx_getTextWidth(layout.line2_font, line);
+    INFO("line \"" << line << "\" is " << width << " px wide");
+    REQUIRE(width <= CONFIG_SCREEN_WIDTH - 2 * layout.horizontal_pad);
+
+    /*
+     * The compact layout, whatever this build's screen: 128 pixels wide, a
+     * 4 pixel padding on each side and FONT_SIZE_6PT on line 2 (the <= 64
+     * pixel layouts of ui.c). The channel string is dropped from the line
+     * while transmitting, so the widest forms are prefix + destination.
+     */
+    const char *compact[] = {
+        "TX->PC 16777215",  "TX->TG 16777215",  "TX->ALL",
+        "WAKE:PC 16777215", "WAKE:TG 16777215", "WAKE:ALL"
+    };
+    for (const char *l : compact) {
+        uint16_t w = gfx_getTextWidth(FONT_SIZE_6PT, l);
+        INFO("compact line \"" << l << "\" is " << w << " px wide");
+        REQUIRE(w <= 128 - 2 * 4);
+    }
+
+    /* The busy marker of a rejected transmission, from the RTX flags */
+    REQUIRE(strcmp(_ui_dmrMarkerText(DMR_MARK_BUSY), currentLanguage->dmrBusy)
+            == 0);
 }
