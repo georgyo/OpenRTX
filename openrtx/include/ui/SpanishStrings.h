@@ -115,5 +115,9 @@ const stringsTable_t spanishStrings =
     .privateCall       = "Privada",
     .polite            = "Cortés",
     .impolite          = "Descortés",
+    .dmrNoId           = "Sin ID DMR",
+    .dmrBusy           = "Ocupado",
+    .dmrWakeupFailed   = "Sin repetidor",
+    .dmrNotSupported   = "DMR no disponible",
 };
 #endif  // SPANISHSTRINGS_H

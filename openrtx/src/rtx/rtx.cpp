@@ -10,6 +10,9 @@
 #include "rtx/rtx.h"
 #include "rtx/OpMode_FM.hpp"
 #include "rtx/OpMode_M17.hpp"
+#ifdef CONFIG_DMR
+#include "rtx/OpMode_DMR.hpp"
+#endif
 
 static pthread_mutex_t   *cfgMutex;     // Mutex for incoming config messages
 static const rtxStatus_t *newCnf;       // Pointer for incoming config messages
@@ -22,6 +25,9 @@ static OpMode     noMode;               // Empty opMode handler for opmode::NONE
 static OpMode_FM  fmMode;               // FM mode handler
 #ifdef CONFIG_M17
 static OpMode_M17 m17Mode;              // M17 mode handler
+#endif
+#ifdef CONFIG_DMR
+static OpMode_DMR dmrMode;              // DMR mode handler
 #endif
 
 /**
@@ -42,6 +48,7 @@ struct DmrReport
     uint8_t  rxSyncType;
     uint8_t  callState;
     uint8_t  slotLock;
+    uint8_t  markers;
 };
 
 static void saveDmrReport(DmrReport *report, const rtxStatus_t *status)
@@ -55,6 +62,7 @@ static void saveDmrReport(DmrReport *report, const rtxStatus_t *status)
     report->rxSyncType      = status->dmr_rxSyncType;
     report->callState       = status->dmr_callState;
     report->slotLock        = status->dmr_slotLock;
+    report->markers         = status->dmr_markers;
 }
 
 static void restoreDmrReport(rtxStatus_t *status, const DmrReport *report)
@@ -68,6 +76,7 @@ static void restoreDmrReport(rtxStatus_t *status, const DmrReport *report)
     status->dmr_rxSyncType      = report->rxSyncType;
     status->dmr_callState       = report->callState;
     status->dmr_slotLock        = report->slotLock;
+    status->dmr_markers         = report->markers;
 }
 
 
@@ -116,6 +125,7 @@ void rtx_init(pthread_mutex_t *m)
     rtxStatus.dmr_rxSyncType = 0;
     rtxStatus.dmr_callState = DMR_CALL_IDLE;
     rtxStatus.dmr_slotLock  = 0;
+    rtxStatus.dmr_markers   = 0;
     currMode = &noMode;
 
     /*
@@ -214,10 +224,7 @@ void rtx_task()
                 case OPMODE_M17:  currMode = &m17Mode; break;
                 #endif
                 #ifdef CONFIG_DMR
-                // The DMR opMode handler arrives with the next stage of the
-                // DMR series: until then selecting DMR keeps the RTX stage
-                // idle on the empty handler, which is harmless.
-                case OPMODE_DMR:  currMode = &noMode;  break;
+                case OPMODE_DMR:  currMode = &dmrMode; break;
                 #endif
                 default:   currMode = &noMode;
             }
@@ -288,4 +295,12 @@ rssi_t rtx_getRssi()
 bool rtx_rxSquelchOpen()
 {
     return currMode->rxSquelchOpen();
+}
+
+uint8_t rtx_getDmrMarkers()
+{
+    if(rtxStatus.opMode != OPMODE_DMR)
+        return 0;
+
+    return rtxStatus.dmr_markers;
 }

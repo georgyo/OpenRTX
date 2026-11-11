@@ -120,6 +120,10 @@ typedef struct
     const char* privateCall;
     const char* polite;
     const char* impolite;
+    const char* dmrNoId;
+    const char* dmrBusy;
+    const char* dmrWakeupFailed;
+    const char* dmrNotSupported;
 }
 stringsTable_t;
 
