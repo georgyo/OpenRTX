@@ -154,7 +154,7 @@ take it past that value is ignored.
 | Monitor | Off, TG, ALL | `settings.dmr_monitor` | Off: colour code, timeslot and destination must match. TG: own colour code, any talkgroup. ALL: any colour code and timeslot |
 | Access | Polite, Impolite | `settings.dmr_polite` | Polite: do not transmit over a call on the own colour code |
 | Hang time | 0-7 s | `settings.dmr_hangTime` | How long a finished call stays on screen and keeps the channel; default 3 s, the `T_CallHt` of TS 102 361-2 |
-| Test tone | Off, On | `settings.dmr_testTone` | Debug: the null vocoder of stage 4 plays a tone instead of silence on received voice |
+| Test tone | Off, On | `settings.dmr_testTone` | Debug: the null vocoder of stage 4 plays a tone instead of silence on received voice, and transmits the frames of a 1031 Hz tone instead of the silence pattern |
 | Favourites | (ENTER) | `settings.dmr_favourites[6]` | Opens the favourites list, see [Favourites](#favourites) |
 | DMR monitor | (ENTER) | - | Opens the DMR monitor screen, see below |
 
@@ -1124,7 +1124,7 @@ codecs:
 
 | Backend | File | What it does |
 |---|---|---|
-| `null` | `openrtx/src/core/dmr_vocoder_null.c` | `decode()` fills 60 ms of silence, or a 1 kHz sine at -12 dBFS (phase continuous from one burst to the next) when `Settings > DMR > Test tone` is on; `encode()` fills the AMBE+2 silence pattern. Built for every target with `CONFIG_DMR` |
+| `null` | `openrtx/src/core/dmr_vocoder_null.c` | `decode()` fills 60 ms of silence, or a 1 kHz sine at -12 dBFS (phase continuous from one burst to the next) when `Settings > DMR > Test tone` is on; `encode()` fills the AMBE+2 silence pattern, or with the test tone on the frames of a 1031 Hz tone that a receiver with a real vocoder plays. Built for every target with `CONFIG_DMR` |
 | `loopback` | `openrtx/src/core/dmr_vocoder_loopback.c` | `encode()` packs a coarse descriptor of the 480 samples into the 27 bytes (signature `LB`, RMS level, dominant frequency from the zero crossings, a 20-point peak envelope, XOR check); `decode()` plays a sine back from it, shaped by the envelope and scaled to the level. A payload without the signature (real AMBE, the silence pattern, zeros) decodes to silence. Built for the Linux emulator, so that the RX/TX plumbing is testable end to end and audible through SDL; interoperates with nothing |
 
 The silence pattern itself (`openrtx/src/protocols/DMR/Silence.c`,

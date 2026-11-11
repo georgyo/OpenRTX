@@ -28,6 +28,14 @@ extern "C" {
  */
 extern const uint8_t dmr_ambeSilence[DMR_AMBE_SILENCE_BYTES];
 
+/**
+ * AMBE+2 test tone pattern: one burst of already encoded frames of a 1031 Hz
+ * tone, what the null vocoder transmits when the test tone is enabled: a
+ * receiver with a real vocoder plays the tone. Defined in Silence.c, see the
+ * attribution there.
+ */
+extern const uint8_t dmr_ambeTestTone[DMR_AMBE_SILENCE_BYTES];
+
 #ifdef __cplusplus
 }
 #endif

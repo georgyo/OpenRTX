@@ -74,6 +74,16 @@ static bool nullEncode(const int16_t pcm[DMR_VOCODER_PCM_SAMPLES],
 {
     (void)pcm;
 
+    /*
+     * Test tone: frames of a 1031 Hz tone instead of the silence pattern,
+     * whatever the microphone picks up, so that a transmission can be told
+     * from the other end by ear. Same unlocked read as in nullDecode().
+     */
+    if (state.settings.dmr_testTone != 0) {
+        memcpy(ambe, dmr_ambeTestTone, DMR_VOCODER_AMBE_BYTES);
+        return true;
+    }
+
     memcpy(ambe, dmr_ambeSilence, DMR_VOCODER_AMBE_BYTES);
     return false;
 }
