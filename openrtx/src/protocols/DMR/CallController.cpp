@@ -982,23 +982,29 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
     uint8_t irq = s.irq82;
 
     /*
-     * Sync type and colour code are taken only from a burst the chip
-     * vouches for: a data burst with a good CRC, a burst with the voice
-     * sync or a late entry. Both slots are open while idle and the empty
-     * one may report noise as a frame.
+     * The sync type is taken only from a burst the chip vouches for: a
+     * data burst with a good CRC, a burst with the voice sync or a late
+     * entry. Both slots are open while idle and the empty one may report
+     * noise as a frame.
      */
     uint8_t cls = s.r51 & R51_SYNC_CLASS_MASK;
+    bool lateEntry = ((irq & R82_LATE_ENTRY) != 0);
+    bool ctrlFrame = ((irq & R82_CTRL_FRAME) != 0);
     bool goodData = (cls == R51_CLASS_DATA) && ((s.r51 & R51_CRC_BAD) == 0);
-    bool trusted = ((irq & R82_LATE_ENTRY) != 0)
-                || (((irq & R82_CTRL_FRAME) != 0)
-                    && (goodData || (cls == R51_CLASS_VOICE)));
 
-    if (trusted) {
+    if (lateEntry || (ctrlFrame && (goodData || (cls == R51_CLASS_VOICE)))) {
         lastSync = s.r5f & R5F_SYNC_MASK;
         if (lastSync == R5F_SYNC_BS)
             lastBsSyncMs = nowMs;
-        rep.rxColorCodeSeen = s.r52 >> 4;
     }
+
+    /*
+     * The colour code travels in the slot type of a data burst and in the
+     * EMB of voice bursts B to F (TS 102 361-1 §9.1.2, §9.1.3): burst A
+     * carries the sync pattern in its place and tells nothing about it.
+     */
+    if (lateEntry || (ctrlFrame && goodData))
+        rep.rxColorCodeSeen = s.r52 >> 4;
 
     if ((irq & R82_TX_REJECTED) && isTx())
         abortTx(nowMs, true);

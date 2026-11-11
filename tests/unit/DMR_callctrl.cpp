@@ -2252,6 +2252,21 @@ TEST_CASE("DMR RX: the colour code shown comes from validated bursts only",
     b.sys(s);
     REQUIRE(b.ctrl.report().rxColorCodeSeen == 1);
     REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+
+    /*
+     * Voice burst A carries the sync pattern where the others carry the
+     * EMB: whatever register 0x52 holds at that point is not a colour code
+     */
+    b.voice(R5F_SYNC_BS, 2, 13, 1);
+    REQUIRE(b.ctrl.report().rxColorCodeSeen == 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+
+    /* A terminator with a good CRC does carry one */
+    dmrbbSnapshot t = b.burst(R5F_SYNC_BS, 2, 6);
+    t.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_DATA);
+    lc.toChipLc(t.lc);
+    b.sys(t);
+    REQUIRE(b.ctrl.report().rxColorCodeSeen == 6);
 }
 
 TEST_CASE("DMR TX: a PTT released before the first burst is not latched",
