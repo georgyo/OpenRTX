@@ -349,7 +349,7 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
         reprogramModem(now);
 
     followState(now);
-    monitor(ev);
+    monitor(ev, now);
     trackCall(now);
 
     /* A reader of the trace has just appeared: describe the setup again */
@@ -535,7 +535,7 @@ void OpMode_DMR::followState(uint32_t nowMs)
     }
 }
 
-void OpMode_DMR::monitor(uint32_t ev)
+void OpMode_DMR::monitor(uint32_t ev, uint32_t nowMs)
 {
     mon.timecode = ctrl.report().timecode;
 
@@ -606,7 +606,7 @@ void OpMode_DMR::monitor(uint32_t ev)
          */
         if (((snap.irq82 & R82_TX_END) != 0)
             && ((snap.sub86 & R86_SHORT_LC) != 0))
-            parseShortLc((uint32_t)getTick());
+            parseShortLc(nowMs);
     }
 }
 

@@ -395,8 +395,10 @@ private:
      * control RAM of the last header. Published by publish().
      *
      * @param ev: event mask returned by dmrbb_waitEvent().
+     * @param nowMs: time of this update pass, the one every timer of the
+     * pass is compared against.
      */
-    void monitor(uint32_t ev);
+    void monitor(uint32_t ev, uint32_t nowMs);
 
     /**
      * Copy the controller's report and the monitor block into the RTX
