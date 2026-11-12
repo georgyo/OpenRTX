@@ -158,12 +158,15 @@ static constexpr uint8_t R86_SHORT_LC = 0x04;    /* Short LC received    */
 /*
  * Register 0x51 fields. Manual chapter 8: [7:4] "DLLRecvDataType", the data
  * type of a data burst or, for a voice burst, 1 to 6 for A to F in [6:4]
- * with bit 7 set; bit 2 CRC result of a data burst, 0 good; [1:0]
+ * with bit 7 set; bit 3 "received PI", the privacy indicator; bit 2
+ * "received data verification result", 0 correct, which OpenGD77 and
+ * OpenMDUV380 require clear on voice bursts as well; [1:0]
  * "SyncClass", 00 "no sync header", 01 voice, 10 data, 11 RC. A voice
  * superframe therefore reads class 01 for burst A, which carries the voice
  * sync, and class 00 for bursts B to F, which carry the EMB instead; the
  * LC header, the terminator and the CSBKs read class 10.
  */
+static constexpr uint8_t R51_PI = 0x08;
 static constexpr uint8_t R51_CRC_BAD = 0x04;
 static constexpr uint8_t R51_SYNC_CLASS_MASK = 0x03;
 static constexpr uint8_t R51_CLASS_NONE = 0x00;  /* no sync: voice B to F */

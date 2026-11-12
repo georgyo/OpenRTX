@@ -53,6 +53,7 @@ CallController::CallController() : port(nullptr), sink(nullptr), st(OFF)
     wdRestarted = false;
     callSlot = 0;
     callTimecode = 0;
+    callCc = 0;
     callDmo = false;
     lastVoiceMs = 0;
     hangStartMs = 0;
@@ -363,6 +364,30 @@ bool CallController::burstIsCall(const struct dmrbbSnapshot &s) const
     return (slot == 0) || (callSlot == 0) || (slot == callSlot);
 }
 
+bool CallController::voiceOfCall(const struct dmrbbSnapshot &s) const
+{
+    /*
+     * A voice burst A to F of the open call. The tests are the ones both
+     * OpenGD77 and OpenMDUV380 apply to every burst while receiving: the
+     * chip's check flag (0x51 bit 2, manual chapter 8 "received data
+     * verification result") and privacy indicator (bit 3) clear, and the
+     * colour code of the call. The colour code travels in the EMB of bursts
+     * B to F; burst A (sync class 01) carries the voice sync in its place
+     * (TS 102 361-1 §9.1.2), so register 0x52 is not tested on it.
+     * UNVERIFIED on hardware: both reference firmwares test burst A too
+     * and it passes on their radios, the chip presumably keeps the last
+     * colour code there.
+     */
+    if ((r51VoiceSeq(s.r51) == 0) || !burstIsCall(s))
+        return false;
+
+    if ((s.r51 & (R51_CRC_BAD | R51_PI)) != 0)
+        return false;
+
+    bool burstA = ((s.r51 & R51_SYNC_CLASS_MASK) == R51_CLASS_VOICE);
+    return burstA || ((s.r52 >> 4) == callCc);
+}
+
 bool CallController::colorCodeAccepted(uint8_t cc) const
 {
     return (cfg.monitor >= 2) || (cc == cfg.colorCode);
@@ -432,6 +457,7 @@ bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
 
     st = RX_CALL;
     callSlot = slot;
+    callCc = cc;
     callDmo = !bs;
 
     /*
@@ -465,14 +491,18 @@ void CallController::processControlFrame(const struct dmrbbSnapshot &s,
         return;
 
     if (cls != R51_CLASS_DATA) {
-        /*
-         * Voice burst A to F. Bit 2 of 0x51 is the CRC of the last data
-         * burst and says nothing about a voice burst.
-         */
-        if ((r51VoiceSeq(s.r51) != 0) && (st == RX_CALL) && burstIsCall(s)) {
-            lastVoiceMs = nowMs;
-            if (callDmo)
+        if ((st == RX_CALL) && voiceOfCall(s)) {
+            /*
+             * Direct mode: the call's slot is latched again from this burst
+             * only when the gate had lapsed before it, that is when both
+             * slots were open. While the gate holds only the latched slot
+             * is received, and a burst reported late (after the next
+             * timeslot interrupt) would latch the other one.
+             */
+            if (callDmo && (elapsed(nowMs, lastVoiceMs) >= DMO_GATE_HOLD_MS))
                 callTimecode = (uint8_t)(timecode ^ 1);
+
+            lastVoiceMs = nowMs;
             if (s.voiceValid && !rep.lcManufacturer && (sink != nullptr))
                 sink->rxVoiceFrame(s.voice);
         }
@@ -1016,8 +1046,15 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
     if (irq & R82_CTRL_FRAME)
         processControlFrame(s, nowMs);
 
-    /* Late entry: LC recovered from the embedded signalling */
-    if ((irq & R82_LATE_ENTRY) && (st != RX_CALL))
+    /*
+     * Late entry: LC recovered from the embedded signalling. The chip gives
+     * this interrupt no status register of its own; the check flag of 0x51
+     * is required clear as for every other use of the LC RAM (OpenGD77
+     * practice). UNVERIFIED on hardware: if the trace shows 0x51 bit 2 set
+     * at a late entry with a good LC, drop this test.
+     */
+    if ((irq & R82_LATE_ENTRY) && (st != RX_CALL)
+        && ((s.r51 & R51_CRC_BAD) == 0))
         tryOpenCall(s, nowMs);
 
     /*

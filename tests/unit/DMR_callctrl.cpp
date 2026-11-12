@@ -2242,20 +2242,171 @@ TEST_CASE("DMR RX: bursts B to F, without sync, belong to the call",
     REQUIRE(b.ctrl.state() == CallController::RX_HANG);
 }
 
-TEST_CASE("DMR RX: the stale CRC bit does not drop a voice burst",
+TEST_CASE("DMR RX: a voice burst needs the check and privacy flags clear",
+          "[dmr][callctrl]")
+{
+    /*
+     * 0x51 bit 2 (check result) and bit 3 (privacy indicator) are tested on
+     * every burst of a call, as OpenGD77 and OpenMDUV380 do: a burst with
+     * either set is neither forwarded nor counted as voice of the call.
+     */
+    Bench b;
+    b.settle();
+
+    FullLC lc = b.groupCall(1234567, 31665);
+    b.header(R5F_SYNC_BS, 2, 1, lc);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+
+    for (uint8_t flag : { R51_CRC_BAD, R51_PI }) {
+        dmrbbSnapshot s = b.burst(R5F_SYNC_BS, 2, 1);
+        s.r51 = (uint8_t)((3 << 4) | flag | R51_CLASS_NONE);
+        s.voiceValid = true;
+        b.sys(s);
+        REQUIRE(b.sink.rxFrames == 0);
+
+        s.r51 = (uint8_t)((1 << 4) | flag | R51_CLASS_VOICE);
+        b.sys(s);
+        REQUIRE(b.sink.rxFrames == 0);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+    }
+
+    /* Only such bursts for two superframes: the voice timeout ends it */
+    for (unsigned i = 0; i < 12; i++) {
+        b.ts();
+        b.ts();
+        dmrbbSnapshot s = b.burst(R5F_SYNC_BS, 2, 1);
+        s.r51 = (uint8_t)((((i % 6) + 1) << 4) | R51_CRC_BAD | R51_CLASS_NONE);
+        s.voiceValid = true;
+        b.sys(s);
+    }
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+    REQUIRE(b.sink.rxFrames == 0);
+}
+
+TEST_CASE("DMR RX: voice bursts B to F need the colour code of the call",
+          "[dmr][callctrl]")
+{
+    /*
+     * The colour code is latched from the burst that opened the call and
+     * required on the bursts that carry one: B to F through the EMB. Burst
+     * A has the voice sync in its place (TS 102 361-1 §9.1.2).
+     */
+    for (uint8_t monitor : { 0, 2 }) {
+        Bench b;
+        b.cfg.monitor = monitor;
+        b.settle();
+
+        uint8_t cc = (monitor == 2) ? 7 : 1;
+        FullLC lc = b.groupCall(1234567, 31665);
+        b.header(R5F_SYNC_BS, 2, cc, lc);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+
+        /* B to F of another colour code: dropped, whatever the monitor */
+        for (uint8_t seq = 2; seq <= 6; seq++)
+            b.voice(R5F_SYNC_BS, 2, (uint8_t)(cc + 1), seq);
+        REQUIRE(b.sink.rxFrames == 0);
+
+        /* Burst A is taken whatever register 0x52 holds */
+        b.voice(R5F_SYNC_BS, 2, (uint8_t)(cc + 1), 1);
+        REQUIRE(b.sink.rxFrames == 1);
+
+        /* B to F of the call's colour code */
+        for (uint8_t seq = 2; seq <= 6; seq++)
+            b.voice(R5F_SYNC_BS, 2, cc, seq);
+        REQUIRE(b.sink.rxFrames == 6);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+    }
+
+    /* Late entry latches the colour code as a header does */
+    Bench b;
+    b.cfg.monitor = 2;
+    b.settle();
+    b.lateEntry(R5F_SYNC_BS, 2, 9, b.groupCall(1234567, 31665));
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+    b.voice(R5F_SYNC_BS, 2, 9, 2);
+    b.voice(R5F_SYNC_BS, 2, 3, 3);
+    REQUIRE(b.sink.rxFrames == 1);
+}
+
+TEST_CASE("DMR RX: a late entry with the check flag set opens no call",
           "[dmr][callctrl]")
 {
     Bench b;
     b.settle();
 
     FullLC lc = b.groupCall(1234567, 31665);
-    b.header(R5F_SYNC_BS, 2, 1, lc);
-
     dmrbbSnapshot s = b.burst(R5F_SYNC_BS, 2, 1);
-    s.r51 = (uint8_t)((3 << 4) | R51_CRC_BAD | R51_CLASS_NONE);
-    s.voiceValid = true;
+    s.irq82 = R82_LATE_ENTRY;
+    s.r51 = (uint8_t)((5 << 4) | R51_CRC_BAD | R51_CLASS_NONE);
+    lc.toChipLc(s.lc);
     b.sys(s);
-    REQUIRE(b.sink.rxFrames == 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.report().lcOk == false);
+
+    /* Flag clear, as left by a good voice burst: the call opens */
+    s.r51 = (uint8_t)((5 << 4) | R51_CLASS_NONE);
+    b.sys(s);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+    REQUIRE(b.ctrl.report().rxSrc == 1234567);
+}
+
+TEST_CASE("DMR RX in direct mode: the call's slot is latched again only "
+          "once the gate has lapsed",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+
+    FullLC lc = b.groupCall(1234567, 31665);
+    b.ts();
+    uint8_t callTc = b.ctrl.report().timecode ^ 1;
+    b.header(R5F_SYNC_MS, 0, 1, lc);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+
+    /* Gate holding: 0x41 follows the slot latched when the call opened */
+    auto gateFollows = [&](uint8_t tc, unsigned slots) {
+        for (unsigned i = 0; i < slots; i++) {
+            b.ts();
+            uint8_t next = b.ctrl.report().timecode ^ 1;
+            REQUIRE(b.port.last(W_R41)->value
+                    == ((next == tc) ? R41_RX : R41_IDLE));
+            if (b.ctrl.report().timecode != tc)
+                b.voice(R5F_SYNC_MS, 0, 1, 2);
+        }
+    };
+    gateFollows(callTc, 6);
+
+    /*
+     * A burst of the call reported one slot late, after the next timeslot
+     * interrupt was served: the gate holds, the latch does not move to the
+     * other slot.
+     */
+    b.ts();
+    REQUIRE(b.ctrl.report().timecode == callTc);
+    b.voice(R5F_SYNC_MS, 0, 1, 3);
+    gateFollows(callTc, 6);
+
+    /* A burst failing the tests never moves it either, gate lapsed or not */
+    b.tsN(6);
+    while (b.ctrl.report().timecode != callTc)
+        b.ts();
+    dmrbbSnapshot bad = b.burst(R5F_SYNC_MS, 0, 1);
+    bad.r51 = (uint8_t)((4 << 4) | R51_CRC_BAD | R51_CLASS_NONE);
+    b.sys(bad);
+    b.voice(R5F_SYNC_MS, 0, 5, 4);
+    b.ts();
+    REQUIRE(b.port.last(W_R41)->value == R41_RX);
+    b.ts();
+    REQUIRE(b.port.last(W_R41)->value == R41_RX);
+
+    /*
+     * Gate lapsed, both slots open: a good burst arriving in the other
+     * slot moves the latch there
+     */
+    REQUIRE(b.ctrl.report().timecode == callTc);
+    b.voice(R5F_SYNC_MS, 0, 1, 5);
+    gateFollows((uint8_t)(callTc ^ 1), 6);
     REQUIRE(b.ctrl.state() == CallController::RX_CALL);
 }
 

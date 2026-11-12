@@ -85,7 +85,8 @@ struct dmrbbSnapshot {
      * Register 0x51, DLLRecvDataType: [7:4] data type (TS 102 361-1 Table
      * 9.22) when the sync class is data, or voice frame sequence 1..6 (A..F)
      * when the sync class is voice; bit3 received PI; bit2 CRC bad; [1:0]
-     * sync class: 00 sync header, 01 voice, 10 data, 11 RC.
+     * sync class: 00 no sync (voice B to F), 01 voice (voice A), 10 data,
+     * 11 RC.
      */
     uint8_t r51;
 
@@ -137,8 +138,9 @@ struct dmrbbSnapshot {
 
     /*
      * Voice payload of the burst, 27 bytes (216 bits, three AMBE+2 frames,
-     * TS 102 361-1 §6.1), read over V_SPI with command 0x83 when the sync
-     * class is voice and the CRC is good. voiceValid is false otherwise.
+     * TS 102 361-1 §6.1), read over V_SPI with command 0x83 when register
+     * 0x51 describes a voice burst (sync class 00 or 01, sequence 1 to 6)
+     * and its check flag, bit 2, is clear. voiceValid is false otherwise.
      * UNVERIFIED on hardware.
      */
     uint8_t voice[27];

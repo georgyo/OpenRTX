@@ -277,6 +277,7 @@ private:
     bool carrierPresent(uint32_t nowMs) const;
     uint8_t slotOf(const struct dmrbbSnapshot &s) const;
     bool burstIsCall(const struct dmrbbSnapshot &s) const;
+    bool voiceOfCall(const struct dmrbbSnapshot &s) const;
     bool colorCodeAccepted(uint8_t cc) const;
     bool slotAccepted(uint8_t slot) const;
     bool terminatorOfCall(const struct dmrbbSnapshot &s) const;
@@ -329,6 +330,7 @@ private:
     /* Reception */
     uint8_t callSlot;     /* 1, 2 or 0 when unknown (MS sync)                 */
     uint8_t callTimecode; /* local timecode of the call's slot                */
+    uint8_t callCc;       /* colour code of the burst that opened the call    */
     bool callDmo;         /* call has no BS sync: gate the other slot         */
     uint32_t lastVoiceMs;
     uint32_t hangStartMs;

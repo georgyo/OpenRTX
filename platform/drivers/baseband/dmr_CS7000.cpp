@@ -144,7 +144,8 @@ static constexpr uint8_t SUB86_SHORT_LC = HR_C6000::SUB86_SHORT_LC;
 
 /*
  * Register 0x51 fields, manual chapter 8: [1:0] sync class (00 no sync, 01
- * voice, 10 data, 11 RC), [6:4] voice burst number 1 to 6 for A to F
+ * voice, 10 data, 11 RC), [6:4] voice burst number 1 to 6 for A to F, bit 2
+ * check result of the burst (0 correct)
  */
 static constexpr uint8_t R51_CLASS_MASK = 0x03;
 static constexpr uint8_t R51_CLASS_NONE = 0x00;
@@ -152,6 +153,7 @@ static constexpr uint8_t R51_CLASS_VOICE = 0x01;
 static constexpr uint8_t R51_VOICE_SEQ_SHIFT = 4;
 static constexpr uint8_t R51_VOICE_SEQ_MASK = 0x07;
 static constexpr uint8_t R51_VOICE_SEQ_MAX = 6;
+static constexpr uint8_t R51_CRC_BAD = 0x04;
 
 /* Polling period of dmrbb_waitEvent(), milliseconds */
 static constexpr unsigned WAIT_POLL_MS = 1;
@@ -459,15 +461,16 @@ static bool readSysEvent(struct dmrbbSnapshot *s)
 
     /*
      * Voice burst: burst A reads sync class 01, bursts B to F class 00, all
-     * six with their number in 0x51[6:4]. The read happens before the
-     * acknowledge so that the chip cannot overwrite the payload with the
-     * next burst in between.
+     * six with their number in 0x51[6:4] and the check flag 0x51[2] clear
+     * (OpenGD77 and OpenMDUV380 require it on every received burst). The
+     * read happens before the acknowledge so that the chip cannot overwrite
+     * the payload with the next burst in between.
      */
     const uint8_t cls = s->r51 & R51_CLASS_MASK;
     const uint8_t seq = (s->r51 >> R51_VOICE_SEQ_SHIFT) & R51_VOICE_SEQ_MASK;
 
     s->voiceValid = false;
-    if ((irq & IRQ_RX_DATA)
+    if ((irq & IRQ_RX_DATA) && ((s->r51 & R51_CRC_BAD) == 0)
         && ((cls == R51_CLASS_NONE) || (cls == R51_CLASS_VOICE)) && (seq >= 1)
         && (seq <= R51_VOICE_SEQ_MAX)) {
         vspiRead(s->voice);
