@@ -24,8 +24,9 @@
  * tests and the emulator shell use. Two queues: the event queue, what the
  * next dmrbb_waitEvent() calls return, and the script queue, timeslot-paced
  * events (a scripted call) that a tick moves to the event queue one timeslot
- * at a time. In the running emulator a thread ticks every 30 ms and fills
- * the idle slots with plain timeslot events; in the unit tests a tick
+ * at a time. In the running emulator a thread ticks every 30 ms and, while
+ * the fake chip has a time axis, fills the idle slots with plain timeslot
+ * events; in the unit tests a tick
  * happens inside dmrbb_waitEvent() when the event queue is empty and the
  * script is not, so that the test consumes one timeslot per call.
  *
@@ -128,7 +129,17 @@ bool clockEnabled = false;
 bool threadRunning = false;
 pthread_t clockThread;
 
-bool running = false; /* 0x40 has TxEn/RxEn: timeslots tick   */
+/*
+ * Time axis of the fake chip: once it has one it gives a timeslot event
+ * every tick. It gets it from the first burst it receives (a scripted
+ * timeslot) or from a transmission with its own timing, and keeps it with or
+ * without a signal (manual §5.4.4) until dmrbb_startRx() makes it search for
+ * a sync again (0x41 bit5 SyncFail) or the modem is idled. That a searching
+ * chip gives no timeslot interrupt is an assumption of this model,
+ * UNVERIFIED on hardware.
+ */
+bool running = false; /* 0x40 has TxEn/RxEn                   */
+bool axis = false;    /* the chip has a time axis             */
 uint8_t tcNext = 0;   /* CACH TC of the next timeslot started */
 uint32_t tsCount = 0;
 uint32_t sysCount = 0;
@@ -202,13 +213,16 @@ void pushSysEvent(const struct dmrbbSnapshot &s)
 void tick()
 {
     if (script.empty()) {
-        if (running)
+        if (running && axis)
             pushTsEvent(rec.config.colorCode);
         return;
     }
 
     Event &head = script.front();
     if (head.mask & DMRBB_EV_TS) {
+        /* A burst is on the air: the fake chip has its sync */
+        axis = true;
+
         uint8_t cc = head.snap.r52 >> 4;
         if ((head.slot != 0) && ((uint8_t)(head.slot - 1) != tcNext)) {
             pushTsEvent(cc);
@@ -438,6 +452,7 @@ int dmrbb_init(void)
     }
 
     running = false;
+    axis = false;
     replayTicks = 0;
 
     /* An untouched SYS line knob reads its default (see dmrEmu_reset) */
@@ -471,6 +486,7 @@ void dmrbb_terminate(void)
     rec.keyedAtTerminate = radioEmu_record()->keyed;
     rec.r40 = R40_IDLE;
     running = false;
+    axis = false;
     stopClock();
     pthread_mutex_unlock(&mtx);
     emuLog("terminate() called");
@@ -485,6 +501,7 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
     rec.r40 = R40_IDLE;
     rec.r41 = R41_IDLE;
     running = false;
+    axis = false;
     pthread_mutex_unlock(&mtx);
 
     if (clockEnabled)
@@ -504,6 +521,7 @@ void dmrbb_startRx(void)
     rec.r41 = R41_RX;
     rec.r41Writes++;
     running = true;
+    axis = false;
     pthread_mutex_unlock(&mtx);
     emuLog("startRx() called");
 }
@@ -517,6 +535,8 @@ void dmrbb_startTx(bool activeTiming)
     rec.r40 = activeTiming ? R40_TX_DMO : R40_TX_RMO;
     rec.r40Writes++;
     running = true;
+    if (activeTiming)
+        axis = true;
     pthread_mutex_unlock(&mtx);
     emuLog(activeTiming ? "startTx(active timing) called" :
                           "startTx(passive timing) called");
@@ -529,6 +549,7 @@ void dmrbb_idle(void)
     rec.r40 = R40_IDLE;
     rec.r40Writes++;
     running = false;
+    axis = false;
     pthread_mutex_unlock(&mtx);
     emuLog("idle() called");
 }
@@ -653,6 +674,7 @@ void dmrEmu_reset(void)
     regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] = DMRBB_SYS_LINE_PC1;
     initResult = 0;
     running = false;
+    axis = false;
     tcNext = 0;
     tsCount = 0;
     sysCount = 0;

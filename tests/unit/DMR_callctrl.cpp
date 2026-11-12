@@ -1100,20 +1100,26 @@ TEST_CASE("DMR TX direct mode: headers, voice, terminator", "[dmr][callctrl]")
                                      R50_TERMINATOR });
     REQUIRE(b.port.count(W_R50, R50_TERMINATOR) == 1);
 
-    /* Next TS: idle the slot, back to RX with the hang timer */
+    /*
+     * Next TS: idle the slot, back to RX searching for a sync, with the
+     * hang time shown meanwhile
+     */
     b.port.clear();
     b.ts();
-    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
     REQUIRE(b.port.values(W_R41)
             == std::vector<uint8_t>{ R41_IDLE, R41_RESYNC, R41_RX });
     REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
     REQUIRE(b.ctrl.report().hangActive == true);
+    REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
     REQUIRE(b.ctrl.report().lcOk == false);
     REQUIRE(b.port.count(W_R50) == 0);
 
     /* Hang expires, PTT works again */
     b.tsN(101);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.report().hangActive == false);
+    REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
+    REQUIRE(b.ctrl.state() < CallController::TX_ARM);
     b.ctrl.setPtt(true, b.now);
     REQUIRE(b.ctrl.state() == CallController::TX_ARM);
 }
@@ -1128,7 +1134,7 @@ TEST_CASE("DMR TX: PTT released before the header sends nothing",
     REQUIRE(b.ctrl.state() == CallController::TX_ARM);
     b.port.clear();
     b.ctrl.setPtt(false, b.now);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
     REQUIRE(b.port.count(W_R50) == 0);
     REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
 }
@@ -1174,7 +1180,8 @@ TEST_CASE("DMR TX: released during the headers sends one superframe then "
     }
 
     b.ts();
-    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
 }
 
 TEST_CASE("DMR TX: a missed timeslot interrupt keeps the own slot",
@@ -1323,7 +1330,7 @@ TEST_CASE("DMR TX rejected: back to RX with the busy marker", "[dmr][callctrl]")
     REQUIRE(b.ctrl.state() == CallController::TX_HEADER);
     b.port.clear();
     b.flags(R82_TX_REJECTED);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
     REQUIRE(b.ctrl.report().busy == true);
     REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
     REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
@@ -1599,7 +1606,7 @@ TEST_CASE("DMR TX repeater wake-up aborted by the PTT release",
     b.tsN(3);
     b.port.clear();
     b.ctrl.setPtt(false, b.now);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
     REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
 }
 
@@ -1616,36 +1623,85 @@ TEST_CASE("DMR timeslot watchdog", "[dmr][callctrl]")
     REQUIRE(b.port.writes.empty());
     REQUIRE(b.ctrl.report().needsReconfigure == false);
 
-    /* 200 ms without a TS: startRx once */
+    /* 200 ms without a TS: the search is started again, once */
     b.timeout(120);
     REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
     REQUIRE(b.port.values(W_R41) == std::vector<uint8_t>{ R41_RESYNC, R41_RX });
     REQUIRE(b.ctrl.report().slotLock == 0);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+
+    /*
+     * A chip that is searching gives no timeslot interrupt: the silent
+     * channel is left alone from here on, no reconfiguration is asked for
+     */
+    for (unsigned i = 0; i < 10000 / 30; i++)
+        b.timeout(30);
+    REQUIRE(b.port.count(W_R40) == 1);
+    REQUIRE(b.ctrl.report().needsReconfigure == false);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+
+    /* A TS arriving: slots watched again, the next gap restarts again */
+    b.ts();
     REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.report().slotLock == 1);
+    b.port.clear();
+    b.timeout(210);
+    REQUIRE(b.port.count(W_R40) == 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(b.ctrl.report().needsReconfigure == false);
+
+    /*
+     * A silence first seen after two seconds (the thread was held up):
+     * the reconfiguration is asked for, once, and cleared by the owner's
+     * restart
+     */
+    b.ts();
+    b.port.clear();
+    b.timeout(CallController::TS_RECONFIGURE_MS);
+    REQUIRE(b.ctrl.report().needsReconfigure == true);
+    REQUIRE(b.port.count(W_R40) == 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
     b.timeout(30);
     b.timeout(30);
     REQUIRE(b.port.count(W_R40) == 1);
 
-    /* 2 s: reconfiguration requested, once */
-    while (b.ctrl.report().needsReconfigure == false)
-        b.timeout(30);
-    REQUIRE(b.port.count(W_R40) == 2);
-    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
-    b.timeout(30);
-    b.timeout(30);
-    REQUIRE(b.port.count(W_R40) == 2);
-
-    /* The owner reconfigures the modem and re-enables: fresh start */
     b.ctrl.enable(b.now);
     REQUIRE(b.ctrl.report().needsReconfigure == false);
     b.ts();
     REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
     REQUIRE(b.ctrl.report().slotLock == 1);
+}
 
-    /* A TS arriving clears the restart flag: the next gap restarts again */
+TEST_CASE("DMR timeslot watchdog during a received call ends it with its "
+          "hang time",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+
+    FullLC lc = b.groupCall(1234567, 31665);
+    b.ts();
+    b.header(R5F_SYNC_BS, 2, 1, lc);
+    b.superframe(R5F_SYNC_BS, 2, 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
     b.port.clear();
-    b.timeout(210);
-    REQUIRE(b.port.count(W_R40) == 1);
+
+    b.timeout(CallController::TS_WATCHDOG_MS);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(b.port.values(W_R41) == std::vector<uint8_t>{ R41_RESYNC, R41_RX });
+    REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
+    REQUIRE(b.ctrl.report().lcOk == true);
+    REQUIRE(b.ctrl.report().rxSrc == 1234567);
+
+    /* The hang time runs out without any interrupt, nothing else happens */
+    b.port.clear();
+    for (unsigned i = 0; i < 3300 / 30; i++)
+        b.timeout(30);
+    REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
+    REQUIRE(b.ctrl.report().hangActive == false);
+    REQUIRE(b.ctrl.report().needsReconfigure == false);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(b.port.writes.empty());
 }
 
 TEST_CASE("DMR timeslot watchdog leaves a silent channel alone",
@@ -1855,7 +1911,7 @@ TEST_CASE("DMR TX RF keying: keyed at arm, released the slot after the "
     /* ... and while it goes out: the slot after TX_TERM is back in RX with
      * the RF still keyed, the following timeslot releases it */
     b.ts();
-    REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
     REQUIRE(b.ctrl.report().rfKey == true);
     b.ts();
     REQUIRE(b.ctrl.state() == CallController::RX_HANG);
@@ -1880,7 +1936,8 @@ TEST_CASE("DMR TX RF keying: the TX-end report or the timer release it",
             REQUIRE(++n < 14);
         }
         b.ts();
-        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
         REQUIRE(b.ctrl.report().rfKey == true);
     };
 
@@ -1891,7 +1948,7 @@ TEST_CASE("DMR TX RF keying: the TX-end report or the timer release it",
         toTerminatorSlot(b);
         b.flags(R82_TX_END, R86_TX_COMPLETE);
         REQUIRE(b.ctrl.report().rfKey == false);
-        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
         b.ts();
         REQUIRE(b.ctrl.report().rfKey == false);
     }
@@ -1904,7 +1961,7 @@ TEST_CASE("DMR TX RF keying: the TX-end report or the timer release it",
         toTerminatorSlot(b);
         b.flags(R82_TX_END, R86_RDY_LST);
         REQUIRE(b.ctrl.report().rfKey == true);
-        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
         b.ts();
         REQUIRE(b.ctrl.report().rfKey == false);
     }
@@ -1942,7 +1999,7 @@ TEST_CASE("DMR TX RF keying: the TX-end report or the timer release it",
         REQUIRE(b.ctrl.report().rfKey == true);
         b.timeout(CallController::RF_UNKEY_MS);
         REQUIRE(b.ctrl.report().rfKey == false);
-        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
     }
 
     /* A TX-end report outside a transmission is ignored */
@@ -1973,7 +2030,7 @@ TEST_CASE("DMR TX RF keying: an RF stage that refuses to key aborts the "
     REQUIRE(b.ctrl.state() == CallController::TX_ARM);
     REQUIRE(b.ctrl.report().rfKey == true);
     b.ctrl.rfFailed(b.now);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
     REQUIRE(b.ctrl.report().rfKey == false);
     REQUIRE(b.ctrl.report().rfFailed == true);
     REQUIRE(b.ctrl.report().busy == false);
@@ -2016,7 +2073,7 @@ TEST_CASE("DMR TX RF keying: rejected, aborted and failed transmissions "
         b.tsN(3);
         REQUIRE(b.ctrl.report().rfKey == true);
         b.flags(R82_TX_REJECTED);
-        REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
         REQUIRE(b.ctrl.report().busy == true);
         REQUIRE(b.ctrl.report().rfKey == false);
         b.ts();
@@ -2470,7 +2527,7 @@ TEST_CASE("DMR TX: a PTT released before the first burst is not latched",
     b.ctrl.setPtt(true, b.now);
     REQUIRE(b.ctrl.state() == CallController::TX_ARM);
     b.ctrl.setPtt(false, b.now);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
 
     /* The next press arms again */
     b.ctrl.setPtt(true, b.now);
@@ -2492,4 +2549,411 @@ TEST_CASE("DMR TX: a transmission without slot interrupts raises a marker",
     REQUIRE(b.ctrl.report().rfKey == false);
     REQUIRE(b.ctrl.report().rfFailed == true);
     REQUIRE(b.ctrl.state() < CallController::TX_ARM);
+}
+
+/*
+ * Sync search. The chip keeps the time axis it has when the signal goes
+ * and follows a new sync only close to it (manual §5.4.4), so the
+ * controller asks for a new search (0x41 = 0x20) at the end of a direct
+ * mode call and after IDLE_RESEARCH_SLOTS idle slots that nothing
+ * confirmed. Two chip models are driven here: one that keeps giving
+ * timeslot interrupts through the search (b.ts() goes on) and one that
+ * gives none until it finds a sync (b.timeout() only).
+ */
+
+/* Timeslots until the controller asks for a new sync search, 0 if never */
+static unsigned slotsToResearch(Bench &b, unsigned limit)
+{
+    b.port.clear();
+    for (unsigned i = 1; i <= limit; i++) {
+        b.ts();
+        if (b.port.count(W_R41, R41_RESYNC) != 0)
+            return i;
+    }
+
+    return 0;
+}
+
+TEST_CASE("DMR RX idle: a new sync search after 20 unconfirmed slots",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.start();
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(CallController::IDLE_RESEARCH_SLOTS == 20);
+
+    /* Twenty slots go by, the search starts again at the twenty-first */
+    REQUIRE(slotsToResearch(b, 40) == 21);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
+    std::vector<uint8_t> r41 = b.port.values(W_R41);
+    REQUIRE(r41.size() == 22);
+    REQUIRE(b.port.count(W_R41, R41_RX) == 21);
+    REQUIRE(r41[20] == R41_RESYNC);
+    REQUIRE(r41[21] == R41_RX);
+    REQUIRE(b.ctrl.report().slotLock == 0);
+    REQUIRE(b.ctrl.report().needsReconfigure == false);
+
+    /* And again for as long as nothing is received */
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(slotsToResearch(b, 40) == 21);
+    b.ts();
+    REQUIRE(slotsToResearch(b, 40) == 21);
+
+    /* PTT works from the search too */
+    b.ctrl.setPtt(true, b.now);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+}
+
+TEST_CASE("DMR RX idle: what confirms the sync and what does not",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    FullLC other = b.groupCall(1234567, 91);
+
+    /* One event every tenth slot for 120 slots: searched again or not */
+    auto researched = [&](dmrbbSnapshot ev) {
+        b.start();
+        b.ts();
+        b.port.clear();
+        for (unsigned i = 0; i < 120; i++) {
+            b.ts();
+            if ((i % 10) == 9)
+                b.sys(ev);
+        }
+        return b.port.count(W_R41, R41_RESYNC) != 0;
+    };
+
+    auto data = [&](uint8_t sync, uint8_t cc, bool crcBad) {
+        dmrbbSnapshot s = b.burst(sync, 1, cc);
+        s.r51 = (uint8_t)((DT_IDLE << 4) | R51_CLASS_DATA
+                          | (crcBad ? R51_CRC_BAD : 0));
+        return s;
+    };
+
+    auto voice = [&](uint8_t sync, uint8_t cc, uint8_t seq, uint8_t flags) {
+        dmrbbSnapshot s = b.burst(sync, 1, cc);
+        s.r51 = (uint8_t)((seq << 4) | flags
+                          | ((seq == 1) ? R51_CLASS_VOICE : R51_CLASS_NONE));
+        s.voiceValid = true;
+        return s;
+    };
+
+    SECTION("a data burst with a good CRC and the accepted colour code")
+    {
+        REQUIRE(researched(data(R5F_SYNC_BS, 1, false)) == false);
+        REQUIRE(researched(data(R5F_SYNC_MS, 1, false)) == false);
+        REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    }
+
+    SECTION("not a data burst with a bad CRC or another colour code")
+    {
+        REQUIRE(researched(data(R5F_SYNC_BS, 1, true)) == true);
+        REQUIRE(researched(data(R5F_SYNC_BS, 5, false)) == true);
+
+        /* Monitor 2 accepts any colour code */
+        b.cfg.monitor = 2;
+        REQUIRE(researched(data(R5F_SYNC_BS, 5, false)) == false);
+    }
+
+    SECTION("a late entry, whether or not it opens a call")
+    {
+        dmrbbSnapshot s = b.burst(R5F_SYNC_MS, 0, 1);
+        s.irq82 = R82_LATE_ENTRY;
+        other.toChipLc(s.lc);
+        REQUIRE(researched(s) == false);
+        REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    }
+
+    SECTION("not voice class events outside a call in direct mode")
+    {
+        /* No check covers them: noise in an open slot reads like this */
+        REQUIRE(researched(voice(R5F_SYNC_MS, 1, 1, 0)) == true);
+        REQUIRE(researched(voice(R5F_SYNC_MS, 1, 3, 0)) == true);
+        REQUIRE(researched(voice(R5F_SYNC_TDMA1, 1, 3, 0)) == true);
+        REQUIRE(researched(voice(R5F_SYNC_BS, 1, 3, 0)) == true);
+        REQUIRE(b.sink.rxFrames == 0);
+    }
+
+    SECTION("repeater channel: BS voice of the accepted colour code")
+    {
+        /* Somebody else's call keeps the repeater's axis and the lock */
+        b.cfg.repeater = true;
+        REQUIRE(researched(voice(R5F_SYNC_BS, 1, 3, 0)) == false);
+        REQUIRE(researched(voice(R5F_SYNC_BS, 9, 1, 0)) == false);
+        REQUIRE(b.ctrl.report().slotLock == 2);
+
+        /* Not with another colour code, a flag set or without BS sync */
+        REQUIRE(researched(voice(R5F_SYNC_BS, 9, 3, 0)) == true);
+        REQUIRE(researched(voice(R5F_SYNC_BS, 1, 3, R51_CRC_BAD)) == true);
+        REQUIRE(researched(voice(R5F_SYNC_BS, 1, 3, R51_PI)) == true);
+        REQUIRE(researched(voice(R5F_SYNC_MS, 1, 3, 0)) == true);
+        REQUIRE(b.sink.rxFrames == 0);
+    }
+
+    SECTION("an open call is not searched away")
+    {
+        b.settle();
+        b.ts();
+        b.header(R5F_SYNC_BS, 2, 1, b.groupCall(1234567, 31665));
+        b.port.clear();
+        for (unsigned i = 0; i < 10; i++)
+            b.superframe(R5F_SYNC_BS, 2, 1);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+        REQUIRE(b.port.count(W_R41, R41_RESYNC) == 0);
+        REQUIRE(b.sink.rxFrames == 60);
+    }
+}
+
+TEST_CASE("DMR RX idle: merged timeslot interrupts count as their slots",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.start();
+    b.ts();
+    b.port.clear();
+
+    /* Two events standing for ten slots each, then the twenty-first */
+    for (unsigned n = 0; n < 2; n++) {
+        for (unsigned i = 0; i < 9; i++)
+            b.skipTs();
+        b.ts();
+    }
+    REQUIRE(b.port.count(W_R41, R41_RESYNC) == 0);
+    b.ts();
+    REQUIRE(b.port.count(W_R41, R41_RESYNC) == 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+
+    /* One event after a long hold-up of the thread */
+    b.ts();
+    b.ts();
+    b.port.clear();
+    for (unsigned i = 0; i < 40; i++)
+        b.skipTs(false);
+    b.ts();
+    REQUIRE(b.port.count(W_R41, R41_RESYNC) == 1);
+}
+
+TEST_CASE("DMR RX: a direct mode call ends with a new sync search",
+          "[dmr][callctrl]")
+{
+    Bench b;
+    b.settle();
+    FullLC lc = b.groupCall(1234567, 31665);
+
+    auto openCall = [&]() {
+        b.ts();
+        b.ts();
+        b.header(R5F_SYNC_MS, 0, 1, lc);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+        b.superframe(R5F_SYNC_MS, 0, 1);
+        b.port.clear();
+    };
+
+    SECTION("terminator")
+    {
+        openCall();
+        b.ts();
+        b.ts();
+        b.port.clear();
+        b.terminator(R5F_SYNC_MS, 0, 1, &lc);
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
+        REQUIRE(b.port.values(W_R41)
+                == std::vector<uint8_t>{ R41_RESYNC, R41_RX });
+
+        /* The call stays on screen for the hang time */
+        const CallController::Report &r = b.ctrl.report();
+        REQUIRE(r.callState == DMR_CALL_RX_HANG);
+        REQUIRE(r.hangActive == true);
+        REQUIRE(r.lcOk == true);
+        REQUIRE(r.rxSrc == 1234567);
+        REQUIRE(r.slotLock == 0);
+
+        /* Slots coming back during it: receiving, still the hang time */
+        b.ts();
+        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        REQUIRE(r.callState == DMR_CALL_RX_HANG);
+        REQUIRE(b.port.last(W_R41)->value == R41_RX);
+
+        /* The answer comes with its own header: a call again */
+        b.ts();
+        b.header(R5F_SYNC_MS, 0, 1, b.groupCall(7654321, 31665));
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+        REQUIRE(r.hangActive == false);
+        REQUIRE(r.rxSrc == 7654321);
+    }
+
+    SECTION("voice timeout")
+    {
+        openCall();
+        b.tsN(24);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+        REQUIRE(b.port.count(W_R41, R41_RESYNC) == 0);
+        b.port.clear();
+        b.ts();
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
+        REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
+        REQUIRE(b.port.values(W_R41)
+                == std::vector<uint8_t>{ R41_RESYNC, R41_RX });
+
+        /*
+         * The search was started at a slot of the axis it drops: the
+         * controller waits in RX_SEARCH, and a chip that then gives no
+         * interrupt is not searched again by the timeslot watchdog
+         */
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        for (unsigned i = 0; i < 1000 / 30; i++)
+            b.timeout(30);
+        REQUIRE(b.port.count(W_R40) == 1);
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.report().needsReconfigure == false);
+        b.ts();
+        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+    }
+
+    SECTION("the hang time runs out while slots keep coming")
+    {
+        openCall();
+        b.ts();
+        b.ts();
+        b.terminator(R5F_SYNC_MS, 0, 1, &lc);
+        uint32_t ended = b.now;
+        while (b.now < ended + b.cfg.hangTimeMs - 60) {
+            b.ts();
+            REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
+        }
+        b.tsN(3);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
+        REQUIRE(b.ctrl.report().hangActive == false);
+        REQUIRE(b.ctrl.state() != CallController::RX_HANG);
+
+        /* Searched again every 21 slots meanwhile: 3 s is 100 slots */
+        REQUIRE(b.port.count(W_R41, R41_RESYNC) >= 4);
+        REQUIRE(b.ctrl.report().needsReconfigure == false);
+    }
+
+    SECTION("a repeater call keeps the repeater's time axis")
+    {
+        b.ts();
+        b.ts();
+        b.header(R5F_SYNC_BS, 2, 1, lc);
+        b.superframe(R5F_SYNC_BS, 2, 1);
+        b.port.clear();
+        b.ts();
+        b.ts();
+        b.terminator(R5F_SYNC_BS, 2, 1, &lc);
+        REQUIRE(b.ctrl.state() == CallController::RX_HANG);
+        REQUIRE(b.port.count(W_R41, R41_RESYNC) == 0);
+        REQUIRE(b.port.count(W_R40) == 0);
+        REQUIRE(b.ctrl.report().slotLock == 2);
+    }
+
+    SECTION("hang time zero")
+    {
+        b.cfg.hangTimeMs = 0;
+        b.ctrl.configure(b.cfg);
+        openCall();
+        b.ts();
+        b.ts();
+        b.terminator(R5F_SYNC_MS, 0, 1, &lc);
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
+        REQUIRE(b.ctrl.report().hangActive == false);
+    }
+}
+
+TEST_CASE("DMR RX: a silent channel after a call is left searching and the "
+          "next call opens",
+          "[dmr][callctrl]")
+{
+    /*
+     * A chip that gives no timeslot interrupt while it searches: after the
+     * call's end nothing arrives until the next transmission. The timeslot
+     * watchdog must neither restart the search nor ask for the modem to be
+     * reprogrammed, however long the silence.
+     */
+    Bench b;
+    b.start();
+    FullLC lc = b.groupCall(1234567, 31665);
+
+    for (unsigned call = 0; call < 3; call++) {
+        /* The chip finds the sync: slots, header, voice, terminator */
+        b.ts();
+        b.ts();
+        b.header(R5F_SYNC_MS, 0, 1, lc);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+        b.sink.rxFrames = 0;
+        b.superframe(R5F_SYNC_MS, 0, 1);
+        b.superframe(R5F_SYNC_MS, 0, 1);
+        REQUIRE(b.sink.rxFrames == 12);
+        b.ts();
+        b.ts();
+        b.terminator(R5F_SYNC_MS, 0, 1, &lc);
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
+
+        /* Six seconds without any interrupt */
+        b.port.clear();
+        for (unsigned i = 0; i < 6000 / 30; i++) {
+            b.timeout(30);
+            REQUIRE(b.ctrl.report().needsReconfigure == false);
+        }
+        REQUIRE(b.port.writes.empty());
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
+        REQUIRE(b.ctrl.report().hangActive == false);
+    }
+}
+
+TEST_CASE("DMR TX: a silent channel after an own transmission is left "
+          "searching",
+          "[dmr][callctrl]")
+{
+    auto transmit = [](Bench &b) {
+        b.ctrl.setPtt(true, b.now);
+        REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+        b.tsN(8);
+        REQUIRE(b.ctrl.state() == CallController::TX_VOICE);
+        b.ctrl.setPtt(false, b.now);
+        unsigned n = 0;
+        while (b.ctrl.state() >= CallController::TX_ARM) {
+            b.ts();
+            REQUIRE(++n < 16);
+        }
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_RX_HANG);
+    };
+
+    /* No interrupt at all after the terminator, twice in a row */
+    Bench b;
+    b.start();
+    for (unsigned i = 0; i < 2; i++) {
+        transmit(b);
+        b.port.clear();
+        for (unsigned t = 0; t < 6000 / 30; t++) {
+            b.timeout(30);
+            REQUIRE(b.ctrl.report().needsReconfigure == false);
+            REQUIRE(b.ctrl.report().rfFailed == false);
+        }
+        REQUIRE(b.port.writes.empty());
+        REQUIRE(b.ctrl.report().rfKey == false);
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
+    }
+
+    /* The same after an aborted transmission and a failed wake-up */
+    Bench c;
+    c.start();
+    c.ctrl.setPtt(true, c.now);
+    c.ts();
+    c.ctrl.rfFailed(c.now);
+    REQUIRE(c.ctrl.state() == CallController::RX_SEARCH);
+    c.port.clear();
+    for (unsigned t = 0; t < 6000 / 30; t++)
+        c.timeout(30);
+    REQUIRE(c.port.writes.empty());
+    REQUIRE(c.ctrl.report().needsReconfigure == false);
 }

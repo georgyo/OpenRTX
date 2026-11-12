@@ -71,7 +71,7 @@ public:
         RX_SEARCH, /* startRx() done, no timeslot interrupt yet          */
         RX_IDLE,   /* slots ticking, no call                             */
         RX_CALL,   /* a matching call is open, voice bursts forwarded    */
-        RX_HANG,   /* call ended, kept on screen for T_CallHt            */
+        RX_HANG,   /* slots ticking, hang time of a repeater call        */
         TX_ARM,    /* PTT accepted, waiting for timing / own slot        */
         TX_WAKEUP, /* sending BS_Dwn_Act and waiting for the repeater    */
         TX_HEADER, /* sending the voice LC header (three times)          */
@@ -84,6 +84,7 @@ public:
      */
     static constexpr uint32_t TS_WATCHDOG_MS = 200;     /* re-run startRx */
     static constexpr uint32_t TS_RECONFIGURE_MS = 2000; /* ask reconfig   */
+    static constexpr uint8_t IDLE_RESEARCH_SLOTS = 20;  /* unconfirmed TS */
     static constexpr uint32_t VOICE_TIMEOUT_MS = 2 * SUPERFRAME_MS;
     static constexpr uint32_t CARRIER_TIMEOUT_MS = 500; /* BS sync age    */
     static constexpr uint8_t TIMECODE_LOCK_COUNT = 5;   /* agreeing TS    */
@@ -136,12 +137,14 @@ public:
         uint8_t rxColorCodeSeen; /* colour code of the last burst      */
         uint8_t rxTimeslot;      /* timeslot of the call, 1 or 2       */
         uint8_t rxSyncType;      /* 0 MS/DMO, 1 BS/RMO                 */
-        bool hangActive;         /* T_CallHt running                   */
+        bool hangActive;         /* T_CallHt running, in RX_HANG or
+                                    while searching for a new sync     */
         bool noId;               /* marker: PTT refused, no DMR ID     */
         bool busy;               /* marker: TX rejected, channel busy  */
         bool wakeupFailed;       /* marker: repeater did not answer    */
         bool rfFailed;           /* marker: RF stage refused to key    */
-        bool needsReconfigure;   /* no timeslot interrupt for 2 s      */
+        bool needsReconfigure;   /* no timeslot interrupt for 2 s when
+                                    the watchdog first looked          */
         bool rfKey;              /* RF stage to be keyed for TX: raised
                                     when the modem is armed, before the
                                     first header slot is programmed,
@@ -229,7 +232,8 @@ public:
     /**
      * No event within the wait: run the timers and the timeslot watchdog.
      * The watchdog is idle in RX_SEARCH, where a silent channel legitimately
-     * produces no timeslot interrupt.
+     * produces no timeslot interrupt, and leaves the controller there when
+     * it starts the search again.
      *
      * @param nowMs: current time.
      */
@@ -278,6 +282,7 @@ private:
     uint8_t slotOf(const struct dmrbbSnapshot &s) const;
     bool burstIsCall(const struct dmrbbSnapshot &s) const;
     bool voiceOfCall(const struct dmrbbSnapshot &s) const;
+    bool syncConfirmed(const struct dmrbbSnapshot &s) const;
     bool colorCodeAccepted(uint8_t cc) const;
     bool slotAccepted(uint8_t slot) const;
     bool terminatorOfCall(const struct dmrbbSnapshot &s) const;
@@ -290,7 +295,7 @@ private:
     void publish();
 
     void goRx(uint32_t nowMs, State next);
-    void enterHang(uint32_t nowMs);
+    void enterHang(uint32_t nowMs, bool research);
     bool tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs);
     void processControlFrame(const struct dmrbbSnapshot &s, uint32_t nowMs);
 
@@ -325,7 +330,7 @@ private:
     uint32_t lastTsCount; /* snapshot tsCount of the last TS event            */
     uint32_t lastTsTick;  /* snapshot tsTick of the last TS event             */
     uint32_t lastBsSyncMs;
-    bool wdRestarted;     /* startRx re-run by the watchdog since last TS     */
+    uint8_t idleSlots;    /* slots without a confirmed sync, idle and hang    */
 
     /* Reception */
     uint8_t callSlot;     /* 1, 2 or 0 when unknown (MS sync)                 */

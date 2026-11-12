@@ -371,10 +371,11 @@ TEST_CASE("DMR OpMode: PTT with a valid ID transmits and returns to RX",
     REQUIRE(b.rec->terminators == 1);
     REQUIRE(b.rec->voiceBursts == 12);
 
-    /* Terminator out: back to RX, hang time zero -> idle at once; the RF
-     * stays keyed for the slot the terminator occupies */
+    /* Terminator out: back to RX searching for a sync, hang time zero ->
+     * idle at once; the RF stays keyed for the slot the terminator
+     * occupies */
     b.tick();
-    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
     REQUIRE(b.rec->startRxCount == 2);
     REQUIRE(b.rec->r40 == R40_RX);
     REQUIRE(b.status.opStatus == TX);
@@ -435,6 +436,73 @@ TEST_CASE("DMR OpMode: an injected group call is received and published",
     REQUIRE(b.ctrlState() == CallController::RX_IDLE);
     REQUIRE(b.status.dmr_callState == DMR_CALL_IDLE);
     REQUIRE(b.rec->startTxCount == 0);
+}
+
+TEST_CASE("DMR OpMode: a silent channel after a direct mode call is left "
+          "searching and the next call opens",
+          "[dmr][rtx]")
+{
+    /*
+     * A direct mode call ends with a new sync search. A chip that gives no
+     * timeslot interrupt while it searches then stays silent until the next
+     * transmission: the timeslot watchdog must not have the modem
+     * reprogrammed meanwhile, and the next call opens on its header.
+     */
+    Bench b;
+    state.settings.dmr_hangTime = 1;
+    b.start();
+    REQUIRE(b.rec->configureCount == 1);
+    REQUIRE(b.rec->startRxCount == 1);
+
+    FullLC lc;
+    lc.clear();
+    lc.flco = FLCO_GRP_V_CH_USR;
+    lc.fid = FID_STANDARD;
+    lc.dst = TALKGROUP;
+    lc.src = CALLER;
+
+    /* An MS sourced burst of the call, reported after two timeslots */
+    auto burst = [&](uint8_t r51) {
+        struct dmrbbSnapshot s;
+        memset(&s, 0x00, sizeof(s));
+        s.irq82 = R82_CTRL_FRAME;
+        s.r5f = R5F_SYNC_MS;
+        s.r52 = (uint8_t)(1 << 4);
+        s.r51 = r51;
+        s.voiceValid = ((r51 & R51_SYNC_CLASS_MASK) != R51_CLASS_DATA);
+        lc.toChipLc(s.lc);
+        b.ticks(2);
+        dmrEmu_pushSys(&s);
+        dmr.update(&b.status, false);
+    };
+
+    for (unsigned call = 0; call < 2; call++) {
+        burst((uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA));
+        REQUIRE(b.ctrlState() == CallController::RX_CALL);
+        REQUIRE(b.status.dmr_rxSrcId == CALLER);
+        REQUIRE(b.status.dmr_rxSyncType == 0);
+
+        for (uint8_t seq = 1; seq <= 6; seq++)
+            burst((uint8_t)((seq << 4)
+                            | ((seq == 1) ? R51_CLASS_VOICE : R51_CLASS_NONE)));
+        REQUIRE(dmr.audio().rxFrames == 6 * (call + 1));
+
+        burst((uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_DATA));
+        REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
+        REQUIRE(b.status.dmr_callState == DMR_CALL_RX_HANG);
+        REQUIRE(b.rec->startRxCount == 2 + call);
+
+        /* Silence well beyond the two delays of the timeslot watchdog */
+        for (unsigned i = 0; i < 5; i++) {
+            sleepFor(0, 500);
+            b.run(1);
+        }
+        REQUIRE(b.rec->configureCount == 1);
+        REQUIRE(b.rec->startRxCount == 2 + call);
+        REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
+        REQUIRE(b.status.dmr_callState == DMR_CALL_IDLE);
+        REQUIRE(dmr.rxAudioPathId() < 0);
+    }
 }
 
 TEST_CASE("DMR OpMode: a call on another colour code is ignored", "[dmr][rtx]")
@@ -554,7 +622,7 @@ TEST_CASE("DMR OpMode: a modem parameter change during TX waits for the end",
     REQUIRE(b.rec->terminators == 1);
     REQUIRE(b.rec->configureCount == 1);
     REQUIRE(dmr.rfKeyed() == true);
-    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
 
     /* RF released: reprogrammed and restarted */
     b.tick();
@@ -1189,7 +1257,7 @@ TEST_CASE("DMR OpMode TX: the RF stage is keyed once, before the first "
     /* The terminator slot: the modem is back in RX, the RF still keyed,
      * the encoder and the microphone path still held */
     b.tick();
-    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
     REQUIRE(b.rec->r40 == R40_RX);
     REQUIRE(b.rf->disableRtx == 0);
     REQUIRE(b.rf->keyed == true);
@@ -1307,7 +1375,7 @@ TEST_CASE("DMR OpMode TX: a rejected transmission unkeys at once with the "
     s.irq82 = R82_TX_REJECTED;
     dmrEmu_pushSys(&s);
     dmr.update(&b.status, false);
-    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
     REQUIRE(b.rf->disableRtx == 1);
     REQUIRE(b.rf->keyed == false);
     REQUIRE(dmr.rfKeyed() == false);
@@ -1613,7 +1681,7 @@ TEST_CASE("DMR OpMode TX: an RF stage that does not key aborts the "
     REQUIRE(b.rf->keyed == false);
     REQUIRE(dmr.rfKeyed() == false);
     REQUIRE(b.rf->enableRx == enableRx + 1);
-    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
     REQUIRE(b.status.opStatus == RX);
     REQUIRE(b.status.dmr_callState == DMR_CALL_IDLE);
     REQUIRE(b.status.dmr_markers == DMR_MARK_RF_FAILED);
@@ -1637,7 +1705,7 @@ TEST_CASE("DMR OpMode TX: an RF stage that does not key aborts the "
     REQUIRE(b.rf->enableTx == 2);
     REQUIRE(dmr.rfKeyed() == false);
     REQUIRE(b.status.dmr_markers == DMR_MARK_RF_FAILED);
-    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
 
     /* The lock back: the transmission goes ahead */
     radioEmu_setTxFails(false);

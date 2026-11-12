@@ -333,7 +333,10 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
         && !ctrl.report().rfKey)
         applyConfig(status, true);
 
-    /* No timeslot interrupt for two seconds: reprogram the modem */
+    /*
+     * The timeslot watchdog found a modem that should be giving timeslot
+     * interrupts silent for two seconds: reprogram it
+     */
     if (ctrl.report().needsReconfigure)
         reprogramModem(now);
 
