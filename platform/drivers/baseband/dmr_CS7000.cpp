@@ -479,8 +479,8 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
         C6000.writeCfgRegister(0x10, cfg->modeReg);
 
     /*
-     * Same for the RF_TX_INTER advance word 0x12: the table writes the OEM
-     * 0x98, a different value asked for from the monitor screen (OpenGD77's
+     * Same for the RF_TX_INTER advance word 0x12: the table writes the
+     * default, a different value asked for from the monitor screen (OpenGD77's
      * 0x15, carried by rtxStatus_t::dmr_rfAdvance into cfg->rfAdvance) is
      * rewritten here so that it survives the reconfigurations the opMode
      * handler does on its own. UNVERIFIED on hardware.

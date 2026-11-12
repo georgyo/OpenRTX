@@ -1320,7 +1320,7 @@ TEST_CASE("DMR monitor: the counters of the RTX status are rendered",
     REQUIRE(monitorValue(DMRMON_ACT_BER) == "81 10 40 41");
     REQUIRE(monitorValue(DMRMON_ACT_TWOPOINT) == "12^40");
     REQUIRE(monitorValue(DMRMON_ACT_LCSS) == "50 manual");
-    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-98");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-18");
 
     /* More slots: the screen follows on the next draw */
     for (unsigned i = 0; i < 4; i++) {
@@ -1445,19 +1445,19 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     pressN(KEY_DOWN, 3);
 
     /* Two-point test: bit6 of 0x12 toggled from its current value */
-    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x98);
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x18);
     press(KEY_DOWN);
     render();
     REQUIRE(_ui_dmrMonitorSelectedAction()
             == DMRMON_ACT_TWOPOINT - DMRMON_ACTION_FIRST);
     press(KEY_ENTER);
-    requireWrite(lastWrite(), 0x12, 0xD8);
-    REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12) == 0xD8);
+    requireWrite(lastWrite(), 0x12, 0x58);
+    REQUIRE(dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12) == 0x58);
     press(KEY_ENTER);
-    requireWrite(lastWrite(), 0x12, 0x98);
+    requireWrite(lastWrite(), 0x12, 0x18);
     REQUIRE(rec->regWrites == 20);
     render();
-    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+    REQUIRE(monitorValue(DMRMON_RB12) == "18");
 
     /* Own ID registers are read back in address order */
     dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x14, 0xCE);
@@ -1497,20 +1497,21 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     REQUIRE(status.dmr_lcssMode == 0);
     REQUIRE(rec->regWrites == 23);
 
-    /* RF advance: 0x12 alternates between the OEM and OpenGD77 words */
+    /* RF advance: 0x12 alternates between the default and OpenGD77 words */
     press(KEY_DOWN);
     render();
     REQUIRE(_ui_dmrMonitorSelectedAction()
             == DMRMON_ACT_RFADV - DMRMON_ACTION_FIRST);
     REQUIRE(_ui_dmrMonitorSelectedAction() == DMRMON_ACTION_NUM - 2);
-    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+    REQUIRE(monitorValue(DMRMON_RB12) == "18");
     REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-15");
+    REQUIRE(DMRMON_R12_DEFAULT == DMRBB_RF_ADVANCE_DEFAULT);
     REQUIRE(state.dmr_rfAdvance == 0);
     sync = press(KEY_ENTER);
     requireWrite(lastWrite(), 0x12, DMRMON_R12_GD77);
     render();
     REQUIRE(monitorValue(DMRMON_RB12) == "15");
-    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-98");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-18");
 
     /* The word is pushed to the RTX stage like the mode word: the modem is
      * reprogrammed with it, so that every later reconfiguration keeps it */
@@ -1524,47 +1525,47 @@ TEST_CASE("DMR monitor: the actions write the documented registers",
     REQUIRE(rec->configureCount == configured + 3);
 
     sync = press(KEY_ENTER);
-    requireWrite(lastWrite(), 0x12, DMRMON_R12_OEM);
+    requireWrite(lastWrite(), 0x12, DMRMON_R12_DEFAULT);
     REQUIRE(rec->regWrites == 25);
     REQUIRE(sync == true);
-    REQUIRE(state.dmr_rfAdvance == DMRMON_R12_OEM);
+    REQUIRE(state.dmr_rfAdvance == DMRMON_R12_DEFAULT);
     status = sync_rtx_stage();
-    REQUIRE(status.dmr_rfAdvance == DMRMON_R12_OEM);
+    REQUIRE(status.dmr_rfAdvance == DMRMON_R12_DEFAULT);
     REQUIRE(rec->configureCount == configured + 4);
-    REQUIRE(rec->config.rfAdvance == DMRMON_R12_OEM);
+    REQUIRE(rec->config.rfAdvance == DMRMON_R12_DEFAULT);
     render();
-    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+    REQUIRE(monitorValue(DMRMON_RB12) == "18");
 
-    /* With the two-point test tone on (bit6, 0xD8 as the Two-point action
+    /* With the two-point test tone on (bit6, 0x58 as the Two-point action
      * leaves it) the advance is toggled and the tone bit preserved, both
      * in the value column and in the write; a register holding neither
-     * word of the pair gets the OEM one */
-    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0xD8);
+     * word of the pair gets the default one */
+    dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x58);
     render();
-    REQUIRE(monitorValue(DMRMON_RB12) == "D8");
+    REQUIRE(monitorValue(DMRMON_RB12) == "58");
     REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-55");
     press(KEY_ENTER);
     requireWrite(lastWrite(), 0x12, 0x55);
     render();
     REQUIRE(monitorValue(DMRMON_RB12) == "55");
-    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-D8");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-58");
     press(KEY_ENTER);
-    requireWrite(lastWrite(), 0x12, 0xD8);
+    requireWrite(lastWrite(), 0x12, 0x58);
     dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, 0x00);
     render();
-    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-98");
+    REQUIRE(monitorValue(DMRMON_ACT_RFADV) == "12<-18");
     press(KEY_ENTER);
-    requireWrite(lastWrite(), 0x12, DMRMON_R12_OEM);
+    requireWrite(lastWrite(), 0x12, DMRMON_R12_DEFAULT);
     REQUIRE(rec->regWrites == 30);
     render();
-    REQUIRE(monitorValue(DMRMON_RB12) == "98");
+    REQUIRE(monitorValue(DMRMON_RB12) == "18");
 
     /* The tone bit never reaches the RTX stage: the word pushed after the
-     * 0x55 write was 0x15, after 0xD8 and 0x98 it is 0x98 */
-    REQUIRE(state.dmr_rfAdvance == DMRMON_R12_OEM);
+     * 0x55 write was 0x15, after 0x58 and 0x18 it is 0x18 */
+    REQUIRE(state.dmr_rfAdvance == DMRMON_R12_DEFAULT);
     status = sync_rtx_stage();
-    REQUIRE(status.dmr_rfAdvance == DMRMON_R12_OEM);
-    REQUIRE(rec->config.rfAdvance == DMRMON_R12_OEM);
+    REQUIRE(status.dmr_rfAdvance == DMRMON_R12_DEFAULT);
+    REQUIRE(rec->config.rfAdvance == DMRMON_R12_DEFAULT);
     REQUIRE(rec->configureCount == configured + 4);
 
     /*

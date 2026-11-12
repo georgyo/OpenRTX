@@ -2007,14 +2007,14 @@ TEST_CASE("DMR OpMode: bring-up trace of the configuration and the slots",
 
     /*
      * Colour codes 1/1, TS2, monitor off, polite, simplex, group call,
-     * 0x10 = 0x6E, 0x12 = 0x98, own ID 2345678, TG 31665, 430 MHz twice.
+     * 0x10 = 0x6E, 0x12 = 0x18, own ID 2345678, TG 31665, 430 MHz twice.
      */
     std::string e;
     for (const std::string &l : lines)
         if (l[0] == 'E')
             e = l;
     REQUIRE(e.size() == DMR_TRACE_LINE_BYTES);
-    REQUIRE(e.substr(7, 18) == "010102000100006E98");
+    REQUIRE(e.substr(7, 18) == "010102000100006E18");
     REQUIRE(e.substr(25, 12) == "23CACE007BB1");
     REQUIRE(e.substr(37, 16)
             == "19A14780"

@@ -185,10 +185,11 @@ struct dmrbbConfig {
                             0x68/0x6A). UNVERIFIED on hardware, selectable
                             from the monitor screen                       */
     uint8_t rfAdvance; /**< Value for register 0x12, RF_TX_INTER advance:
-                            bit7 RF ramp smoothing, [5:0] x 100 us before
-                            the own burst. 0 = driver default (0x98, the
-                            OEM init word: 2.4 ms with smoothing); 0x15 is
-                            the OpenGD77 word. The opMode handler fills it
+                            bit7 start of the transmit DAC ramp (0 = from
+                            1.65 V, 1 = from 0 V), [5:0] x 100 us before
+                            the own burst. 0 = driver default (0x18:
+                            2.4 ms, ramp from 1.65 V); 0x15 is the
+                            OpenGD77 word. The opMode handler fills it
                             from rtxStatus_t::dmr_rfAdvance, the monitor
                             screen's choice, and the driver writes it after
                             the mode table so that the choice survives a
@@ -204,12 +205,13 @@ struct dmrbbConfig {
 #define DMRBB_MODE_REG_DEFAULT 0x6E
 
 /**
- * Default value for dmrbbConfig::rfAdvance, register 0x12: RF ramp smoothing
- * on, RF_TX_INTER 24 x 100 us = 2.4 ms ahead of the own burst (OEM CS7000
- * init capture; OpenGD77 uses 0x15). UNVERIFIED on hardware, selectable
- * from the monitor screen ("RF advance").
+ * Default value for dmrbbConfig::rfAdvance, register 0x12: RF_TX_INTER
+ * 24 x 100 us = 2.4 ms ahead of the own burst, bit 7 clear so that the
+ * transmit ramp of the modulation DACs starts from 1.65 V (HR_C6000 manual
+ * §4.7.2; OpenGD77 uses 0x15, bit 7 clear as well). UNVERIFIED on hardware,
+ * selectable from the monitor screen ("RF advance").
  */
-#define DMRBB_RF_ADVANCE_DEFAULT 0x98
+#define DMRBB_RF_ADVANCE_DEFAULT 0x18
 
 /**
  * Initialise the DMR modem driver: interrupt lines, ISR mailbox, SPI ports.

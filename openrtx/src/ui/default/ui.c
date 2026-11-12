@@ -1647,9 +1647,10 @@ static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
 
         case DMRMON_ACT_RFADV:
             // UNVERIFIED on hardware: register 0x12, RF_TX_INTER advance in
-            // [5:0] x 100 us with bit7 the RF ramp smoothing: the OEM init
-            // word 0x98 (2.4 ms, smoothing) when the register holds
-            // anything else, OpenGD77's 0x15 (2.1 ms) when it holds 0x98.
+            // [5:0] x 100 us with bit7 the start of the transmit DAC ramp
+            // (clear in both words): the driver default 0x18 (2.4 ms) when
+            // the register holds anything else, OpenGD77's 0x15 (2.1 ms)
+            // when it holds the default.
             // Bit6, the two-point test tone of the action above, is left
             // as it is in the immediate write. The advance word (without
             // the tone bit) is pushed to the RTX stage like the mode word,
@@ -1657,8 +1658,8 @@ static void _ui_dmr_monitorAction(uint8_t action, bool *sync_rtx)
             // later one, rewrites it after the driver's table
             value = dmrbb_readRegister(DMRMON_PAGE_CONFIG, 0x12);
             value = (value & DMRMON_R12_TWOPOINT)
-                  | (((value & ~DMRMON_R12_TWOPOINT) == DMRMON_R12_OEM)
-                     ? DMRMON_R12_GD77 : DMRMON_R12_OEM);
+                  | (((value & ~DMRMON_R12_TWOPOINT) == DMRMON_R12_DEFAULT)
+                     ? DMRMON_R12_GD77 : DMRMON_R12_DEFAULT);
             dmrbb_writeRegister(DMRMON_PAGE_CONFIG, 0x12, value);
             state.dmr_rfAdvance = value & ~DMRMON_R12_TWOPOINT;
             *sync_rtx = true;

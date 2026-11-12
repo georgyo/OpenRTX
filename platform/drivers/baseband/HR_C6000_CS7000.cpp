@@ -180,7 +180,8 @@ void HR_Cx000< M >::setModOffset(const uint16_t offset)
  * depend on the calibration data (0x45/0x46 modulation amplitude, 0xE4
  * input gain, 0x47/0x48/0x04 two-point bias) are written by radio_CS7000.cpp
  * as for FM. Switching back is done by fmMode(), which restores 0x00 = 0x3F,
- * 0x10 = 0x80, 0x81 = 0x00, 0x36 = 0x12, 0x26 = 0xFE and the FM codec setup.
+ * 0x10 = 0x80, 0x12 = 0x00, 0x81 = 0x00, 0x36 = 0x12, 0x26 = 0xFE and the FM
+ * codec setup.
  */
 template< class M >
 void HR_Cx000< M >::dmrMode()
@@ -230,9 +231,12 @@ void HR_Cx000< M >::dmrMode()
     // Voice superframe timeout (O initSeq2, GD)
     writeReg(M::CONFIG, 0x0D, 0x10);
 
-    // UNVERIFIED on hardware: bit 7 RF ramp smoothing, RF_TX_INTER advance
-    // 24 x 100us = 2.4ms (O initSeq2 value; GD uses 0x15)
-    writeReg(M::CONFIG, 0x12, 0x98);
+    // RF_TX_INTER advance 24 x 100us = 2.4ms in bits 5:0. Bit 7 clear: the
+    // transmit ramp of the modulation DACs starts from the 1.65V mid level
+    // and not from 0V (M §4.7.2), as with the value init() ends with and
+    // with GD 0x15 and the MD-UV3x0 OEM 0x0C. Bit 6 clear: no 40Hz
+    // two-point test tone. UNVERIFIED on hardware; fmMode() puts 0x00 back
+    writeReg(M::CONFIG, 0x12, 0x18);
 
     // RF_TX_EN/RF_RX_EN edge advance: pins not connected on the CS7000 (O)
     writeReg(M::CONFIG, 0x13, 0x00);
@@ -345,6 +349,7 @@ void HR_Cx000< M >::fmMode()
 
     writeReg(M::CONFIG, 0x00, 0x3F);  // Reset DMR and physical layer
     writeReg(M::CONFIG, 0x10, 0x80);  // Modulator mode FM
+    writeReg(M::CONFIG, 0x12, 0x00);  // RF interrupt advance, DAC ramp start, test tone: the value init() ends with
     writeReg(M::CONFIG, 0x35, 0x20);  // FM deviation coefficient
     writeReg(M::CONFIG, 0x3E, 0x06);  // FM receiving end modulation frequency offset coefficient
     writeReg(M::CONFIG, 0x81, 0x00);  // InterClass1Mask, all interrupts masked

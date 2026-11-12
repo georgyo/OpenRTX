@@ -32,7 +32,7 @@
  *  - DMRBB_DRV_RFTX_LEAD(b) (read only): byte b of the 16-bit distance, in
  *    milliseconds, between the last TIME_SLOT_INTER and the last
  *    RF_TX_INTER, for the check of the register 0x12 advance (2.4 ms with
- *    the assumed 0x98: the interrupt should land ~27.6 ms after the slot
+ *    the default 0x18: the interrupt should land ~27.6 ms after the slot
  *    tick, i.e. 0x12[5:0] x 100 us before the next burst).
  */
 #define DMRBB_DRV_RFTX_TICK(b) (0x20 + (b))

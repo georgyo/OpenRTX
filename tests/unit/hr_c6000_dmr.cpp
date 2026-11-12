@@ -379,7 +379,7 @@ static const std::vector<std::vector<uint8_t>> dmrModeStream = {
     cfgWrite(0x08, 0xB8), cfgWrite(0x09, 0x00), cfgWrite(0x06, 0x21),
     cfgWrite(0x22, 0x26), cfgWrite(0x34, 0xF0), cfgWrite(0x35, 0x28),
     cfgWrite(0x3F, 0x10), cfgWrite(0xA1, 0x00), cfgWrite(0x0D, 0x10),
-    cfgWrite(0x12, 0x98), cfgWrite(0x13, 0x00), cfgWrite(0x14, 0x00),
+    cfgWrite(0x12, 0x18), cfgWrite(0x13, 0x00), cfgWrite(0x14, 0x00),
     cfgWrite(0x15, 0x00), cfgWrite(0x16, 0x00), cfgWrite(0x1A, 0xFF),
     cfgWrite(0x1B, 0xFF), cfgWrite(0x1C, 0xFF), cfgWrite(0x1D, 0xFF),
     cfgWrite(0x1E, 0xFF), cfgWrite(0x1F, 0x10), cfgWrite(0x20, 0x00),
@@ -406,6 +406,22 @@ TEST_CASE("HR_C6000 dmrMode() emits the table 4.1 byte stream in order",
 
     /* Every write is its own chip select window, all closed */
     REQUIRE(uspi.csLow == false);
+}
+
+TEST_CASE("HR_C6000 fmMode() puts register 0x12 back to the init() value",
+          "[hr_c6000][dmr]")
+{
+    /*
+     * FM and M17 run with the 0x12 = 0x00 init() ends with: neither the
+     * DMR advance word nor a two-point test tone (bit 6) left on from the
+     * monitor screen survives the way back.
+     */
+    resetAll();
+    C6000.dmrMode();
+    REQUIRE(uspi.pages[4][0x12] == 0x18);
+    C6000.writeCfgRegister(0x12, 0x58);
+    C6000.fmMode();
+    REQUIRE(uspi.pages[4][0x12] == 0x00);
 }
 
 TEST_CASE("HR_C6000 DMR register helpers", "[hr_c6000][dmr]")
@@ -1205,7 +1221,7 @@ TEST_CASE("dmrbb_configure rewrites 0x12 only for a non-default RF advance",
 {
     /*
      * rfAdvance = 0 (the OpMode's "no override") and the explicit default
-     * both leave the table's 0x12 = 0x98 alone; the OpenGD77 word 0x15 is
+     * both leave the table's 0x12 = 0x18 alone; the OpenGD77 word 0x15 is
      * written right after the mode word, before the colour code.
      */
     resetAll();
@@ -1223,7 +1239,8 @@ TEST_CASE("dmrbb_configure rewrites 0x12 only for a non-default RF advance",
             writes12 += 1;
     }
     REQUIRE(writes12 == 1);
-    REQUIRE(uspi.pages[4][0x12] == 0x98);
+    REQUIRE(DMRBB_RF_ADVANCE_DEFAULT == 0x18);
+    REQUIRE(uspi.pages[4][0x12] == 0x18);
 
     uspi.log.clear();
     cfg.rfAdvance = 0x15;
