@@ -315,10 +315,20 @@ void HR_Cx000< M >::dmrMode()
     // The BER test action of the monitor screen writes 0xFF
     writeReg(M::CONFIG, 0x81, 0xFE);
 
-    // UNVERIFIED on hardware: TX start and TX end sub-status masks, pass
-    // everything (G; MD-3x0 OEM writes 0x00 during setup)
-    writeReg(M::CONFIG, 0x85, 0xFF);
-    writeReg(M::CONFIG, 0x87, 0xFF);
+    // TX start sub-interrupt enables (M chapter 8, 0x85 SendStartMask):
+    // none, nothing in the firmware acts on a TX start event (OpenMDUV380
+    // and the MD-UV3x0 OEM table write 0x00 as well)
+    writeReg(M::CONFIG, 0x85, 0x00);
+
+    // TX end sub-interrupt enables (M chapter 8, 0x87 SendStopMask): bit 7
+    // "transmission completely terminated", on which the call controller
+    // releases the RF, and bit 2 "Short LC received", on which the driver
+    // reads the Short LC. The others stay off, bit 4 in particular: the
+    // Layer 2 Rdy_lst_inter, one more SYS_INTER pulse in every slot, is
+    // not needed when 0x41 is programmed at the timeslot interrupt (M
+    // §5.4.4). UNVERIFIED on hardware: 1 = enabled is read from the
+    // register names and from 0x81
+    writeReg(M::CONFIG, 0x87, 0x84);
 
     // RF_RX_INTER advance 1ms (GD; pin not wired to the MCU, harmless)
     writeReg(M::CONFIG, 0xC0, 0x0A);

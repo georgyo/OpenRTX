@@ -76,8 +76,8 @@ struct dmrbbSnapshot {
                         sub-status, UNVERIFIED on hardware whether it
                         fires on a receiving radio, see shortLc[]), the
                         rest data fragment / OACSU events (manual §5.1.1).
-                        Only bit7 ends a transmission. UNVERIFIED on
-                        hardware which bits the 0x87 mask lets through  */
+                        Only bit7 ends a transmission. The CS7000 driver
+                        enables bit7 and bit2 only (0x87 = 0x84)        */
     uint8_t sub90; /**< 0x90, data message status, read when 0x82 bit2 */
     uint8_t sub98; /**< 0x98, abnormal exit cause, read when 0x82 bit1 */
 

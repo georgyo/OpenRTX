@@ -524,8 +524,9 @@ void dmrbb_startTx(bool activeTiming)
      * the modem, the first burst needs a later dmrbb_setNextSlot(0x80). A
      * transmission refused by the chip (channel busy under the polite
      * policy) shows up as bit 7 of register 0x82 in the next snapshot,
-     * HR_C6000::txRejected(); TX start and end as bits 6 and 5 with the
-     * sub-status registers 0x84 / 0x86 (sub84 / sub86 of the snapshot).
+     * HR_C6000::txRejected(); its end as bit 5 with the sub-status
+     * register 0x86 (sub86 of the snapshot). The TX start events of bit 6
+     * and 0x84 are not enabled by the dmrMode() table (0x85 = 0x00).
      */
     C6000.dmrTxStart(activeTiming, config.polite);
 }
