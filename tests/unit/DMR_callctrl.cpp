@@ -1320,28 +1320,82 @@ TEST_CASE("DMR TX: T_TO ends the transmission after the superframe",
     REQUIRE(b.ctrl.state() == CallController::TX_ARM);
 }
 
-TEST_CASE("DMR TX rejected: back to RX with the busy marker", "[dmr][callctrl]")
+TEST_CASE("DMR TX: the rejected flag is counted and the transmission goes on",
+          "[dmr][callctrl]")
 {
+    /*
+     * 0x82 bit 7, "transmission request rejected, channel busy": OpenGD77
+     * and OpenMDUV380 do nothing on it and keep programming their slots.
+     * The flag raises the busy marker and a counter, nothing else.
+     */
     Bench b;
     b.settle();
+    REQUIRE(b.ctrl.report().txRejected == 0);
 
     b.ctrl.setPtt(true, b.now);
     b.tsN(3);
     REQUIRE(b.ctrl.state() == CallController::TX_HEADER);
-    b.port.clear();
+    size_t writes = b.port.writes.size();
     b.flags(R82_TX_REJECTED);
-    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+    REQUIRE(b.ctrl.state() == CallController::TX_HEADER);
     REQUIRE(b.ctrl.report().busy == true);
-    REQUIRE(b.ctrl.report().callState == DMR_CALL_IDLE);
-    REQUIRE(b.port.values(W_R40) == std::vector<uint8_t>{ R40_RX });
+    REQUIRE(b.ctrl.report().txRejected == 1);
+    REQUIRE(b.ctrl.report().callState == DMR_CALL_TX);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    REQUIRE(b.port.writes.size() == writes);
 
-    /* PTT still held: nothing until it is released */
-    b.tsN(4);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    /* Headers, voice on every own slot, the flag coming with each burst */
+    unsigned n = 0;
+    while (b.ctrl.state() != CallController::TX_VOICE) {
+        b.ts();
+        b.flags(R82_TX_REJECTED);
+        REQUIRE(++n < 10);
+    }
+    REQUIRE(b.port.count(W_R50, R50_VOICE_LC_HEADER) == 3);
+    b.port.clear();
+    for (unsigned i = 0; i < 24; i++) {
+        b.ts();
+        b.flags(R82_TX_REJECTED | R82_TX_START);
+    }
+    REQUIRE(b.ctrl.state() == CallController::TX_VOICE);
+    REQUIRE(b.port.count(W_R41, R41_TX) == 12);
+    REQUIRE(b.port.count(W_VOICE) == 12);
+    REQUIRE(b.port.count(W_R40) == 0);
+    REQUIRE(b.ctrl.report().rfKey == true);
+    REQUIRE(b.ctrl.report().txRejected == 1 + n + 24);
+
+    /* The PTT is not latched: the release ends it with its terminator */
     b.ctrl.setPtt(false, b.now);
+    n = 0;
+    while (b.ctrl.state() != CallController::TX_TERM) {
+        b.ts();
+        REQUIRE(++n < 14);
+    }
+    REQUIRE(b.port.count(W_R50, R50_TERMINATOR) == 1);
+    b.ts();
+    REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+
+    /* The next press clears the marker and transmits again */
     b.ctrl.setPtt(true, b.now);
     REQUIRE(b.ctrl.report().busy == false);
     REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+
+    /* The counter saturates, and starts again with the controller */
+    for (unsigned i = 0; i < 300; i++)
+        b.flags(R82_TX_REJECTED);
+    REQUIRE(b.ctrl.report().txRejected == UINT8_MAX);
+    REQUIRE(b.ctrl.state() == CallController::TX_ARM);
+    b.ctrl.enable(b.now);
+    REQUIRE(b.ctrl.report().txRejected == 0);
+    REQUIRE(b.ctrl.report().busy == true);
+
+    /* Outside a transmission the flag means nothing */
+    b.ctrl.clearMarkers();
+    b.ts();
+    b.flags(R82_TX_REJECTED);
+    REQUIRE(b.ctrl.report().busy == false);
+    REQUIRE(b.ctrl.report().txRejected == 0);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
 }
 
 TEST_CASE("DMR TX repeater mode with carrier: passive timing",
@@ -2061,11 +2115,11 @@ TEST_CASE("DMR TX RF keying: an RF stage that refuses to key aborts the "
     REQUIRE(b.ctrl.report().rfFailed == false);
 }
 
-TEST_CASE("DMR TX RF keying: rejected, aborted and failed transmissions "
-          "release it at once",
+TEST_CASE("DMR TX RF keying: aborted and failed transmissions release it "
+          "at once, the rejected flag does not",
           "[dmr][callctrl]")
 {
-    /* Channel busy */
+    /* The chip flags the channel busy: still keyed, still transmitting */
     {
         Bench b;
         b.settle();
@@ -2073,11 +2127,11 @@ TEST_CASE("DMR TX RF keying: rejected, aborted and failed transmissions "
         b.tsN(3);
         REQUIRE(b.ctrl.report().rfKey == true);
         b.flags(R82_TX_REJECTED);
-        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        REQUIRE(b.ctrl.state() == CallController::TX_HEADER);
         REQUIRE(b.ctrl.report().busy == true);
-        REQUIRE(b.ctrl.report().rfKey == false);
+        REQUIRE(b.ctrl.report().rfKey == true);
         b.ts();
-        REQUIRE(b.ctrl.report().rfKey == false);
+        REQUIRE(b.ctrl.report().rfKey == true);
     }
 
     /* PTT released before the header */

@@ -140,11 +140,16 @@ public:
         bool hangActive;         /* T_CallHt running, in RX_HANG or
                                     while searching for a new sync     */
         bool noId;               /* marker: PTT refused, no DMR ID     */
-        bool busy;               /* marker: TX rejected, channel busy  */
+        bool busy;               /* marker: the chip flagged the channel
+                                    busy during a transmission, which
+                                    went on                            */
         bool wakeupFailed;       /* marker: repeater did not answer    */
         bool rfFailed;           /* marker: RF stage refused to key    */
         bool needsReconfigure;   /* no timeslot interrupt for 2 s when
                                     the watchdog first looked          */
+        uint8_t txRejected;      /* "TX request rejected" flags (0x82
+                                    bit7) seen while transmitting since
+                                    enable(), saturating               */
         bool rfKey;              /* RF stage to be keyed for TX: raised
                                     when the modem is armed, before the
                                     first header slot is programmed,
@@ -202,7 +207,7 @@ public:
     /**
      * PTT input. A press is accepted in the RX states when an own ID is
      * configured; otherwise the noId marker is set. A press is ignored
-     * until the PTT is released again after a refused, rejected or timed
+     * until the PTT is released again after a refused, failed or timed
      * out transmission.
      *
      * @param ptt: PTT state.
@@ -302,7 +307,7 @@ private:
     void enterTxArm(uint32_t nowMs);
     void armTx(uint32_t nowMs, bool activeTiming);
     void enterWakeup(uint32_t nowMs);
-    void abortTx(uint32_t nowMs, bool busy);
+    void abortTx(uint32_t nowMs);
     void buildTxLc();
     void programHeader();
     void programVoice();

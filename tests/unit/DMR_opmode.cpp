@@ -1355,8 +1355,8 @@ TEST_CASE("DMR OpMode TX: the chip's TX-end report releases the RF before "
     REQUIRE(b.rf->disableRtx == 1);
 }
 
-TEST_CASE("DMR OpMode TX: a rejected transmission unkeys at once with the "
-          "busy marker",
+TEST_CASE("DMR OpMode TX: the rejected flag raises the busy marker and the "
+          "transmission goes on",
           "[dmr][rtx][tx]")
 {
     Bench b;
@@ -1368,32 +1368,44 @@ TEST_CASE("DMR OpMode TX: a rejected transmission unkeys at once with the "
     REQUIRE(b.ctrlState() == CallController::TX_HEADER);
     REQUIRE(b.rf->enableTx == 1);
     REQUIRE(b.rf->disableRtx == 0);
+    uint32_t txSlots = b.rec->txSlots;
 
-    /* 0x82 bit7: the modem refused to transmit over the busy channel */
+    /* 0x82 bit7: the modem flags the channel busy. As in OpenGD77 and
+     * OpenMDUV380 the slots keep being programmed, the RF stays keyed */
     struct dmrbbSnapshot s;
     memset(&s, 0x00, sizeof(s));
     s.irq82 = R82_TX_REJECTED;
     dmrEmu_pushSys(&s);
     dmr.update(&b.status, false);
-    REQUIRE(b.ctrlState() == CallController::RX_SEARCH);
-    REQUIRE(b.rf->disableRtx == 1);
-    REQUIRE(b.rf->keyed == false);
-    REQUIRE(dmr.rfKeyed() == false);
-    REQUIRE(b.status.opStatus == RX);
-    REQUIRE(b.status.dmr_callState == DMR_CALL_IDLE);
+    REQUIRE(b.ctrlState() == CallController::TX_HEADER);
+    REQUIRE(dmr.controller().report().txRejected == 1);
+    REQUIRE(b.rf->disableRtx == 0);
+    REQUIRE(b.rf->keyed == true);
+    REQUIRE(dmr.rfKeyed() == true);
+    REQUIRE(b.status.opStatus == TX);
+    REQUIRE(b.status.dmr_callState == DMR_CALL_TX);
     REQUIRE((b.status.dmr_markers & DMR_MARK_BUSY) != 0);
-    REQUIRE(b.rec->r40 == R40_RX);
-    REQUIRE(dmr.txAudioPathId() < 0);
+    REQUIRE(b.rec->startRxCount == 1);
+    REQUIRE(dmr.txAudioPathId() >= 0);
 
-    /* PTT still held: nothing, marker kept */
-    b.ticks(4);
-    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    /* PTT still held: headers, then voice, marker kept */
+    b.ticks(12);
+    REQUIRE(b.ctrlState() == CallController::TX_VOICE);
+    REQUIRE(b.rec->headers == 3);
+    REQUIRE(b.rec->txSlots == txSlots + 6);
     REQUIRE(b.rf->enableTx == 1);
+    REQUIRE(dmr.rfKeyed() == true);
     REQUIRE((b.status.dmr_markers & DMR_MARK_BUSY) != 0);
 
-    /* Released and pressed again: the marker clears, a new transmission */
+    /* Released: the superframe, the terminator, back to RX */
     emulator_state.PTTstatus = false;
-    b.tick();
+    b.ticks(16);
+    REQUIRE(b.ctrlState() < CallController::TX_ARM);
+    REQUIRE(b.rec->terminators == 1);
+    REQUIRE(dmr.rfKeyed() == false);
+    REQUIRE(b.rf->disableRtx == 1);
+
+    /* Pressed again: the marker clears, a new transmission */
     emulator_state.PTTstatus = true;
     b.tick();
     REQUIRE(b.ctrlState() >= CallController::TX_ARM);

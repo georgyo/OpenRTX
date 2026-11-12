@@ -156,7 +156,7 @@ void CallController::rfFailed(uint32_t nowMs)
         return;
 
     rep.rfFailed = true;
-    abortTx(nowMs, false);
+    abortTx(nowMs);
     publish();
 }
 
@@ -729,9 +729,8 @@ void CallController::enterWakeup(uint32_t nowMs)
     requestAxis(nowMs);
 }
 
-void CallController::abortTx(uint32_t nowMs, bool busy)
+void CallController::abortTx(uint32_t nowMs)
 {
-    rep.busy = busy;
     pttLatched = true;
     unkeyRf();
     goRx(nowMs, RX_SEARCH);
@@ -749,9 +748,9 @@ void CallController::abortTx(uint32_t nowMs, bool busy)
  * the next or a few 30 ms of the end of the speech frame is sent, configure
  * reg0x40 to 0x03";
  * UNVERIFIED on hardware whether one slot of margin is enough for the PA
- * to see the whole terminator burst). An aborted transmission (channel
- * busy, wake-up failed, PTT released before anything went out, watchdog)
- * releases it at once.
+ * to see the whole terminator burst). An aborted transmission (RF stage
+ * not keying, wake-up failed, PTT released before anything went out,
+ * watchdog) releases it at once.
  */
 void CallController::keyRf()
 {
@@ -955,7 +954,7 @@ void CallController::setPtt(bool p, uint32_t nowMs)
     if (!p) {
         /* Nothing on the air yet: just go back to RX */
         if ((st == TX_ARM) || (st == TX_WAKEUP))
-            abortTx(nowMs, false);
+            abortTx(nowMs);
         pttLatched = false;
         publish();
         return;
@@ -1109,8 +1108,20 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
     if (syncConfirmed(s))
         idleSlots = 0;
 
-    if ((irq & R82_TX_REJECTED) && isTx())
-        abortTx(nowMs, true);
+    /*
+     * "This transmission request is rejected because the channel is busy"
+     * (0x82 bit7, manual §5.1.1), the chip's verdict under the polite
+     * access policy. The transmission goes on: OpenGD77 and OpenMDUV380
+     * arm the chip with the same policy word, do nothing on this flag and
+     * keep programming their slots. The flag is counted and shown as the
+     * busy marker. UNVERIFIED on hardware: whether the chip raises it at
+     * all, and whether it keeps the bursts off the air when it does.
+     */
+    if ((irq & R82_TX_REJECTED) && isTx()) {
+        rep.busy = true;
+        if (rep.txRejected < UINT8_MAX)
+            rep.txRejected++;
+    }
 
     /*
      * The chip reports the end of the transmission: release the RF. Only

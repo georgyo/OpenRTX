@@ -406,7 +406,7 @@ void OpMode_DMR::followState(uint32_t nowMs)
     /*
      * RF stage: keyed from the moment the modem is armed, before the first
      * header slot is programmed, until the terminator (or the wake-up CSBK)
-     * has gone out; released at once by a rejected or aborted transmission.
+     * has gone out; released at once by an aborted transmission.
      * The controller tracks that in its report. An RF stage that refuses
      * to key aborts the transmission here, hence the state is read after.
      */
