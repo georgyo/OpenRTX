@@ -30,7 +30,8 @@ extern "C" {
  *
  *  - the null backend (dmr_vocoder_null.c): decode() produces silence, or a
  *    1 kHz test tone when settings.dmr_testTone is set; encode() produces the
- *    AMBE+2 silence pattern. Built for every target;
+ *    AMBE+2 silence pattern, or the frames of a 1031 Hz tone with the same
+ *    setting. Built for every target;
  *  - the loopback backend (dmr_vocoder_loopback.c): encode() packs a coarse
  *    descriptor of the PCM block (level, dominant frequency, envelope) into
  *    the 27 bytes and decode() plays a tone back from it, so that the whole

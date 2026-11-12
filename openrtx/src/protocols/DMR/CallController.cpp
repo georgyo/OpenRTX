@@ -50,10 +50,10 @@ CallController::CallController() : port(nullptr), sink(nullptr), st(OFF)
     lastTsCount = 0;
     lastTsTick = 0;
     lastBsSyncMs = 0;
-    wdRestarted = false;
-    skipLc = false;
+    idleSlots = 0;
     callSlot = 0;
     callTimecode = 0;
+    callCc = 0;
     callDmo = false;
     lastVoiceMs = 0;
     hangStartMs = 0;
@@ -86,6 +86,8 @@ void CallController::setVoiceSink(VoiceSink *s)
 
 void CallController::configure(const Config &c)
 {
+    uint8_t rxWas = rxSlot();
+
     cfg = c;
     if (cfg.timeslot < 1)
         cfg.timeslot = 1;
@@ -94,6 +96,13 @@ void CallController::configure(const Config &c)
     cfg.colorCode &= 0x0F;
     if (cfg.lcssMode > LCSS_MODE_MANUAL)
         cfg.lcssMode = LCSS_MODE_CHIP;
+
+    /*
+     * The slots of a receiver that has slot interrupts take the new
+     * colour code gate at the next one; a searching receiver has none
+     */
+    if ((port != nullptr) && (st == RX_SEARCH) && (rxSlot() != rxWas))
+        port->setNextSlot(rxSlot());
 }
 
 void CallController::enable(uint32_t nowMs)
@@ -118,7 +127,6 @@ void CallController::enable(uint32_t nowMs)
     rfUnkeyPending = false;
     lastBsSyncMs = nowMs - CARRIER_TIMEOUT_MS;
     lastSync = R5F_SYNC_MS;
-    wdRestarted = false;
     callSlot = 0;
     callDmo = false;
 
@@ -157,7 +165,7 @@ void CallController::rfFailed(uint32_t nowMs)
         return;
 
     rep.rfFailed = true;
-    abortTx(nowMs, false);
+    abortTx(nowMs);
     publish();
 }
 
@@ -225,16 +233,15 @@ uint32_t CallController::missedSlots(const struct dmrbbSnapshot &s) const
 void CallController::trackTimecode(uint8_t rxTc)
 {
     /*
-     * The local timecode toggles at every timeslot interrupt and is compared
-     * with the CACH TC the chip reports in register 0x52 bit2, which is
-     * taken as the TC of the slot starting at this interrupt (UNVERIFIED on
-     * hardware: if the chip still reports the previous slot's CACH at the
-     * interrupt, invert rxTc here). Lock after TIMECODE_LOCK_COUNT agreeing
-     * slots, re-align after TIMECODE_DROP_COUNT disagreeing ones (OpenGD77
-     * practice). The re-alignment is suspended while a direct mode call is
-     * open and while transmitting: there is no CACH to follow in DMO
-     * (TS 102 361-1 §4.2.2, the CACH exists on the BS outbound only) and
-     * the slot parity of an ongoing call or transmission must never flip.
+     * The local timecode is the one of the slot starting at this timeslot
+     * interrupt: it toggles at every interrupt and is compared with rxTc,
+     * what the chip says about that slot. Lock after TIMECODE_LOCK_COUNT
+     * agreeing slots, re-align after TIMECODE_DROP_COUNT disagreeing ones
+     * (OpenGD77 practice). The re-alignment is suspended while a direct
+     * mode call is open and while transmitting: there is no CACH to follow
+     * in DMO (TS 102 361-1 §4.2.2, the CACH exists on the BS outbound
+     * only) and the slot parity of an ongoing call or transmission must
+     * never flip.
      */
     if (!tcValid) {
         timecode = rxTc;
@@ -275,18 +282,22 @@ void CallController::runTimers(uint32_t nowMs)
 {
     runRfTimer(nowMs);
 
+    /*
+     * T_CallHt runs on its own flag and timer: the hang time of a direct
+     * mode call and of an own transmission is spent searching for a new
+     * sync (RX_SEARCH), only a repeater call keeps its slots (RX_HANG).
+     */
+    if (rep.hangActive && (elapsed(nowMs, hangStartMs) >= cfg.hangTimeMs)) {
+        rep.hangActive = false;
+        if (st == RX_HANG)
+            st = RX_IDLE;
+    }
+
     switch (st) {
         case RX_CALL:
             /* No voice for two superframes: the call is gone */
             if (elapsed(nowMs, lastVoiceMs) > VOICE_TIMEOUT_MS)
-                enterHang(nowMs);
-            break;
-
-        case RX_HANG:
-            if (elapsed(nowMs, hangStartMs) >= cfg.hangTimeMs) {
-                st = RX_IDLE;
-                rep.hangActive = false;
-            }
+                enterHang(nowMs, callDmo);
             break;
 
         case TX_WAKEUP:
@@ -317,9 +328,6 @@ void CallController::publish()
         case RX_CALL:
             rep.callState = DMR_CALL_RX;
             break;
-        case RX_HANG:
-            rep.callState = DMR_CALL_RX_HANG;
-            break;
         case TX_WAKEUP:
             rep.callState = DMR_CALL_TX_WAKEUP;
             break;
@@ -330,7 +338,8 @@ void CallController::publish()
             rep.callState = DMR_CALL_TX;
             break;
         default:
-            rep.callState = DMR_CALL_IDLE;
+            /* The hang time is shown whatever the receiver is doing */
+            rep.callState = rep.hangActive ? DMR_CALL_RX_HANG : DMR_CALL_IDLE;
             break;
     }
 }
@@ -338,6 +347,16 @@ void CallController::publish()
 /*
  * Reception
  */
+
+uint8_t CallController::rxSlot() const
+{
+    /*
+     * Monitor "any colour code": the chip itself must stop requiring its
+     * local colour code on what it deframes (register 0x41 bit3), the
+     * software filter of colorCodeAccepted() comes after it.
+     */
+    return (cfg.monitor >= 2) ? R41_RX_ANY_CC : R41_RX;
+}
 
 uint8_t CallController::slotOf(const struct dmrbbSnapshot &s) const
 {
@@ -362,6 +381,30 @@ bool CallController::burstIsCall(const struct dmrbbSnapshot &s) const
 {
     uint8_t slot = slotOf(s);
     return (slot == 0) || (callSlot == 0) || (slot == callSlot);
+}
+
+bool CallController::voiceOfCall(const struct dmrbbSnapshot &s) const
+{
+    /*
+     * A voice burst A to F of the open call. The tests are the ones both
+     * OpenGD77 and OpenMDUV380 apply to every burst while receiving: the
+     * chip's check flag (0x51 bit 2, manual chapter 8 "received data
+     * verification result") and privacy indicator (bit 3) clear, and the
+     * colour code of the call. The colour code travels in the EMB of bursts
+     * B to F; burst A (sync class 01) carries the voice sync in its place
+     * (TS 102 361-1 §9.1.2), so register 0x52 is not tested on it.
+     * UNVERIFIED on hardware: both reference firmwares test burst A too
+     * and it passes on their radios, the chip presumably keeps the last
+     * colour code there.
+     */
+    if ((r51VoiceSeq(s.r51) == 0) || !burstIsCall(s))
+        return false;
+
+    if ((s.r51 & (R51_CRC_BAD | R51_PI)) != 0)
+        return false;
+
+    bool burstA = ((s.r51 & R51_SYNC_CLASS_MASK) == R51_CLASS_VOICE);
+    return burstA || ((s.r52 >> 4) == callCc);
 }
 
 bool CallController::colorCodeAccepted(uint8_t cc) const
@@ -393,36 +436,81 @@ bool CallController::terminatorOfCall(const struct dmrbbSnapshot &s) const
 
 void CallController::goRx(uint32_t nowMs, State next)
 {
+    /*
+     * startRx() makes the chip drop its time axis and search for a sync
+     * (register 0x41 bit5 SyncFail, "the physical layer is required to
+     * search again"). Every caller but the wake-up wait passes RX_SEARCH:
+     * the timeslot watchdog is idle in that state only, and whether the
+     * chip keeps giving timeslot interrupts while it searches is
+     * UNVERIFIED on hardware.
+     */
     port->startRx();
+    if (rxSlot() != R41_RX)
+        port->setNextSlot(rxSlot());
     resetTiming();
     requestAxis(nowMs);
-
-    /*
-     * UNVERIFIED on hardware: the RX RAM may still hold the LC of the
-     * previous call on the first system interrupt after a mode switch
-     * (OpenGD77 observation), so the first LC read is discarded.
-     */
-    skipLc = true;
+    idleSlots = 0;
     st = next;
 }
 
-void CallController::enterHang(uint32_t nowMs)
+void CallController::enterHang(uint32_t nowMs, bool research)
 {
-    st = RX_HANG;
     hangStartMs = nowMs;
-    rep.hangActive = true;
+    rep.hangActive = (cfg.hangTimeMs != 0);
 
-    if (cfg.hangTimeMs == 0)
-        runTimers(nowMs);
+    /*
+     * Direct mode has no timing master (TS 102 361-1 §5.2.1.3): the next
+     * transmission, the answer in particular, comes with a time axis of
+     * its own, while the chip only follows a sync within 1.25 ms of the
+     * axis it has (manual §5.4.4). The call's axis is therefore dropped
+     * with the call, as OpenGD77 and OpenMDUV380 do at the end of every
+     * direct mode call. A repeater call keeps the repeater's axis.
+     */
+    if (research)
+        goRx(nowMs, RX_SEARCH);
+    else
+        st = rep.hangActive ? RX_HANG : RX_IDLE;
+}
+
+bool CallController::syncConfirmed(const struct dmrbbSnapshot &s) const
+{
+    /*
+     * Events showing that the chip's time axis is the one of a real
+     * signal. Voice bursts carry no check of their own and the empty slot
+     * of an idle receiver may report noise as a frame, so outside a call
+     * only a data burst with a good CRC and an accepted colour code or a
+     * late entry count. On a repeater channel the voice of a call that was
+     * not opened (another talkgroup or timeslot) counts too when it comes
+     * with the BS sync and the accepted colour code, so that the
+     * repeater's axis and the timecode lock survive somebody else's call.
+     */
+    if (s.irq82 & R82_LATE_ENTRY)
+        return true;
+
+    if ((s.irq82 & R82_CTRL_FRAME) == 0)
+        return false;
+
+    uint8_t cls = s.r51 & R51_SYNC_CLASS_MASK;
+    uint8_t cc = s.r52 >> 4;
+
+    if (cls == R51_CLASS_DATA)
+        return ((s.r51 & R51_CRC_BAD) == 0) && colorCodeAccepted(cc);
+
+    if ((r51VoiceSeq(s.r51) == 0) || ((s.r51 & (R51_CRC_BAD | R51_PI)) != 0))
+        return false;
+
+    if (st == RX_CALL)
+        return voiceOfCall(s);
+
+    if (!cfg.repeater || ((s.r5f & R5F_SYNC_MASK) != R5F_SYNC_BS))
+        return false;
+
+    /* Burst A carries no colour code, see voiceOfCall() */
+    return (cls == R51_CLASS_VOICE) || colorCodeAccepted(cc);
 }
 
 bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
 {
-    if (skipLc) {
-        skipLc = false;
-        return false;
-    }
-
     uint8_t cc = s.r52 >> 4;
     uint8_t slot = slotOf(s);
 
@@ -434,6 +522,10 @@ bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
     if (!lc.fromChipLc(s.lc))
         return false;
 
+    /* An LC RAM never written reads as a call from nobody */
+    if (lc.src == 0)
+        return false;
+
     if (!lc.matches(cfg.ownId, cfg.dstId, cfg.callType, cfg.monitor))
         return false;
 
@@ -441,6 +533,7 @@ bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
 
     st = RX_CALL;
     callSlot = slot;
+    callCc = cc;
     callDmo = !bs;
 
     /*
@@ -461,6 +554,7 @@ bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
     rep.rxSyncType = bs ? 1 : 0;
     rep.hangActive = false;
     lastVoiceMs = nowMs;
+    idleSlots = 0;
 
     return true;
 }
@@ -468,14 +562,23 @@ bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
 void CallController::processControlFrame(const struct dmrbbSnapshot &s,
                                          uint32_t nowMs)
 {
-    if (s.r51 & R51_CRC_BAD)
-        return;
-
     uint8_t cls = s.r51 & R51_SYNC_CLASS_MASK;
 
-    if (cls == R51_CLASS_VOICE) {
-        /* Voice burst A..F, sequence 1..6 in 0x51[7:4] */
-        if ((st == RX_CALL) && burstIsCall(s)) {
+    if (cls == R51_CLASS_RC)
+        return;
+
+    if (cls != R51_CLASS_DATA) {
+        if ((st == RX_CALL) && voiceOfCall(s)) {
+            /*
+             * Direct mode: the call's slot is latched again from this burst
+             * only when the gate had lapsed before it, that is when both
+             * slots were open. While the gate holds only the latched slot
+             * is received, and a burst reported late (after the next
+             * timeslot interrupt) would latch the other one.
+             */
+            if (callDmo && (elapsed(nowMs, lastVoiceMs) >= DMO_GATE_HOLD_MS))
+                callTimecode = (uint8_t)(timecode ^ 1);
+
             lastVoiceMs = nowMs;
             if (s.voiceValid && !rep.lcManufacturer && (sink != nullptr))
                 sink->rxVoiceFrame(s.voice);
@@ -483,7 +586,7 @@ void CallController::processControlFrame(const struct dmrbbSnapshot &s,
         return;
     }
 
-    if (cls == R51_CLASS_RC)
+    if (s.r51 & R51_CRC_BAD)
         return;
 
     uint8_t type = s.r51 >> 4;
@@ -500,7 +603,7 @@ void CallController::processControlFrame(const struct dmrbbSnapshot &s,
             if ((st == RX_CALL) && burstIsCall(s)) {
                 /* Header on the call's slot: repeated, or a new call */
                 if (!tryOpenCall(s, nowMs))
-                    enterHang(nowMs);
+                    enterHang(nowMs, false);
             } else {
                 tryOpenCall(s, nowMs);
             }
@@ -510,15 +613,18 @@ void CallController::processControlFrame(const struct dmrbbSnapshot &s,
             if (!onCall)
                 break;
             if (st == RX_CALL)
-                enterHang(nowMs);
-            else if ((st == RX_HANG) && terminatorOfCall(s))
+                enterHang(nowMs, callDmo);
+            else if (rep.hangActive && terminatorOfCall(s))
                 hangStartMs = nowMs; /* hang time terminator: keep shown */
             break;
 
         default:
-            /* Any other data burst on the call's slot ends the call */
+            /*
+             * Any other data burst on the call's slot ends the call. The
+             * chip is in sync with whoever sent it: the axis is kept.
+             */
             if ((st == RX_CALL) && onCall)
-                enterHang(nowMs);
+                enterHang(nowMs, false);
             break;
     }
 }
@@ -567,10 +673,8 @@ void CallController::armTx(uint32_t nowMs, bool active)
     buildTxLc();
 
     /* Active timing: the modem provides a fresh axis from now on */
-    if (active) {
+    if (active)
         requestAxis(nowMs);
-        wdRestarted = false;
-    }
 }
 
 void CallController::enterTxArm(uint32_t nowMs)
@@ -583,6 +687,7 @@ void CallController::enterTxArm(uint32_t nowMs)
     superframes = 0;
     wakeups = 0;
     st = TX_ARM;
+    rep.hangActive = false;
 
     /*
      * Direct mode (own timing) when there is no repeater to follow: no
@@ -618,8 +723,9 @@ void CallController::enterWakeup(uint32_t nowMs)
         if (st == TX_WAKEUP && wakeupPhase == WU_WAIT) {
             /* Already receiving: idle if slots ticked, else searching */
             st = (slotLock != 0) ? RX_IDLE : RX_SEARCH;
+            idleSlots = 0;
         } else {
-            goRx(nowMs, RX_IDLE);
+            goRx(nowMs, RX_SEARCH);
         }
         return;
     }
@@ -641,15 +747,13 @@ void CallController::enterWakeup(uint32_t nowMs)
     port->startTx(true);
     keyRf();
     requestAxis(nowMs);
-    wdRestarted = false;
 }
 
-void CallController::abortTx(uint32_t nowMs, bool busy)
+void CallController::abortTx(uint32_t nowMs)
 {
-    rep.busy = busy;
     pttLatched = true;
     unkeyRf();
-    goRx(nowMs, RX_IDLE);
+    goRx(nowMs, RX_SEARCH);
 }
 
 /*
@@ -664,9 +768,9 @@ void CallController::abortTx(uint32_t nowMs, bool busy)
  * the next or a few 30 ms of the end of the speech frame is sent, configure
  * reg0x40 to 0x03";
  * UNVERIFIED on hardware whether one slot of margin is enough for the PA
- * to see the whole terminator burst). An aborted transmission (channel
- * busy, wake-up failed, PTT released before anything went out, watchdog)
- * releases it at once.
+ * to see the whole terminator burst). An aborted transmission (RF stage
+ * not keying, wake-up failed, PTT released before anything went out,
+ * watchdog) releases it at once.
  */
 void CallController::keyRf()
 {
@@ -742,10 +846,10 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
                     if (st == TX_WAKEUP)
                         txSlot(nowMs, ownSlot);
                     else
-                        port->setNextSlot(R41_RX);
+                        port->setNextSlot(rxSlot());
                     return;
                 } else {
-                    port->setNextSlot(R41_RX);
+                    port->setNextSlot(rxSlot());
                     return;
                 }
             }
@@ -789,7 +893,7 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
                         armTx(nowMs, false);
                         txSlot(nowMs, ownSlot);
                     } else {
-                        port->setNextSlot(R41_RX);
+                        port->setNextSlot(rxSlot());
                     }
                     break;
             }
@@ -844,13 +948,11 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
              * The RF stays keyed until the burst has gone out.
              */
             port->setNextSlot(R41_IDLE);
-            goRx(nowMs, RX_HANG);
+            goRx(nowMs, RX_SEARCH);
             unkeyAfterBurst(nowMs);
             hangStartMs = nowMs;
-            rep.hangActive = true;
+            rep.hangActive = (cfg.hangTimeMs != 0);
             rep.lcOk = false;
-            if (cfg.hangTimeMs == 0)
-                runTimers(nowMs);
             break;
 
         default:
@@ -870,10 +972,10 @@ void CallController::setPtt(bool p, uint32_t nowMs)
     ptt = p;
 
     if (!p) {
-        pttLatched = false;
         /* Nothing on the air yet: just go back to RX */
         if ((st == TX_ARM) || (st == TX_WAKEUP))
-            abortTx(nowMs, false);
+            abortTx(nowMs);
+        pttLatched = false;
         publish();
         return;
     }
@@ -900,8 +1002,8 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
         return;
 
     lastTsMs = nowMs;
-    wdRestarted = false;
     rep.needsReconfigure = false;
+    bool wasSearching = (st == RX_SEARCH);
 
     /* A last burst programmed at the previous interrupt has gone out */
     if (rfUnkeyPending)
@@ -917,12 +1019,22 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
      * "xx0" non-working); once its meaning is confirmed on the radio it can
      * cross-check the own-slot parity during a transmission.
      */
-    if (tcValid && (missedSlots(s) & 1))
+    uint32_t missed = missedSlots(s);
+    if (tcValid && (missed & 1))
         timecode ^= 1;
     lastTsCount = s.tsCount;
     lastTsTick = s.tsTick;
 
-    trackTimecode((s.r52 & R52_TC) ? 1 : 0);
+    /*
+     * Register 0x52 bit2 read at a timeslot interrupt is the CACH TC of the
+     * slot that just ended, so the slot starting now has the other one.
+     * This is how OpenGD77 and OpenMDUV380 use it on repeaters: they write
+     * 0x41 = 0x80 at the interrupt where the bit reads their own timeslot,
+     * for the burst of the slot starting at the next interrupt, and take a
+     * received burst as one of their timeslot when the bit reads it at the
+     * interrupt that ended the burst's slot. UNVERIFIED on hardware.
+     */
+    trackTimecode((s.r52 & R52_TC) ? 0 : 1);
     runTimers(nowMs);
 
     uint8_t next = timecode ^ 1;
@@ -930,25 +1042,54 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
 
     switch (st) {
         case RX_SEARCH:
-            st = RX_IDLE;
-            port->setNextSlot(R41_RX);
+            /*
+             * A search started in this very pass, by the voice timeout of
+             * a direct mode call, has not seen a slot of its own yet
+             */
+            if (!wasSearching)
+                break;
+
+            st = rep.hangActive ? RX_HANG : RX_IDLE;
+            port->setNextSlot(rxSlot());
             break;
 
         case RX_IDLE:
         case RX_HANG:
-            port->setNextSlot(R41_RX);
+            /*
+             * Once the chip has a time axis it keeps counting 30 ms slots
+             * on it when the signal is gone and follows a new sync only
+             * within 1.25 ms of it (manual §5.4.4): an axis that nothing
+             * confirms for more than IDLE_RESEARCH_SLOTS slots, whether it
+             * came from a call that ended or from noise, is dropped and
+             * the search started again (OpenGD77 and OpenMDUV380 do so
+             * after 20 timeslot interrupts in idle). Merged interrupts
+             * count for the slots they stand for.
+             */
+            if (missed > IDLE_RESEARCH_SLOTS)
+                missed = IDLE_RESEARCH_SLOTS;
+
+            if ((missed + idleSlots) >= IDLE_RESEARCH_SLOTS) {
+                goRx(nowMs, RX_SEARCH);
+            } else {
+                idleSlots = (uint8_t)(idleSlots + missed + 1);
+                port->setNextSlot(rxSlot());
+            }
             break;
 
         case RX_CALL:
             /*
              * Direct mode: open only the call's slot, the other one may
-             * decode noise as valid data (OpenGD77 observation). Repeater
-             * mode: receive both, the timeslot is filtered in software.
+             * decode noise as valid data (OpenGD77 observation), and only
+             * while bursts keep coming: after two missed bursts both slots
+             * are opened again, so that a wrong parity cannot lock the
+             * call out. Repeater mode: receive both, the timeslot is
+             * filtered in software.
              */
-            if (callDmo && (next != callTimecode))
+            if (callDmo && (next != callTimecode)
+                && (elapsed(nowMs, lastVoiceMs) < DMO_GATE_HOLD_MS))
                 port->setNextSlot(R41_IDLE);
             else
-                port->setNextSlot(R41_RX);
+                port->setNextSlot(rxSlot());
             break;
 
         default:
@@ -968,15 +1109,48 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
 
     uint8_t irq = s.irq82;
 
-    if (irq & (R82_CTRL_FRAME | R82_LATE_ENTRY)) {
+    /*
+     * The sync type is taken only from a burst the chip vouches for: a
+     * data burst with a good CRC, a burst with the voice sync or a late
+     * entry. Both slots are open while idle and the empty one may report
+     * noise as a frame.
+     */
+    uint8_t cls = s.r51 & R51_SYNC_CLASS_MASK;
+    bool lateEntry = ((irq & R82_LATE_ENTRY) != 0);
+    bool ctrlFrame = ((irq & R82_CTRL_FRAME) != 0);
+    bool goodData = (cls == R51_CLASS_DATA) && ((s.r51 & R51_CRC_BAD) == 0);
+
+    if (lateEntry || (ctrlFrame && (goodData || (cls == R51_CLASS_VOICE)))) {
         lastSync = s.r5f & R5F_SYNC_MASK;
         if (lastSync == R5F_SYNC_BS)
             lastBsSyncMs = nowMs;
-        rep.rxColorCodeSeen = s.r52 >> 4;
     }
 
-    if ((irq & R82_TX_REJECTED) && isTx())
-        abortTx(nowMs, true);
+    /*
+     * The colour code travels in the slot type of a data burst and in the
+     * EMB of voice bursts B to F (TS 102 361-1 §9.1.2, §9.1.3): burst A
+     * carries the sync pattern in its place and tells nothing about it.
+     */
+    if (lateEntry || (ctrlFrame && goodData))
+        rep.rxColorCodeSeen = s.r52 >> 4;
+
+    if (syncConfirmed(s))
+        idleSlots = 0;
+
+    /*
+     * "This transmission request is rejected because the channel is busy"
+     * (0x82 bit7, manual §5.1.1), the chip's verdict under the polite
+     * access policy. The transmission goes on: OpenGD77 and OpenMDUV380
+     * arm the chip with the same policy word, do nothing on this flag and
+     * keep programming their slots. The flag is counted and shown as the
+     * busy marker. UNVERIFIED on hardware: whether the chip raises it at
+     * all, and whether it keeps the bursts off the air when it does.
+     */
+    if ((irq & R82_TX_REJECTED) && isTx()) {
+        rep.busy = true;
+        if (rep.txRejected < UINT8_MAX)
+            rep.txRejected++;
+    }
 
     /*
      * The chip reports the end of the transmission: release the RF. Only
@@ -998,12 +1172,27 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
     if (irq & R82_CTRL_FRAME)
         processControlFrame(s, nowMs);
 
-    /* Late entry: LC recovered from the embedded signalling */
-    if ((irq & R82_LATE_ENTRY) && (st != RX_CALL))
+    /*
+     * Late entry: LC recovered from the embedded signalling. The chip gives
+     * this interrupt no status register of its own; the check flag of 0x51
+     * is required clear as for every other use of the LC RAM (OpenGD77
+     * practice). UNVERIFIED on hardware: if the trace shows 0x51 bit 2 set
+     * at a late entry with a good LC, drop this test.
+     */
+    if ((irq & R82_LATE_ENTRY) && (st != RX_CALL)
+        && ((s.r51 & R51_CRC_BAD) == 0))
         tryOpenCall(s, nowMs);
 
-    if ((irq & R82_ABNORMAL_EXIT) && (st == RX_CALL))
-        enterHang(nowMs);
+    /*
+     * The "abnormal voice exit" interrupt (0x82 bit1, cause in 0x98) does
+     * not end a call: it is the chip's own voice sync timer, one per slot
+     * (manual chapter 8, registers 0x0D and 0x98), and it fires while a
+     * call goes on: OpenGD77 reads 0x98 and does nothing, OpenMDUV380
+     * mutes one frame when the cause names the call's slot. A call ends
+     * on its terminator, on another data burst in its slot or after
+     * VOICE_TIMEOUT_MS without voice. The cause stays in the snapshot for
+     * the bring-up trace.
+     */
 
     publish();
 }
@@ -1016,15 +1205,19 @@ void CallController::onTimeout(uint32_t nowMs)
     runTimers(nowMs);
 
     /*
-     * Timeslot watchdog: the interrupts stop when the chip loses its time
-     * axis. Re-run the RX sequence after TS_WATCHDOG_MS (OpenGD77 practice),
-     * ask for a full reconfiguration after TS_RECONFIGURE_MS. The chip
-     * provides the interrupts only once a time axis exists (manual §5.4.4),
-     * so while searching for a signal there is nothing to watch: a silent
-     * channel in RX_SEARCH is left alone. A transmission requests its own
-     * axis and is watched from that request, except while waiting for the
-     * repeater's answer to a wake-up: the channel is silent by definition
-     * and T_SyncWu, run by runTimers(), bounds the wait.
+     * Timeslot watchdog. Once it has a time axis the chip gives a timeslot
+     * interrupt every 30 ms, also when the signal is gone (manual §5.4.4),
+     * and none before: so a silent channel in RX_SEARCH is left alone, and
+     * so is the wait for the repeater's answer to a wake-up, which
+     * T_SyncWu, run by runTimers(), bounds. In any other state interrupts
+     * missing for TS_WATCHDOG_MS mean the axis is gone: the search is
+     * started again (OpenGD77 practice) and the controller waits in
+     * RX_SEARCH, a call being received ending with its hang time. A
+     * transmission requests its own axis, is watched from that request
+     * and ends with the "RF failed" marker. A full reconfiguration is
+     * asked for only when the silence is first seen after
+     * TS_RECONFIGURE_MS, that is when the thread itself was held up that
+     * long.
      */
     if ((st == RX_SEARCH) || ((st == TX_WAKEUP) && (wakeupPhase == WU_WAIT))) {
         publish();
@@ -1033,20 +1226,19 @@ void CallController::onTimeout(uint32_t nowMs)
 
     uint32_t silent = elapsed(nowMs, lastTsMs);
 
-    if ((silent >= TS_RECONFIGURE_MS) && !rep.needsReconfigure) {
-        rep.needsReconfigure = true;
+    if (silent >= TS_WATCHDOG_MS) {
+        rep.needsReconfigure = (silent >= TS_RECONFIGURE_MS);
+
         if (isTx()) {
+            rep.rfFailed = true;
             pttLatched = true;
             unkeyRf();
+            goRx(nowMs, RX_SEARCH);
+        } else if (st == RX_CALL) {
+            enterHang(nowMs, true);
+        } else {
+            goRx(nowMs, RX_SEARCH);
         }
-        goRx(nowMs, RX_SEARCH);
-    } else if ((silent >= TS_WATCHDOG_MS) && !wdRestarted) {
-        wdRestarted = true;
-        if (isTx()) {
-            pttLatched = true;
-            unkeyRf();
-        }
-        goRx(nowMs, isTx() ? RX_SEARCH : st);
     }
 
     publish();

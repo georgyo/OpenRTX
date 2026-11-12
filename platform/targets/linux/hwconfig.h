@@ -30,6 +30,9 @@ enum Mod17Flags {
 /* Device supports DMR mode */
 #define CONFIG_DMR
 
+/* DMR bring-up trace: recorded, read back by the unit tests only */
+#define CONFIG_DMR_TRACE
+
 #ifdef __cplusplus
 }
 #endif

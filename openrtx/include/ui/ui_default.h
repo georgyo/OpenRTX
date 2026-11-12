@@ -262,7 +262,7 @@ enum dmrMonitorRows
     DMRMON_ACT_TWOPOINT,  // 0x12 bit6 toggle
     DMRMON_ACT_LCSS,      // 0x50 LCSS convention of the voice bursts,
                           // chip-filled / manual, through the RTX status
-    DMRMON_ACT_RFADV,     // 0x12 = 0x98 / 0x15 (RF_TX_INTER advance),
+    DMRMON_ACT_RFADV,     // 0x12 = 0x18 / 0x15 (RF_TX_INTER advance),
                           // through the RTX status like the mode word
     DMRMON_ACT_SYSLINE,   // driver page DMRBB_DRV_SYS_LINE = PC1 / PC3
     DMRMON_ROWS_NUM
@@ -280,10 +280,11 @@ enum dmrMonitorRows
 #define DMRMON_R06_VARIANTS  5
 
 // Values of register 0x12 the "RF advance" action alternates between: the
-// OEM init word (bit7 RF ramp smoothing + RF_TX_INTER 2.4 ms in advance) and
-// the OpenGD77 one (2.1 ms, no smoothing), bit6 (the "Two-point" test tone)
-// being preserved by that action. UNVERIFIED on hardware.
-#define DMRMON_R12_OEM       0x98
+// driver default (DMRBB_RF_ADVANCE_DEFAULT: RF_TX_INTER 2.4 ms in advance)
+// and the OpenGD77 one (2.1 ms), both with bit7 clear (transmit DAC ramp
+// from 1.65 V), bit6 (the "Two-point" test tone) being preserved by that
+// action. UNVERIFIED on hardware.
+#define DMRMON_R12_DEFAULT   0x18
 #define DMRMON_R12_GD77      0x15
 #define DMRMON_R12_TWOPOINT  0x40
 #endif

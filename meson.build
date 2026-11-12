@@ -84,6 +84,7 @@ openrtx_src = ['openrtx/src/core/state.c',
                'openrtx/src/protocols/DMR/Silence.c',
                'openrtx/src/core/dmr_audio.c',
                'openrtx/src/core/dmr_lastheard.c',
+               'openrtx/src/core/dmr_trace.c',
                'openrtx/src/rtx/OpMode_DMR.cpp']
 
 openrtx_inc = ['openrtx/include', 'platform']
@@ -1487,6 +1488,21 @@ hr_c6000_dmr_test = executable('hr_c6000_dmr_test',
                                dependencies        : [threads_dep, catch2_dep],
                                link_args           : linux_l_args)
 
+# Same test with the interrupt line assignment of the CS7000-PLUS: SYS_INTER
+# on PC3 and PC1 an analogue node, armed only when selected as the SYS line.
+hr_c6000_dmr_plus_test = executable('hr_c6000_dmr_plus_test',
+                               sources : ['tests/unit/hr_c6000_dmr.cpp',
+                                          'platform/drivers/audio/Cx000_dac.cpp',
+                                          'platform/drivers/baseband/HR_Cx000.cpp',
+                                          'platform/drivers/baseband/HR_C6000.cpp',
+                                          'platform/drivers/baseband/HR_C6000_CS7000.cpp',
+                                          'platform/drivers/baseband/dmr_CS7000.cpp'],
+                               cpp_args            : linux_cpp_args + ['-DFAKE_CS7000_PLUS'],
+                               include_directories : ['tests/unit/fake/cs7000',
+                                                      'tests/unit/fake_stm32'] + openrtx_inc,
+                               dependencies        : [threads_dep, catch2_dep],
+                               link_args           : linux_l_args)
+
 # CS7000 / CS7000-PLUS RF driver around its DMR branches: the real
 # radio_CS7000.cpp and HR_C6000 baseband driver against a recording fake SPI
 # bus, a fake gpio expander and fake synthesizer / detector / DMR modem
@@ -1533,6 +1549,10 @@ dmr_lastheard_test = executable('dmr_lastheard_test',
                                 sources : unit_test_src + ['tests/unit/DMR_lastheard.cpp'],
                                 kwargs  : unit_test_opts)
 
+dmr_trace_test = executable('dmr_trace_test',
+                            sources : unit_test_src + ['tests/unit/dmr_trace.cpp'],
+                            kwargs  : unit_test_opts)
+
 test('M17 Golay Unit Test',   m17_golay_test)
 test('M17 Viterbi Unit Test', m17_viterbi_test)
 test('M17 Demodulator Test',  m17_demodulator_test)
@@ -1568,6 +1588,7 @@ endif
 test('Cx000 DAC Test',       cx000_dac_test)
 test('Cx000 DAC DMR Test',   cx000_dac_dmr_test)
 test('HR_C6000 DMR Driver Test', hr_c6000_dmr_test)
+test('HR_C6000 DMR Driver Test, CS7000-PLUS lines', hr_c6000_dmr_plus_test)
 test('CS7000 Radio Driver Test', radio_cs7000_test)
 
 ##
@@ -1624,3 +1645,4 @@ test('SKY72310 Lock Detect Test', sky72310_lock_test)
 test('AK2365A Driver Test',   ak2365a_test)
 test('DMR FEC Unit Test',     dmr_fec_test)
 test('DMR Last Heard Test',   dmr_lastheard_test)
+test('DMR Trace Test',        dmr_trace_test)

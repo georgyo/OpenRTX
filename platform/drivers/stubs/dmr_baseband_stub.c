@@ -43,6 +43,11 @@ void dmrbb_idle(void)
 {
 }
 
+void dmrbb_setColorCode(uint8_t cc)
+{
+    (void)cc;
+}
+
 void dmrbb_setNextSlot(uint8_t r41)
 {
     (void)r41;

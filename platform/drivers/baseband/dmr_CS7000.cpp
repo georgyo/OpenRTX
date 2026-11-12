@@ -22,15 +22,15 @@
  *    events with ~300ns active-low pulses (manual §4.4) caught by the
  *    falling-edge EXTI shim of gpio_irq_stm32.cpp. The callbacks run in
  *    interrupt context and only latch: an event bit in `pending`, a counter
- *    per line and the tick of the slot interrupt. PC0..PC3 are all four
- *    attached, each with its own counter, because the schematic of the
- *    CS7000-M17 Plus (V01) and the pinmap disagree on which pin carries
- *    SYS_INTER (PC3_C versus PC1, see pinmap.h) and nothing has been
- *    validated yet: the dispatch to the event bits uses the pinmap
- *    constants DMR_TS_INT / DMR_TX_INT and, for SYS_INTER, a runtime
- *    choice between DMR_SYS_INT (default) and DMR_SYS_INT_ALT made from
- *    the monitor screen's "SYS line" action (DMRBB_DRV_SYS_LINE,
- *    interfaces/dmr_baseband.h); the line not chosen only counts.
+ *    per line and the tick of the slot interrupt. TIME_SLOT_INTER and
+ *    RF_TX_INTER are dispatched with the pinmap constants DMR_TS_INT /
+ *    DMR_TX_INT, SYS_INTER with DMR_SYS_INT unless the monitor screen's
+ *    "SYS line" action switched it to DMR_SYS_INT_ALT (DMRBB_DRV_SYS_LINE,
+ *    interfaces/dmr_baseband.h). PC0..PC3 are attached, each with its own
+ *    counter, and the SYS candidate not chosen only counts; on a target
+ *    whose pinmap declares the alternative an analogue node
+ *    (CONFIG_DMR_SYS_INT_ALT_ANALOG) that pin is left in analogue mode,
+ *    without interrupt, until it is chosen.
  *
  *  - Bus access. All the SPI traffic happens in the thread calling
  *    dmrbb_waitEvent() (the rtx thread): the "user" SPI is shared with the
@@ -48,11 +48,11 @@
  *
  *  - Voice payload. 27 bytes per voice burst (three AMBE+2 frames, manual
  *    §4.6.1) exchanged on the vocoder SPI port ("V_SPI", C6000 slave) with
- *    a bit-banged master on the spi_bitbang driver: read command 0x83,
- *    address 0x00, 27 bytes; write command 0x03, address 0x00, 27 bytes, one
- *    operation per chip select. UNVERIFIED on hardware, with the TX RAM
- *    0x30 / RX RAM 0x30 transport over the "user" SPI as the selectable
- *    alternative (DMRBB_PAGE_DRIVER / DMRBB_DRV_VOICE_PATH).
+ *    a bit-banged master (voc_spi of the target's hwconfig.c, data valid at
+ *    the falling clock edge): read command 0x83, address 0x00, 27 bytes;
+ *    write command 0x03, address 0x00, 27 bytes, one operation per chip
+ *    select, as OpenGD77 and OpenMDUV380 exchange them. UNVERIFIED on
+ *    hardware.
  *
  *  - Transmission. The RF chain (TX VCO, PLL lock, APC, PA) is keyed by
  *    radio_enableTx() of radio_CS7000.cpp, which in DMR mode writes nothing
@@ -108,23 +108,27 @@ static constexpr uint8_t VSPI_CMD_READ = 0x83;
 static constexpr uint8_t VSPI_CMD_WRITE = 0x03;
 static constexpr uint8_t VSPI_ADDR = 0x00;
 
-/* TX/RX RAM address of the 216-bit voice payload (manual Table 5.2) */
-static constexpr uint8_t RAM_VOICE_ADDR = 0x30;
+/*
+ * Time between the V_SPI chip select going low and the first clock edge, in
+ * microseconds: the figure OpenGD77 runs the port with. The manual gives
+ * none.
+ */
+static constexpr unsigned int VSPI_CS_SETUP_US = 2;
+
+/* TX and RX RAM address of the link control (manual Tables 5.2 and 5.3) */
 static constexpr uint8_t RAM_LC_ADDR = 0x00;
 
 /*
- * RX RAM address of the CACH Short LC: 0x24-0x26 plus bits 7:4 of 0x27 hold
- * the 28 control bits (SLCO and 24 payload bits, TS 102 361-1 §7.1.4,
- * §9.1.7), 0x28 the 8 check bits (CRC-8, Annex B.3.7). The address is the
- * one of the TX-side RAM allocation (manual Table 5.2, "Short LC
- * 0x24~0x28", the RAM the MCU fills for a transmission): the RX-side table
- * (5.3) is omitted in the translated manual, so the RX RAM is assumed to
- * mirror the TX map, as RAM_LC_ADDR at 0x00 already assumes. Five bytes are
- * read as they are, the decoding is left to the protocol layer. UNVERIFIED
- * on hardware: the RX address and layout, and whether 0x28 is the CRC as
- * received or the chip's own check byte.
+ * RX RAM address of the CACH Short LC, manual Table 5.3 (RX side RAM
+ * allocation): "ShortLC 0x2b~0x2f, 36bit ShortLC data of the receiving end
+ * CACH field, the low 4 bits of 0x2F are unused". The 36 bits are the 28
+ * control bits (SLCO and 24 payload bits, TS 102 361-1 §7.1.4, §9.1.7)
+ * and the 8 check bits (CRC-8, Annex B.3.7). Five bytes are read as they
+ * are, the decoding is left to the protocol layer. UNVERIFIED on hardware:
+ * the order of the 36 bits, and whether the check bits are the CRC as
+ * received or the chip's own.
  */
-static constexpr uint8_t RAM_SHORT_LC_ADDR = 0x24;
+static constexpr uint8_t RAM_SHORT_LC_ADDR = 0x2B;
 static constexpr uint8_t SHORT_LC_BYTES = 5;
 
 /* Register 0x82 flags, manual §5.1.1, see HR_C6000::Irq82 */
@@ -138,23 +142,27 @@ static constexpr uint8_t IRQ_ABNORMAL_EXIT = HR_C6000::IRQ_ABNORMAL_EXIT;
 /* Register 0x86 sub-status, bit 2 "Short LC received" (G4EML table) */
 static constexpr uint8_t SUB86_SHORT_LC = HR_C6000::SUB86_SHORT_LC;
 
-/* Register 0x51 fields, G4EML table */
-static constexpr uint8_t R51_CRC_BAD = 0x04;
+/*
+ * Register 0x51 fields, manual chapter 8: [1:0] sync class (00 no sync, 01
+ * voice, 10 data, 11 RC), [6:4] voice burst number 1 to 6 for A to F, bit 2
+ * check result of the burst (0 correct)
+ */
 static constexpr uint8_t R51_CLASS_MASK = 0x03;
+static constexpr uint8_t R51_CLASS_NONE = 0x00;
 static constexpr uint8_t R51_CLASS_VOICE = 0x01;
-
-/* Voice payload transport, DMRBB_DRV_VOICE_PATH */
-static constexpr uint8_t VOICE_PATH_VSPI = 0;
-static constexpr uint8_t VOICE_PATH_RAM = 1;
+static constexpr uint8_t R51_VOICE_SEQ_SHIFT = 4;
+static constexpr uint8_t R51_VOICE_SEQ_MASK = 0x07;
+static constexpr uint8_t R51_VOICE_SEQ_MAX = 6;
+static constexpr uint8_t R51_CRC_BAD = 0x04;
 
 /* Polling period of dmrbb_waitEvent(), milliseconds */
 static constexpr unsigned WAIT_POLL_MS = 1;
 
 /*
- * Interrupt lines. The four EXTI lines PC0..PC3 are all attached; the
- * mapping of the C6000 pins on them comes from pinmap.h, with the SYS_INTER
- * line selectable at runtime between the pinmap constant (SYS_LINE, default)
- * and the schematic's alternative (ALT_LINE), see DMRBB_DRV_SYS_LINE.
+ * Interrupt lines, among the four EXTI lines PC0..PC3; the mapping of the
+ * C6000 pins on them comes from pinmap.h, with the SYS_INTER line
+ * selectable at runtime between DMR_SYS_INT (SYS_LINE, default) and
+ * DMR_SYS_INT_ALT (ALT_LINE), see DMRBB_DRV_SYS_LINE.
  */
 static constexpr unsigned NUM_LINES = 4;
 static constexpr uint8_t TS_LINE = PIN_NUMBER(DMR_TS_INT);
@@ -166,10 +174,25 @@ static_assert(TS_LINE < NUM_LINES, "DMR_TS_INT must be PC0..PC3");
 static_assert(SYS_LINE < NUM_LINES, "DMR_SYS_INT must be PC0..PC3");
 static_assert(TX_LINE < NUM_LINES, "DMR_TX_INT must be PC0..PC3");
 static_assert(ALT_LINE < NUM_LINES, "DMR_SYS_INT_ALT must be PC0..PC3");
-static_assert(SYS_LINE == DMRBB_SYS_LINE_PINMAP,
-              "DMRBB_SYS_LINE_PINMAP must match DMR_SYS_INT");
-static_assert(ALT_LINE == DMRBB_SYS_LINE_SCHEMATIC,
-              "DMRBB_SYS_LINE_SCHEMATIC must match DMR_SYS_INT_ALT");
+static_assert((SYS_LINE == DMRBB_SYS_LINE_PC1)
+                  || (SYS_LINE == DMRBB_SYS_LINE_PC3),
+              "DMR_SYS_INT must be PC1 or PC3");
+static_assert((ALT_LINE == DMRBB_SYS_LINE_PC1)
+                  || (ALT_LINE == DMRBB_SYS_LINE_PC3),
+              "DMR_SYS_INT_ALT must be PC1 or PC3");
+static_assert(SYS_LINE != ALT_LINE,
+              "DMR_SYS_INT and DMR_SYS_INT_ALT must differ");
+
+/*
+ * A target whose DMR_SYS_INT_ALT pin is an analogue node of the board says
+ * so in its pinmap: that pin is then a digital input with an interrupt only
+ * while it is the line selected as SYS_INTER.
+ */
+#ifdef CONFIG_DMR_SYS_INT_ALT_ANALOG
+static constexpr bool ALT_LINE_ANALOG = true;
+#else
+static constexpr bool ALT_LINE_ANALOG = false;
+#endif
 
 static const struct gpioPin irqPins[NUM_LINES] = {
     { &GpioC, 0 },
@@ -195,12 +218,17 @@ static volatile uint16_t rftxLead = 0;
 static struct dmrbbConfig config;
 static bool active = false;
 static bool attached = false;
-static volatile uint8_t voicePath = VOICE_PATH_VSPI;
 
 /*
- * Line dispatched as SYS_INTER, read in interrupt context: SYS_LINE (the
- * pinmap, PC1) unless the monitor screen switched it to ALT_LINE (the
- * schematic, PC3_C). UNVERIFIED on hardware which one each board needs.
+ * Lines whose interrupt is attached, bit n for line n: the ones the shim
+ * accepted, reported at DMRBB_DRV_LINES_ARMED. Written by the rtx thread
+ * and by the monitor screen's "SYS line" action.
+ */
+static uint8_t armedLines = 0;
+
+/*
+ * Line dispatched as SYS_INTER, read in interrupt context: SYS_LINE unless
+ * the monitor screen switched it to ALT_LINE.
  */
 static volatile uint8_t sysLine = SYS_LINE;
 
@@ -236,11 +264,63 @@ static void lineIsr(void *arg)
     }
 
     /*
-     * The line not selected as SYS_INTER (PC3 by default, PC1 after the
-     * switch) only counts: the monitor screen shows which line pulses
-     * every 60ms, the knob follows it, then DMR_SYS_INT is fixed per
-     * target in pinmap.h.
+     * The line not selected as SYS_INTER only counts: the monitor screen
+     * shows which line pulses every 60ms.
      */
+}
+
+/**
+ * Whether a line is armed while the modem is configured: all four, except
+ * an alternative SYS line on an analogue node of the board, which is left
+ * alone unless it is the line selected as SYS_INTER.
+ *
+ * @param line: line number, 0..3.
+ * @return true when the line is to be armed.
+ */
+static bool lineWanted(const unsigned line)
+{
+    if (ALT_LINE_ANALOG && (line == ALT_LINE))
+        return sysLine == ALT_LINE;
+
+    return true;
+}
+
+/**
+ * Disarm one line: interrupt detached if this driver attached it, and an
+ * analogue alternative SYS line back to analogue mode.
+ *
+ * @param line: line number, 0..3.
+ */
+static void disarmLine(const unsigned line)
+{
+    const uint8_t bit = static_cast<uint8_t>(1U << line);
+
+    if ((armedLines & bit) != 0) {
+        gpioIrq_detach(&irqPins[line]);
+        armedLines = armedLines & static_cast<uint8_t>(~bit);
+    }
+
+    if (ALT_LINE_ANALOG && (line == ALT_LINE))
+        gpioPin_setMode(&irqPins[line], ANALOG);
+}
+
+/**
+ * Arm one line: digital input, falling edge interrupt. A line the interrupt
+ * shim refuses (already in use by another pin of the same number) stays out
+ * of armedLines.
+ *
+ * @param line: line number, 0..3.
+ */
+static void armLine(const unsigned line)
+{
+    gpioPin_setMode(&irqPins[line], INPUT);
+
+    if (gpioIrq_attach(&irqPins[line], GPIO_IRQ_FALLING, lineIsr,
+                       reinterpret_cast<void *>(static_cast<uintptr_t>(line)))
+        == 0)
+        armedLines = armedLines | static_cast<uint8_t>(1U << line);
+    else
+        disarmLine(line);
 }
 
 /**
@@ -252,13 +332,13 @@ static void detachLines()
         return;
 
     for (unsigned i = 0; i < NUM_LINES; i++)
-        gpioIrq_detach(&irqPins[i]);
+        disarmLine(i);
 
     attached = false;
 }
 
 /**
- * Attach the four interrupt lines, falling edge, dropping whatever is still
+ * Attach the interrupt lines, falling edge, dropping whatever is still
  * pending from a previous configuration.
  */
 static void attachLines()
@@ -271,9 +351,10 @@ static void attachLines()
     }
 
     for (unsigned i = 0; i < NUM_LINES; i++) {
-        gpioPin_setMode(&irqPins[i], INPUT);
-        gpioIrq_attach(&irqPins[i], GPIO_IRQ_FALLING, lineIsr,
-                       reinterpret_cast<void *>(static_cast<uintptr_t>(i)));
+        if (lineWanted(i))
+            armLine(i);
+        else
+            disarmLine(i);
     }
 
     attached = true;
@@ -281,7 +362,8 @@ static void attachLines()
 
 /**
  * V_SPI read of one voice burst: command 0x83, address 0x00, then 27 bytes
- * with the chip select held low (manual §4.6.1).
+ * with the chip select held low (manual §4.6.1). The clock idles low and
+ * the target's transfer function leaves it there after the last bit.
  * UNVERIFIED on hardware: command format, clock phase and pin orientation.
  *
  * @param buf: destination of the 27 bytes.
@@ -294,6 +376,7 @@ static void vspiRead(uint8_t *buf)
 
     spi_acquire(spi);
     gpioPin_clear(&vocCs);
+    delayUs(VSPI_CS_SETUP_US);
     spi_send(spi, cmd, sizeof(cmd));
     spi_receive(spi, buf, 27);
     gpioPin_set(&vocCs);
@@ -315,6 +398,7 @@ static void vspiWrite(const uint8_t *buf)
 
     spi_acquire(spi);
     gpioPin_clear(&vocCs);
+    delayUs(VSPI_CS_SETUP_US);
     spi_send(spi, cmd, sizeof(cmd));
     spi_send(spi, buf, 27);
     gpioPin_set(&vocCs);
@@ -329,10 +413,21 @@ static void vspiWrite(const uint8_t *buf)
  * and FSK error count, then 0x83 acknowledging exactly the flags read.
  *
  * @param s: snapshot to fill.
+ * @return false when register 0x82 holds no flag, the snapshot is then left
+ * untouched.
  */
-static void readSysEvent(struct dmrbbSnapshot *s)
+static bool readSysEvent(struct dmrbbSnapshot *s)
 {
     const uint8_t irq = C6000.readIrqFlags();
+
+    /*
+     * No flag raised: the pulse did not come from the chip (noise on the
+     * line, or the SYS_INTER line is the wrong one of the two). The
+     * snapshot keeps the last real event.
+     */
+    if (irq == 0)
+        return false;
+
     s->irq82 = irq;
 
     if (irq & IRQ_TX_START)
@@ -343,11 +438,10 @@ static void readSysEvent(struct dmrbbSnapshot *s)
         /*
          * Short LC of the CACH: the manual files "Short LC received" under
          * the end-of-transmission sub-status (0x82 bit 5, 0x86 bit 2); the
-         * 36 bits are read from RX RAM 0x24-0x28, the TX-side address of
-         * Table 5.2 assumed to be mirrored on the RX side. Read right
-         * away, before anything else could overwrite the RAM; the snapshot
-         * keeps the previous value when the flag is clear. UNVERIFIED on
-         * hardware, see RAM_SHORT_LC_ADDR.
+         * 36 bits are read from RX RAM 0x2B-0x2F (manual Table 5.3). Read
+         * right away, before anything else could overwrite the RAM; the
+         * snapshot keeps the previous value when the flag is clear.
+         * UNVERIFIED on hardware, see RAM_SHORT_LC_ADDR.
          */
         if (s->sub86 & SUB86_SHORT_LC)
             C6000.readDataRam(RAM_SHORT_LC_ADDR, s->shortLc, SHORT_LC_BYTES);
@@ -366,18 +460,20 @@ static void readSysEvent(struct dmrbbSnapshot *s)
         C6000.readDataRam(RAM_LC_ADDR, s->lc, sizeof(s->lc));
 
     /*
-     * Voice burst: sync class 01 with a good CRC, reported together with the
-     * "received data" flag. The read happens before the acknowledge so that
-     * the chip cannot overwrite the payload with the next burst in between.
+     * Voice burst: burst A reads sync class 01, bursts B to F class 00, all
+     * six with their number in 0x51[6:4] and the check flag 0x51[2] clear
+     * (OpenGD77 and OpenMDUV380 require it on every received burst). The
+     * read happens before the acknowledge so that the chip cannot overwrite
+     * the payload with the next burst in between.
      */
-    s->voiceValid = false;
-    if ((irq & IRQ_RX_DATA) && ((s->r51 & R51_CLASS_MASK) == R51_CLASS_VOICE)
-        && ((s->r51 & R51_CRC_BAD) == 0)) {
-        if (voicePath == VOICE_PATH_RAM)
-            C6000.readDataRam(RAM_VOICE_ADDR, s->voice, sizeof(s->voice));
-        else
-            vspiRead(s->voice);
+    const uint8_t cls = s->r51 & R51_CLASS_MASK;
+    const uint8_t seq = (s->r51 >> R51_VOICE_SEQ_SHIFT) & R51_VOICE_SEQ_MASK;
 
+    s->voiceValid = false;
+    if ((irq & IRQ_RX_DATA) && ((s->r51 & R51_CRC_BAD) == 0)
+        && ((cls == R51_CLASS_NONE) || (cls == R51_CLASS_VOICE)) && (seq >= 1)
+        && (seq <= R51_VOICE_SEQ_MAX)) {
+        vspiRead(s->voice);
         s->voiceValid = true;
     }
 
@@ -387,6 +483,8 @@ static void readSysEvent(struct dmrbbSnapshot *s)
     s->fskErr = C6000.readCfgRegister(0x0F);
 
     C6000.clearIrq(irq);
+
+    return true;
 }
 
 int dmrbb_init(void)
@@ -442,8 +540,8 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
         C6000.writeCfgRegister(0x10, cfg->modeReg);
 
     /*
-     * Same for the RF_TX_INTER advance word 0x12: the table writes the OEM
-     * 0x98, a different value asked for from the monitor screen (OpenGD77's
+     * Same for the RF_TX_INTER advance word 0x12: the table writes the
+     * default, a different value asked for from the monitor screen (OpenGD77's
      * 0x15, carried by rtxStatus_t::dmr_rfAdvance into cfg->rfAdvance) is
      * rewritten here so that it survives the reconfigurations the opMode
      * handler does on its own. UNVERIFIED on hardware.
@@ -487,8 +585,9 @@ void dmrbb_startTx(bool activeTiming)
      * the modem, the first burst needs a later dmrbb_setNextSlot(0x80). A
      * transmission refused by the chip (channel busy under the polite
      * policy) shows up as bit 7 of register 0x82 in the next snapshot,
-     * HR_C6000::txRejected(); TX start and end as bits 6 and 5 with the
-     * sub-status registers 0x84 / 0x86 (sub84 / sub86 of the snapshot).
+     * HR_C6000::txRejected(); its end as bit 5 with the sub-status
+     * register 0x86 (sub86 of the snapshot). The TX start events of bit 6
+     * and 0x84 are not enabled by the dmrMode() table (0x85 = 0x00).
      */
     C6000.dmrTxStart(activeTiming, config.polite);
 }
@@ -499,6 +598,14 @@ void dmrbb_idle(void)
         return;
 
     C6000.dmrIdle();
+}
+
+void dmrbb_setColorCode(uint8_t cc)
+{
+    if (active == false)
+        return;
+
+    C6000.setColorCode(cc);
 }
 
 void dmrbb_setNextSlot(uint8_t r41)
@@ -537,22 +644,19 @@ void dmrbb_writeVoice(const uint8_t ambe[27])
         return;
 
     /*
-     * UNVERIFIED on hardware: V_SPI is the transport selected by register
-     * 0x06 = 0x21; the TX RAM 0x30-0x4A alternative (manual Table 5.2) is
-     * reachable from the monitor screen through DMRBB_DRV_VOICE_PATH.
+     * V_SPI is the transport selected by register 0x06 = 0x21 (manual
+     * §4.6.1). UNVERIFIED on hardware.
      */
-    if (voicePath == VOICE_PATH_RAM)
-        C6000.writeDataRam(RAM_VOICE_ADDR, ambe, 27);
-    else
-        vspiWrite(ambe);
+    vspiWrite(ambe);
 }
 
 uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
 {
     const long long deadline = getTick() + static_cast<long long>(timeoutMs);
-    uint32_t ev = 0;
 
     for (;;) {
+        uint32_t ev = 0;
+
         {
             miosix::FastInterruptDisableLock dLock;
             ev = pending;
@@ -565,39 +669,38 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
                 s->lineCount[i] = lineCount[i];
         }
 
+        /*
+         * Slot tick: timecode and slot status for the tracking of the next
+         * slot. When a SYS event is pending as well, its reads below
+         * refresh 0x52/0x42 once more.
+         */
+        if (ev & DMRBB_EV_TS) {
+            s->r52 = C6000.readCfgRegister(0x52);
+            s->r42 = C6000.readCfgRegister(0x42);
+        }
+
+        /* A SYS pulse without any flag in register 0x82 is not an event */
+        if ((ev & DMRBB_EV_SYS) && (readSysEvent(s) == false))
+            ev &= ~static_cast<uint32_t>(DMRBB_EV_SYS);
+
         if (ev != 0)
-            break;
+            return ev;
 
         if (getTick() >= deadline)
             return DMRBB_EV_TIMEOUT;
 
         sleepFor(0u, WAIT_POLL_MS);
     }
-
-    /*
-     * Slot tick: timecode and slot status for the tracking of the next
-     * slot. When a SYS event is pending as well, its reads below refresh
-     * 0x52/0x42 once more.
-     */
-    if (ev & DMRBB_EV_TS) {
-        s->r52 = C6000.readCfgRegister(0x52);
-        s->r42 = C6000.readCfgRegister(0x42);
-    }
-
-    if (ev & DMRBB_EV_SYS)
-        readSysEvent(s);
-
-    return ev;
 }
 
 uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
 {
     if (page == DMRBB_PAGE_DRIVER) {
-        if (addr == DMRBB_DRV_VOICE_PATH)
-            return voicePath;
-
         if (addr == DMRBB_DRV_SYS_LINE)
             return sysLine;
+
+        if (addr == DMRBB_DRV_LINES_ARMED)
+            return armedLines;
 
         if ((addr >= DMRBB_DRV_RFTX_TICK(0))
             && (addr <= DMRBB_DRV_RFTX_LEAD(1))) {
@@ -658,17 +761,25 @@ uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
 void dmrbb_writeRegister(uint8_t page, uint8_t addr, uint8_t v)
 {
     if (page == DMRBB_PAGE_DRIVER) {
-        if (addr == DMRBB_DRV_VOICE_PATH)
-            voicePath = (v != 0) ? VOICE_PATH_RAM : VOICE_PATH_VSPI;
-
         /*
          * SYS_INTER line: only the two candidates are accepted, a pulse on
          * the line already latched between the check and the store is
-         * counted on the old assignment, which is harmless.
+         * counted on the old assignment, which is harmless. An analogue
+         * alternative line is armed when it is selected and put back to
+         * analogue mode when it no longer is, at once if the modem is
+         * configured, otherwise by the next dmrbb_configure().
          */
         if ((addr == DMRBB_DRV_SYS_LINE)
-            && ((v == SYS_LINE) || (v == ALT_LINE)))
+            && ((v == SYS_LINE) || (v == ALT_LINE))) {
             sysLine = v;
+
+            if (ALT_LINE_ANALOG && attached) {
+                if (lineWanted(ALT_LINE) == false)
+                    disarmLine(ALT_LINE);
+                else if ((armedLines & (1U << ALT_LINE)) == 0)
+                    armLine(ALT_LINE);
+            }
+        }
 
         return;
     }

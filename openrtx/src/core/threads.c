@@ -26,6 +26,10 @@
 #include "interfaces/usb_serial.h"
 #endif
 
+#if defined(CONFIG_DMR_TRACE)
+#include "core/dmr_trace.h"
+#endif
+
 #if defined(PLATFORM_TTWRPLUS)
 #include "pmu.h"
 #endif
@@ -170,6 +174,11 @@ void *main_thread(void *arg)
         // Run USB serial task
         #if defined(CONFIG_USB_SERIAL)
         usb_serial_task();
+        #endif
+
+        // Send the pending records of the DMR bring-up trace, if any
+        #if defined(CONFIG_DMR_TRACE)
+        dmrTrace_task();
         #endif
 
         // Run GPS task

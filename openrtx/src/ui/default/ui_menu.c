@@ -990,8 +990,9 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
                 // the pair than what is read back now, the two-point bit
                 // kept as it is (same rule as the action in ui.c)
                 uint8_t r12 = dmrMonReadback[2];
-                uint8_t adv = ((r12 & ~DMRMON_R12_TWOPOINT) == DMRMON_R12_OEM)
-                            ? DMRMON_R12_GD77 : DMRMON_R12_OEM;
+                uint8_t adv = ((r12 & ~DMRMON_R12_TWOPOINT)
+                               == DMRMON_R12_DEFAULT)
+                            ? DMRMON_R12_GD77 : DMRMON_R12_DEFAULT;
                 sniprintf(buf, max_len, "12<-%02X",
                           (r12 & DMRMON_R12_TWOPOINT) | adv);
             }
@@ -1001,9 +1002,9 @@ int _ui_getDMRMonitorValueName(char *buf, uint8_t max_len, uint8_t index)
                 // the one the next ENTER selects (same rule as ui.c: PC3
                 // unless PC3 is in force)
                 uint8_t line = dmrMonReadback[6];
-                uint8_t next = (line == DMRBB_SYS_LINE_SCHEMATIC)
-                             ? DMRBB_SYS_LINE_PINMAP
-                             : DMRBB_SYS_LINE_SCHEMATIC;
+                uint8_t next = (line == DMRBB_SYS_LINE_PC3)
+                             ? DMRBB_SYS_LINE_PC1
+                             : DMRBB_SYS_LINE_PC3;
                 sniprintf(buf, max_len, "PC%u->PC%u", line, next);
             }
             else

@@ -182,7 +182,12 @@ int nvm_readVfoChannelData(channel_t *channel)
 
 int nvm_readSettings(settings_t *settings)
 {
-    memset(settings, 0x00, sizeof(settings_t));
+    /*
+     * A record saved by an older firmware is shorter than the structure:
+     * the fields added since then keep their default value instead of
+     * reading as zero.
+     */
+    *settings = default_settings;
     int ret = nvm_read(1, 0, 0x0002, settings, sizeof(settings_t));
     if(ret < 0)
         return -1;

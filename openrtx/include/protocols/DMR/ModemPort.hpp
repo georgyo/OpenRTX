@@ -46,8 +46,11 @@ static constexpr uint8_t R40_TX_DMO = 0xE3; /* DMO TX: active timing
  * Register 0x41, what to do in the next slot (G4EML; manual §5.4.5): bit7
  * TxNxtSlotEn, bit6 RxNxtSlotEn, bit5 SyncFail (drop the sync and search
  * again), bit4 begin_v_layer2 (route the received voice to the vocoder
- * port), bit3 CC_Match_Ctrl (chip-side colour code gating, not used: the
- * MCU filters).
+ * port), bit3 CC_Match_Ctrl: "0, reception needs a colour code match for
+ * the deframing; 1, reception deframes without a colour code match" (manual
+ * chapter 8), the match being against the local colour code of register
+ * 0x1F. With bit3 clear the chip therefore filters the colour code before
+ * the MCU does; it is set when the monitor accepts any colour code.
  */
 static constexpr uint8_t R41_IDLE = 0x00;   /* nothing in the next slot   */
 static constexpr uint8_t R41_RX = 0x50;     /* receive + voice to vocoder.
@@ -57,6 +60,15 @@ static constexpr uint8_t R41_RX = 0x50;     /* receive + voice to vocoder.
                                                OpenGD77 uses 0x50         */
 static constexpr uint8_t R41_TX = 0x80;     /* transmit the 0x50 frame    */
 static constexpr uint8_t R41_RESYNC = 0x20; /* force a new sync search    */
+
+/*
+ * R41_RX with CC_Match_Ctrl set: receive whatever the colour code.
+ * UNVERIFIED on hardware: the OEM power-on table writes 0x04, bit2, to this
+ * register, noted "No CC match for RX" in HR_C6000_CS7000.cpp, while the
+ * manual puts CC_Match_Ctrl at bit3 and describes no bit2.
+ */
+static constexpr uint8_t R41_NO_CC_MATCH = 0x08;
+static constexpr uint8_t R41_RX_ANY_CC = R41_RX | R41_NO_CC_MATCH;
 
 /*
  * Register 0x50, LocalDataType of the next TX burst (manual Table 5.5;
@@ -148,22 +160,52 @@ static constexpr uint8_t R82_PHY_RX = 0x01;        /* test mode only     */
  * manual §5.4.4, multiplexed on SYS_INTER), bit3 a data fragment needing
  * feedback sent, bit2 short LC. Only bit7 marks the end of a transmission:
  * the others, bit4 in particular, come while the last burst is still on
- * the air. UNVERIFIED on hardware: which of them the CS7000 driver's
- * 0x87 = 0xFF mask actually lets through.
+ * the air. The CS7000 driver enables bit7 and bit2 only (0x87 = 0x84).
+ * UNVERIFIED on hardware.
  */
 static constexpr uint8_t R86_TX_COMPLETE = 0x80; /* service TX finished  */
 static constexpr uint8_t R86_RDY_LST = 0x10;     /* per-slot deadline    */
 static constexpr uint8_t R86_SHORT_LC = 0x04;    /* Short LC received    */
 
 /*
- * Register 0x51 fields (G4EML).
+ * Register 0x51 fields. Manual chapter 8: [7:4] "DLLRecvDataType", the data
+ * type of a data burst or, for a voice burst, 1 to 6 for A to F in [6:4]
+ * with bit 7 set; bit 3 "received PI", the privacy indicator; bit 2
+ * "received data verification result", 0 correct, which OpenGD77 and
+ * OpenMDUV380 require clear on voice bursts as well; [1:0]
+ * "SyncClass", 00 "no sync header", 01 voice, 10 data, 11 RC. A voice
+ * superframe therefore reads class 01 for burst A, which carries the voice
+ * sync, and class 00 for bursts B to F, which carry the EMB instead; the
+ * LC header, the terminator and the CSBKs read class 10.
  */
+static constexpr uint8_t R51_PI = 0x08;
 static constexpr uint8_t R51_CRC_BAD = 0x04;
 static constexpr uint8_t R51_SYNC_CLASS_MASK = 0x03;
-static constexpr uint8_t R51_CLASS_HEADER = 0x00; /* data burst with sync */
-static constexpr uint8_t R51_CLASS_VOICE = 0x01;  /* voice burst          */
-static constexpr uint8_t R51_CLASS_DATA = 0x02;   /* data burst           */
-static constexpr uint8_t R51_CLASS_RC = 0x03;     /* reverse channel      */
+static constexpr uint8_t R51_CLASS_NONE = 0x00;  /* no sync: voice B to F */
+static constexpr uint8_t R51_CLASS_VOICE = 0x01; /* voice sync: voice A   */
+static constexpr uint8_t R51_CLASS_DATA = 0x02;  /* data sync             */
+static constexpr uint8_t R51_CLASS_RC = 0x03;    /* reverse channel       */
+static constexpr uint8_t R51_VOICE_SEQ_MASK = 0x07;
+
+/**
+ * Voice burst number reported by register 0x51.
+ *
+ * @param r51: value of register 0x51.
+ * @return 1 to 6 for the voice bursts A to F, 0 when the register does not
+ * describe a voice burst.
+ */
+static inline uint8_t r51VoiceSeq(uint8_t r51)
+{
+    uint8_t cls = r51 & R51_SYNC_CLASS_MASK;
+    if ((cls != R51_CLASS_NONE) && (cls != R51_CLASS_VOICE))
+        return 0;
+
+    uint8_t seq = (r51 >> 4) & R51_VOICE_SEQ_MASK;
+    if (seq > SUPERFRAME_BURST)
+        return 0;
+
+    return seq;
+}
 
 /*
  * Register 0x52 fields (G4EML): [7:4] colour code, bit3 CACH AT, bit2 CACH
@@ -199,7 +241,8 @@ public:
     /**
      * Program register 0x41 for the next slot, see dmrbb_setNextSlot().
      *
-     * @param r41: one of R41_IDLE, R41_RX, R41_TX, R41_RESYNC.
+     * @param r41: one of R41_IDLE, R41_RX, R41_RX_ANY_CC, R41_TX,
+     * R41_RESYNC.
      */
     virtual void setNextSlot(uint8_t r41) = 0;
 

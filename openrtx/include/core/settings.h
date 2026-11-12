@@ -76,7 +76,7 @@ typedef struct
              dmr_monitor    : 2;  // DMR monitor: 0 off, 1 own CC, 2 any CC/TS
     uint8_t  dmr_polite     : 1,  // DMR channel access: 1 polite, 0 impolite
              dmr_hangTime   : 3,  // DMR call hang time, in seconds (0-7)
-             dmr_testTone   : 1,  // Null vocoder RX test tone, debug only
+             dmr_testTone   : 1,  // Null vocoder test tone, debug only
              _dmr_reserved  : 3;
     uint32_t dmr_favourites[DMR_FAV_NUM]; // DMR favourite destinations:
                                           // bits 0-23 ID, bits 24-25 call

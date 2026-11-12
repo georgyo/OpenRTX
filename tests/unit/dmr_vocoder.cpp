@@ -169,6 +169,7 @@ TEST_CASE("Null backend encode gives the silence pattern", "[dmr][vocoder]")
 {
     const struct dmrVocoder *v = &dmrVocoder_null;
     REQUIRE(v->init() == 0);
+    state.settings.dmr_testTone = 0;
 
     PcmBuf in;
     fillTone(in.pcm, N, 440.0, 10000.0);
@@ -178,6 +179,34 @@ TEST_CASE("Null backend encode gives the silence pattern", "[dmr][vocoder]")
     REQUIRE(memcmp(out.ambe, dmr_ambeSilence, A) == 0);
     REQUIRE(out.guardsIntact());
     REQUIRE(in.guardsIntact());
+
+    v->terminate();
+}
+
+TEST_CASE("Null backend encode gives the tone frames with the test tone on",
+          "[dmr][vocoder]")
+{
+    const struct dmrVocoder *v = &dmrVocoder_null;
+    REQUIRE(v->init() == 0);
+    state.settings.dmr_testTone = 1;
+
+    PcmBuf in;
+    memset(in.pcm, 0x00, sizeof(in.pcm));
+
+    AmbeBuf out;
+    memset(out.ambe, 0x00, A);
+    REQUIRE(v->encode(in.pcm, out.ambe) == true);
+    REQUIRE(memcmp(out.ambe, dmr_ambeTestTone, A) == 0);
+    REQUIRE(out.guardsIntact());
+
+    /* Three identical 72-bit frames, different from the silence ones */
+    REQUIRE(memcmp(out.ambe, out.ambe + 9, 9) == 0);
+    REQUIRE(memcmp(out.ambe, out.ambe + 18, 9) == 0);
+    REQUIRE(memcmp(out.ambe, dmr_ambeSilence, A) != 0);
+
+    state.settings.dmr_testTone = 0;
+    REQUIRE(v->encode(in.pcm, out.ambe) == false);
+    REQUIRE(memcmp(out.ambe, dmr_ambeSilence, A) == 0);
 
     v->terminate();
 }

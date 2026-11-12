@@ -124,23 +124,20 @@
  * HR_C6000 interrupt lines, ~300ns active-low pulses (manual §4.4), caught
  * with falling-edge EXTI interrupts by the DMR modem driver.
  *
- * Schematic discrepancy, UNVERIFIED on hardware: these assignments come from
- * the reverse engineering of the CS7000 (STM32F405) OEM firmware and say
- * SYS_INTER = PC1, RF_TX_INTER = PC2. The CS7000-M17 Plus schematic V01 says
- * TIME_SLOT_INTER = PC0, RF_TX_INTER = PC2_C, SYS_INTER = PC3_C and puts the
- * 2T/5T analogue tone detector on PC1. The driver (dmr_CS7000.cpp) attaches
- * PC0..PC3 all four with a counter each and dispatches TS and TX with the
- * constants below; for SYS it starts from DMR_SYS_INT and can be switched
- * to DMR_SYS_INT_ALT at runtime from the DMR monitor screen ("SYS line"
- * action, driver knob DMRBB_DRV_SYS_LINE of interfaces/dmr_baseband.h),
- * so the answer can be found on the radio without reflashing. Once a board
- * has been checked, fix DMR_SYS_INT for that target (docs/dmr_bringup.md,
- * checks 1.2 and 3.1). RF_RX_INTER is not wired to the MCU.
+ * CS7000-M17 Plus schematic V01: TIME_SLOT_INTER on PC0, RF_TX_INTER on
+ * PC2_C, SYS_INTER on PC3_C; RF_RX_INTER is not wired to the MCU. PC1 is
+ * the 2T/5T net, an analogue receive audio node, not a C6000 line: the PC1
+ * assignment of SYS_INTER inherited from the CS7000 (STM32F405) pinmap is
+ * kept as the alternative the DMR monitor screen can switch to ("SYS line"
+ * action). CONFIG_DMR_SYS_INT_ALT_ANALOG tells the DMR modem driver that
+ * the alternative is such a node: PC1 stays in analogue mode, without
+ * interrupt, unless that action selects it.
  */
 #define DMR_TS_INT      GPIOC,0
-#define DMR_SYS_INT     GPIOC,1
+#define DMR_SYS_INT     GPIOC,3
 #define DMR_TX_INT      GPIOC,2
-#define DMR_SYS_INT_ALT GPIOC,3   // SYS_INTER per the CS7000-M17 Plus schematic
+#define DMR_SYS_INT_ALT GPIOC,1   // SYS_INTER on the CS7000 (STM32F405)
+#define CONFIG_DMR_SYS_INT_ALT_ANALOG
 
 /* AK2365A */
 #define DET_PDN       &extGpio,6

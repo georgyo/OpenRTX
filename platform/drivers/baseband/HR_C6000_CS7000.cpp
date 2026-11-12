@@ -64,6 +64,18 @@ static const uint8_t initSeq8[] =
     0xEF, 0x00
 };
 
+/*
+ * Transmit data sync word, AUX 0x04..0x09: MS sourced data sync of ETSI TS
+ * 102 361-1 table 9.2. The chip inserts this field in every burst it builds
+ * and derives the voice sync from it; the reset value in the auxiliary
+ * register table of the HR_C6000 manual is the BS sourced pattern. Same bytes
+ * as OpenGD77 and OpenMDUV380 write there.
+ */
+static const uint8_t dmrTxSync[] =
+{
+    0x01, 0x04, 0xD5, 0xD7, 0xF7, 0x7F, 0xD7, 0x57
+};
+
 
 template class HR_Cx000 < C6000_SpiOpModes >;
 
@@ -168,13 +180,18 @@ void HR_Cx000< M >::setModOffset(const uint16_t offset)
  * depend on the calibration data (0x45/0x46 modulation amplitude, 0xE4
  * input gain, 0x47/0x48/0x04 two-point bias) are written by radio_CS7000.cpp
  * as for FM. Switching back is done by fmMode(), which restores 0x00 = 0x3F,
- * 0x10 = 0x80, 0x81 = 0x00, 0x36 = 0x12, 0x26 = 0xFE and the FM codec setup.
+ * 0x10 = 0x80, 0x12 = 0x00, 0x81 = 0x00, 0x36 = 0x12, 0x26 = 0xFE and the FM
+ * codec setup.
  */
 template< class M >
 void HR_Cx000< M >::dmrMode()
 {
     // Reset DMR and PHY blocks before the mode switch, as fmMode() (G)
     writeReg(M::CONFIG, 0x00, 0x3F);
+
+    // Transmit sync word: an MS sends MS sourced sync (ETSI TS 102 361-1
+    // table 9.2 and clause 5.1.4.5; M auxiliary table 0x04-0x09)
+    sendSequence(dmrTxSync, sizeof(dmrTxSync));
 
     // UNVERIFIED on hardware: mode word. DMR, Tier II, timeslot mode,
     // Layer 2, repeater, aligned, slot 1 (G bit map; M §5.4.3 gives
@@ -194,16 +211,31 @@ void HR_Cx000< M >::dmrMode()
     writeReg(M::CONFIG, 0x09, 0x00);
 
     // V_SPI vocoder (bits 7:6 = 00), DMRFrom = V_SPI, MCU controls the
-    // vocoder (M §4.6.1, G, O initSeq1). UNVERIFIED on hardware:
-    // alternative 0x01 with voice through TX RAM 0x30
+    // vocoder (M §4.6.1, G, O initSeq1). UNVERIFIED on hardware
     writeReg(M::CONFIG, 0x06, 0x21);
+
+    // Vocoder decoder started, encoder stopped: the value init() ends with
+    // (O; M chapter 8: bit 7 EncodeStart, bit 6 EncodeStop, bit 5
+    // DecodeStart, bit 4 DecodeStop). fmMode() leaves both stopped, 0x46;
+    // dmrTxStart() starts the encoder for a transmission
+    writeReg(M::CONFIG, 0x22, 0x26);
+
+    // FM filters, deviation and limiter back to the init values (O
+    // initSeq2), FM tone generators off: FM and M17 leave their own there
+    writeReg(M::CONFIG, 0x34, 0xF0);
+    writeReg(M::CONFIG, 0x35, 0x28);
+    writeReg(M::CONFIG, 0x3F, 0x10);
+    writeReg(M::CONFIG, 0xA1, 0x00);
 
     // Voice superframe timeout (O initSeq2, GD)
     writeReg(M::CONFIG, 0x0D, 0x10);
 
-    // UNVERIFIED on hardware: bit 7 RF ramp smoothing, RF_TX_INTER advance
-    // 24 x 100us = 2.4ms (O initSeq2 value; GD uses 0x15)
-    writeReg(M::CONFIG, 0x12, 0x98);
+    // RF_TX_INTER advance 24 x 100us = 2.4ms in bits 5:0. Bit 7 clear: the
+    // transmit ramp of the modulation DACs starts from the 1.65V mid level
+    // and not from 0V (M §4.7.2), as with the value init() ends with and
+    // with GD 0x15 and the MD-UV3x0 OEM 0x0C. Bit 6 clear: no 40Hz
+    // two-point test tone. UNVERIFIED on hardware; fmMode() puts 0x00 back
+    writeReg(M::CONFIG, 0x12, 0x18);
 
     // RF_TX_EN/RF_RX_EN edge advance: pins not connected on the CS7000 (O)
     writeReg(M::CONFIG, 0x13, 0x00);
@@ -248,9 +280,12 @@ void HR_Cx000< M >::dmrMode()
     // 0xC0)
     writeReg(M::CONFIG, 0x5F, 0xF0);
 
-    // UNVERIFIED on hardware: packet interface on, FM voice channel closed
-    // (O initSeq2 0x12 minus bit 1)
-    writeReg(M::CONFIG, 0x36, 0x10);
+    // Codec and vocoder interface clocks all running, FM receive voice
+    // channel closed: the reset value. Bit 4 is mcu_pkt_clk_down, the
+    // active-high shut-off of the vocoder packet interface clock (M chapter
+    // 8); GD and OpenMDUV380 run DMR with 0x00. UNVERIFIED on hardware:
+    // whether that clock serves the V_SPI voice port
+    writeReg(M::CONFIG, 0x36, 0x00);
 
     // UNVERIFIED on hardware: DAC power control automatic by slot (O
     // initSeq2, MD-UV3x0/MD-3x0 OEM dmrMode)
@@ -279,10 +314,20 @@ void HR_Cx000< M >::dmrMode()
     // The BER test action of the monitor screen writes 0xFF
     writeReg(M::CONFIG, 0x81, 0xFE);
 
-    // UNVERIFIED on hardware: TX start and TX end sub-status masks, pass
-    // everything (G; MD-3x0 OEM writes 0x00 during setup)
-    writeReg(M::CONFIG, 0x85, 0xFF);
-    writeReg(M::CONFIG, 0x87, 0xFF);
+    // TX start sub-interrupt enables (M chapter 8, 0x85 SendStartMask):
+    // none, nothing in the firmware acts on a TX start event (OpenMDUV380
+    // and the MD-UV3x0 OEM table write 0x00 as well)
+    writeReg(M::CONFIG, 0x85, 0x00);
+
+    // TX end sub-interrupt enables (M chapter 8, 0x87 SendStopMask): bit 7
+    // "transmission completely terminated", on which the call controller
+    // releases the RF, and bit 2 "Short LC received", on which the driver
+    // reads the Short LC. The others stay off, bit 4 in particular: the
+    // Layer 2 Rdy_lst_inter, one more SYS_INTER pulse in every slot, is
+    // not needed when 0x41 is programmed at the timeslot interrupt (M
+    // §5.4.4). UNVERIFIED on hardware: 1 = enabled is read from the
+    // register names and from 0x81
+    writeReg(M::CONFIG, 0x87, 0x84);
 
     // RF_RX_INTER advance 1ms (GD; pin not wired to the MCU, harmless)
     writeReg(M::CONFIG, 0xC0, 0x0A);
@@ -299,7 +344,7 @@ void HR_Cx000< M >::dmrMode()
 template< class M >
 void HR_Cx000< M >::fmMode()
 {
-    writeReg(M::CONFIG, 0x36, 0x10);  // Vocoder codec packet interface enabled
+    writeReg(M::CONFIG, 0x36, 0x10);  // Vocoder packet interface clock off (bit 4, active high)
     writeReg(M::CONFIG, 0x36, 0x12);  // Receiving and opening the voice channel in FM mode Codec switch, 1 means on, 0 means off.
     writeReg(M::CONFIG, 0x20, 0x00);  // Local access policy, important
     writeReg(M::CONFIG, 0x21, 0x01);  // Control enable to clear the data in the vocoder decoding cache buffer
@@ -316,6 +361,7 @@ void HR_Cx000< M >::fmMode()
 
     writeReg(M::CONFIG, 0x00, 0x3F);  // Reset DMR and physical layer
     writeReg(M::CONFIG, 0x10, 0x80);  // Modulator mode FM
+    writeReg(M::CONFIG, 0x12, 0x00);  // RF interrupt advance, DAC ramp start, test tone: the value init() ends with
     writeReg(M::CONFIG, 0x35, 0x20);  // FM deviation coefficient
     writeReg(M::CONFIG, 0x3E, 0x06);  // FM receiving end modulation frequency offset coefficient
     writeReg(M::CONFIG, 0x81, 0x00);  // InterClass1Mask, all interrupts masked
@@ -332,7 +378,7 @@ void HR_Cx000< M >::fmMode()
 
     writeReg(M::CONFIG, 0x81, 0x00); // InterClass1Mask, all interrupts masked
     writeReg(M::CONFIG, 0xE0, 0x83); // CPU controls the codec, Mic_p enabled, HR_C6000 is I2S slave
-    writeReg(M::CONFIG, 0x36, 0x10); // Vocoder codec packet interface enabled
+    writeReg(M::CONFIG, 0x36, 0x10); // Vocoder packet interface clock off (bit 4, active high)
     writeReg(M::CONFIG, 0x36, 0x12); // Receiving and opening the voice channel in FM mode Codec switch, 1 means on, 0 means off.
     writeReg(M::CONFIG, 0xE0, 0xC9); // Codec enabled, LineIn1, LineOut2, I2S slave mode
     writeReg(M::CONFIG, 0x26, 0xFE); // Undocumented register, disable FM audio output

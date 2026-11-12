@@ -24,8 +24,9 @@
  * tests and the emulator shell use. Two queues: the event queue, what the
  * next dmrbb_waitEvent() calls return, and the script queue, timeslot-paced
  * events (a scripted call) that a tick moves to the event queue one timeslot
- * at a time. In the running emulator a thread ticks every 30 ms and fills
- * the idle slots with plain timeslot events; in the unit tests a tick
+ * at a time. In the running emulator a thread ticks every 30 ms and, while
+ * the fake chip has a time axis, fills the idle slots with plain timeslot
+ * events; in the unit tests a tick
  * happens inside dmrbb_waitEvent() when the event queue is empty and the
  * script is not, so that the test consumes one timeslot per call.
  *
@@ -128,7 +129,18 @@ bool clockEnabled = false;
 bool threadRunning = false;
 pthread_t clockThread;
 
-bool running = false; /* 0x40 has TxEn/RxEn: timeslots tick   */
+/*
+ * Time axis of the fake chip: once it has one it gives a timeslot event
+ * every tick. It gets it from the first burst it receives (a scripted
+ * timeslot) or from a transmission with its own timing, and keeps it with or
+ * without a signal (manual §5.4.4) until dmrbb_startRx() makes it search for
+ * a sync again (0x41 bit5 SyncFail) or the modem is idled. That a searching
+ * chip gives no timeslot interrupt is an assumption of this model,
+ * UNVERIFIED on hardware.
+ */
+bool running = false; /* 0x40 has TxEn/RxEn                   */
+bool axis = false;    /* the chip has a time axis             */
+bool anyCc = false;   /* last RX slot command had 0x41 bit3   */
 uint8_t tcNext = 0;   /* CACH TC of the next timeslot started */
 uint32_t tsCount = 0;
 uint32_t sysCount = 0;
@@ -169,7 +181,12 @@ void pushTsEvent(uint8_t cc)
     Event e;
     memset(&e, 0x00, sizeof(e));
     e.mask = DMRBB_EV_TS;
-    e.snap.r52 = (uint8_t)((cc << 4) | (tcNext ? R52_TC : 0));
+    /*
+     * Register 0x52 at a timeslot interrupt still holds the CACH TC of the
+     * slot that just ended, the complement of the one starting (what
+     * OpenGD77 and OpenMDUV380 rely on, UNVERIFIED on the CS7000)
+     */
+    e.snap.r52 = (uint8_t)((cc << 4) | (tcNext ? 0 : R52_TC));
     tsCount++;
     fillCounters(&e.snap);
     /*
@@ -202,13 +219,16 @@ void pushSysEvent(const struct dmrbbSnapshot &s)
 void tick()
 {
     if (script.empty()) {
-        if (running)
+        if (running && axis)
             pushTsEvent(rec.config.colorCode);
         return;
     }
 
     Event &head = script.front();
     if (head.mask & DMRBB_EV_TS) {
+        /* A burst is on the air: the fake chip has its sync */
+        axis = true;
+
         uint8_t cc = head.snap.r52 >> 4;
         if ((head.slot != 0) && ((uint8_t)(head.slot - 1) != tcNext)) {
             pushTsEvent(cc);
@@ -219,8 +239,16 @@ void tick()
         pushTsEvent(cc);
     }
 
+    /*
+     * Colour code gate of the chip: "0, reception needs a colour code match
+     * for the deframing; 1, reception deframes without a colour code match"
+     * (register 0x41 bit3, manual chapter 8). A burst that is not deframed
+     * raises no system event.
+     */
     while (!script.empty() && ((script.front().mask & DMRBB_EV_TS) == 0)) {
-        pushSysEvent(script.front().snap);
+        const struct dmrbbSnapshot &s = script.front().snap;
+        if (anyCc || ((s.r52 >> 4) == rec.colorCode))
+            pushSysEvent(s);
         script.pop();
     }
 }
@@ -280,10 +308,13 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
     lc.dst = dst & ADDRESS_MASK;
     lc.src = src & ADDRESS_MASK;
 
-    /* Three headers, TS 102 361-2 §5.2.1.1 */
-    for (unsigned i = 0; i < 3; i++) {
+    /*
+     * One voice LC header: "the voice message begins with a voice LC header
+     * burst" (TS 102 361-1 §5.1.2.2), repeats are the sender's choice
+     */
+    {
         struct dmrbbSnapshot s = bsBurst(cc, ts);
-        s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_HEADER);
+        s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA);
         lc.toChipLc(s.lc);
         scriptBurst(cc, ts, s);
     }
@@ -292,7 +323,8 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
     for (unsigned i = 0; i < bursts; i++) {
         uint8_t seq = (uint8_t)((i % SUPERFRAME_BURST) + 1);
         struct dmrbbSnapshot s = bsBurst(cc, ts);
-        s.r51 = (uint8_t)((seq << 4) | R51_CLASS_VOICE);
+        s.r51 = (uint8_t)((seq << 4)
+                          | ((seq == 1) ? R51_CLASS_VOICE : R51_CLASS_NONE));
         s.voiceValid = true;
 #ifdef CONFIG_DMR_VOCODER_LOOPBACK
         dmrVocoderLoopback_tonePayload(
@@ -307,7 +339,7 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
 
     /* Terminator with LC */
     struct dmrbbSnapshot s = bsBurst(cc, ts);
-    s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_HEADER);
+    s.r51 = (uint8_t)((DT_TERMINATOR_LC << 4) | R51_CLASS_DATA);
     lc.toChipLc(s.lc);
     scriptBurst(cc, ts, s);
 }
@@ -315,6 +347,7 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
 void classifyTxSlot()
 {
     rec.txSlots++;
+    rec.txSlotsTs[tcNext & 1]++;
     if (rec.r50 == R50_VOICE_LC_HEADER)
         rec.headers++;
     else if (rec.r50 == R50_TERMINATOR)
@@ -434,12 +467,12 @@ int dmrbb_init(void)
     }
 
     running = false;
+    axis = false;
     replayTicks = 0;
 
     /* An untouched SYS line knob reads its default (see dmrEmu_reset) */
     if (regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] == 0)
-        regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] =
-            DMRBB_SYS_LINE_PINMAP;
+        regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] = DMRBB_SYS_LINE_PC1;
 
     /* The interrupt counters start from zero, as on the radio */
     tsCount = 0;
@@ -468,6 +501,7 @@ void dmrbb_terminate(void)
     rec.keyedAtTerminate = radioEmu_record()->keyed;
     rec.r40 = R40_IDLE;
     running = false;
+    axis = false;
     stopClock();
     pthread_mutex_unlock(&mtx);
     emuLog("terminate() called");
@@ -479,9 +513,12 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
     rec.configureCount++;
     rec.keyedAtConfigure = radioEmu_record()->keyed;
     rec.config = *cfg;
+    rec.colorCode = cfg->colorCode & 0x0F;
     rec.r40 = R40_IDLE;
     rec.r41 = R41_IDLE;
     running = false;
+    axis = false;
+    anyCc = false;
     pthread_mutex_unlock(&mtx);
 
     if (clockEnabled)
@@ -501,6 +538,8 @@ void dmrbb_startRx(void)
     rec.r41 = R41_RX;
     rec.r41Writes++;
     running = true;
+    axis = false;
+    anyCc = false;
     pthread_mutex_unlock(&mtx);
     emuLog("startRx() called");
 }
@@ -514,6 +553,8 @@ void dmrbb_startTx(bool activeTiming)
     rec.r40 = activeTiming ? R40_TX_DMO : R40_TX_RMO;
     rec.r40Writes++;
     running = true;
+    if (activeTiming)
+        axis = true;
     pthread_mutex_unlock(&mtx);
     emuLog(activeTiming ? "startTx(active timing) called" :
                           "startTx(passive timing) called");
@@ -526,8 +567,17 @@ void dmrbb_idle(void)
     rec.r40 = R40_IDLE;
     rec.r40Writes++;
     running = false;
+    axis = false;
     pthread_mutex_unlock(&mtx);
     emuLog("idle() called");
+}
+
+void dmrbb_setColorCode(uint8_t cc)
+{
+    pthread_mutex_lock(&mtx);
+    rec.colorCode = cc & 0x0F;
+    rec.colorCodeWrites++;
+    pthread_mutex_unlock(&mtx);
 }
 
 void dmrbb_setNextSlot(uint8_t r41)
@@ -535,6 +585,8 @@ void dmrbb_setNextSlot(uint8_t r41)
     pthread_mutex_lock(&mtx);
     rec.r41 = r41;
     rec.r41Writes++;
+    if ((r41 & R41_RX) == R41_RX)
+        anyCc = ((r41 & R41_NO_CC_MATCH) != 0);
     if (r41 == R41_TX)
         classifyTxSlot();
     pthread_mutex_unlock(&mtx);
@@ -647,9 +699,11 @@ void dmrEmu_reset(void)
     memset(regs, 0x00, sizeof(regs));
     /* The SYS line knob reads its default, as on the CS7000 driver; a
      * write is accepted and logged like any other and changes nothing */
-    regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] = DMRBB_SYS_LINE_PINMAP;
+    regs[DMRBB_PAGE_DRIVER & 0x07][DMRBB_DRV_SYS_LINE] = DMRBB_SYS_LINE_PC1;
     initResult = 0;
     running = false;
+    axis = false;
+    anyCc = false;
     tcNext = 0;
     tsCount = 0;
     sysCount = 0;

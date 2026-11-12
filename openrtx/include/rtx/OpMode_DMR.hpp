@@ -14,6 +14,8 @@
 #include <cstdint>
 #include "core/audio_path.h"
 #include "core/dmr_audio.h"
+#include "core/dmr_trace.h"
+#include "interfaces/delays.h"
 #include "interfaces/dmr_baseband.h"
 #include "protocols/DMR/CallController.hpp"
 #include "protocols/DMR/ModemPort.hpp"
@@ -30,11 +32,13 @@ class DmrModemAdapter : public DMR::ModemPort
 public:
     void setNextSlot(uint8_t r41) override
     {
+        lastR41 = r41;
         dmrbb_setNextSlot(r41);
     }
 
     void setTxFrameType(uint8_t r50) override
     {
+        lastR50 = r50;
         dmrbb_setTxFrameType(r50);
     }
 
@@ -67,19 +71,55 @@ public:
         dmrbb_writeVoice(ambe);
     }
 
+    /*
+     * The chip has one colour code register for both directions: on a
+     * channel whose two colour codes differ it holds the receive one while
+     * receiving and the transmit one for a transmission. With equal codes
+     * the value programmed by dmrbb_configure() is left alone.
+     */
     void startRx() override
     {
+        traceControl(TRACE_START_RX);
+        if (rxColorCode != txColorCode)
+            dmrbb_setColorCode(rxColorCode);
         dmrbb_startRx();
     }
 
     void startTx(bool activeTiming) override
     {
+        traceControl(activeTiming ? TRACE_START_TX_ACTIVE :
+                                    TRACE_START_TX_PASSIVE);
+        if (rxColorCode != txColorCode)
+            dmrbb_setColorCode(txColorCode);
         dmrbb_startTx(activeTiming);
     }
 
     void idle() override
     {
+        traceControl(TRACE_IDLE);
         dmrbb_idle();
+    }
+
+    /** Value of a slot register not written since the last trace record. */
+    static constexpr uint8_t NOT_WRITTEN = 0xFF;
+
+    /** Modem control calls, the data byte of the 'W' trace record. */
+    enum TraceControl : uint8_t {
+        TRACE_START_RX = 1,
+        TRACE_START_TX_PASSIVE = 2,
+        TRACE_START_TX_ACTIVE = 3,
+        TRACE_IDLE = 4
+    };
+
+    uint8_t lastR41 = NOT_WRITTEN; ///< Last next-slot word, for the trace
+    uint8_t lastR50 = NOT_WRITTEN; ///< Last TX frame type, for the trace
+    uint8_t rxColorCode = 0;       ///< Colour code of the modem while in RX
+    uint8_t txColorCode = 0;       ///< Colour code of the modem while in TX
+
+private:
+    void traceControl(uint8_t what)
+    {
+        dmrTrace_put('W', (uint32_t)getTick(), &what, 1);
     }
 };
 
@@ -355,8 +395,10 @@ private:
      * control RAM of the last header. Published by publish().
      *
      * @param ev: event mask returned by dmrbb_waitEvent().
+     * @param nowMs: time of this update pass, the one every timer of the
+     * pass is compared against.
      */
-    void monitor(uint32_t ev);
+    void monitor(uint32_t ev, uint32_t nowMs);
 
     /**
      * Copy the controller's report and the monitor block into the RTX
@@ -368,7 +410,7 @@ private:
 
     /**
      * Feed the last heard list: one entry per received call, inserted when
-     * the controller opens a call (its headers) and again when a call from
+     * the controller opens a call (its header) and again when a call from
      * another source or to another destination takes its place, never per
      * burst. A call reopened after its hang time counts as a new one.
      *
@@ -384,13 +426,25 @@ private:
 
     /**
      * Parse the Short LC of a system event, when the modem reports one:
-     * the 28 bits and the CRC of the snapshot (RX RAM 0x24-0x28) are
+     * the 28 bits and the CRC of the snapshot (RX RAM 0x2B-0x2F) are
      * verified, an Activity Update (TS 102 361-2 §7.1.3.2) sets the TS1/TS2
      * busy hints, and the message and its counters go to the monitor block.
      *
      * @param nowMs: current time.
      */
     void parseShortLc(uint32_t nowMs);
+
+    /**
+     * Trace records of the bring-up trace (core/dmr_trace.h, layouts in
+     * docs/dmr_bringup.md): the configuration with a dump of the modem
+     * registers, a slot tick, a system event with the voice payload it
+     * brought, the once-per-second status and an RF keying.
+     */
+    void traceConfig(uint32_t nowMs);
+    void traceSlot(uint32_t nowMs);
+    void traceSys(uint32_t nowMs);
+    void traceStatus(uint32_t nowMs, bool ptt);
+    void traceRfKey(uint32_t nowMs, bool key);
 
     DmrModemAdapter port;            ///< Modem port towards dmr_baseband.h
     DmrAudioLink audioLink;          ///< Voice sink towards dmr_audio
@@ -416,6 +470,9 @@ private:
     uint8_t tsBusy;                  ///< TS1/TS2 busy hints, bit0 = TS1
     uint32_t tsBusyMs;               ///< When the last good Short LC arrived
     uint32_t rxFrequency;            ///< RX frequency of the configuration
+    uint32_t txFrequency;            ///< TX frequency of the configuration
+    uint32_t traceStatusMs;          ///< Time of the last status record
+    bool tracePtt;                   ///< PTT of the last status record
     bool callTracked;                ///< Current call is in last heard
     uint32_t trackedSrc;             ///< Source of the tracked call
     uint32_t trackedDst;             ///< Destination of the tracked call

@@ -76,8 +76,8 @@ struct dmrbbSnapshot {
                         sub-status, UNVERIFIED on hardware whether it
                         fires on a receiving radio, see shortLc[]), the
                         rest data fragment / OACSU events (manual §5.1.1).
-                        Only bit7 ends a transmission. UNVERIFIED on
-                        hardware which bits the 0x87 mask lets through  */
+                        Only bit7 ends a transmission. The CS7000 driver
+                        enables bit7 and bit2 only (0x87 = 0x84)        */
     uint8_t sub90; /**< 0x90, data message status, read when 0x82 bit2 */
     uint8_t sub98; /**< 0x98, abnormal exit cause, read when 0x82 bit1 */
 
@@ -85,7 +85,8 @@ struct dmrbbSnapshot {
      * Register 0x51, DLLRecvDataType: [7:4] data type (TS 102 361-1 Table
      * 9.22) when the sync class is data, or voice frame sequence 1..6 (A..F)
      * when the sync class is voice; bit3 received PI; bit2 CRC bad; [1:0]
-     * sync class: 00 sync header, 01 voice, 10 data, 11 RC.
+     * sync class: 00 no sync (voice B to F), 01 voice (voice A), 10 data,
+     * 11 RC.
      */
     uint8_t r51;
 
@@ -112,36 +113,35 @@ struct dmrbbSnapshot {
     /*
      * RX RAM bytes 0x00-0x0B (U_SPI page DATA, read opcode 0x82): the 9 LC
      * or 10 CSBK octets followed by the parity/CRC. Read when 0x82 bit3 or
-     * bit4 is set. UNVERIFIED on hardware: the first read after a mode
-     * switch may return the previous call's LC (OpenGD77 observation), the
-     * state machine skips it.
+     * bit4 is set: the chip has just written it when it reports a header,
+     * a terminator or a late entry, so the state machine uses the first
+     * one it gets.
      */
     uint8_t lc[12];
 
     /*
-     * RX RAM bytes 0x24-0x28 (U_SPI page DATA): the Short LC of the last
+     * RX RAM bytes 0x2B-0x2F (U_SPI page DATA): the Short LC of the last
      * completed CACH cycle as the chip decodes it, i.e. after the BPTC of
-     * TS 102 361-1 §B.2.3: the 28 message bits in 0x24-0x26 and the upper
-     * nibble of 0x27, the 8-bit CRC in 0x28. The address comes from the
-     * TX-side RAM allocation of the HR_C6000 manual (Table 5.2, "Short LC
-     * 0x24~0x28", the RAM the MCU fills for the chip to transmit): the
-     * RX-side table (5.3) is omitted in the translation, so the RX RAM is
-     * assumed to mirror the TX map, as lc[] at 0x00 already assumes. Read
-     * when 0x82 bit5 is set together with 0x86 bit2. UNVERIFIED on
-     * hardware: the RX address and layout (the manual's worked examples
-     * never read it back), the interrupt reporting, and whether the chip
-     * verifies the CRC itself: the opMode handler verifies it again
-     * (DMR::FEC::ShortLc::fromChipBytes()) and drops the message on a
-     * mismatch. Zero on the emulator unless a test injects one, and on
-     * the stub.
+     * TS 102 361-1 §B.2.3. HR_C6000 manual, Table 5.3 (RX side RAM
+     * allocation): "ShortLC 0x2b~0x2f, 36bit ShortLC data, the low 4 bits
+     * of 0x2F are unused": the 28 message bits in 0x2B-0x2D and the upper
+     * nibble of 0x2E, the 8-bit CRC in the lower nibble of 0x2E and the
+     * upper nibble of 0x2F. Read when 0x82 bit5 is set together with 0x86
+     * bit2. UNVERIFIED on hardware: the order of the 36 bits (the
+     * manual's worked examples never read them back), the interrupt
+     * reporting, and whether the chip verifies the CRC itself: the opMode
+     * handler verifies it again (DMR::FEC::ShortLc::fromChipBytes()) and
+     * drops the message on a mismatch. Zero on the emulator unless a test
+     * injects one, and on the stub.
      */
     uint8_t shortLc[5];
 
     /*
      * Voice payload of the burst, 27 bytes (216 bits, three AMBE+2 frames,
-     * TS 102 361-1 §6.1), read over V_SPI with command 0x83 when the sync
-     * class is voice and the CRC is good. voiceValid is false otherwise.
-     * UNVERIFIED on hardware: V_SPI (0x06 = 0x21) versus RX RAM 0x30.
+     * TS 102 361-1 §6.1), read over V_SPI with command 0x83 when register
+     * 0x51 describes a voice burst (sync class 00 or 01, sequence 1 to 6)
+     * and its check flag, bit 2, is clear. voiceValid is false otherwise.
+     * UNVERIFIED on hardware.
      */
     uint8_t voice[27];
     bool voiceValid;
@@ -171,7 +171,9 @@ struct dmrbbSnapshot {
  * Static configuration of the modem, applied by dmrbb_configure().
  */
 struct dmrbbConfig {
-    uint8_t colorCode; /**< Colour code 0-15, register 0x1F [7:4]          */
+    uint8_t colorCode; /**< Transmit colour code 0-15, register 0x1F
+                            [7:4]; see dmrbb_setColorCode() for a channel
+                            that receives on another one                   */
     uint8_t timeslot;  /**< Timeslot 1 or 2, kept for the driver's record  */
     uint32_t ownId;    /**< Own DMR ID, registers 0x14-0x16 (UNVERIFIED on
                             hardware: G4EML says L/M/H byte order, the MD-3x0
@@ -185,10 +187,11 @@ struct dmrbbConfig {
                             0x68/0x6A). UNVERIFIED on hardware, selectable
                             from the monitor screen                       */
     uint8_t rfAdvance; /**< Value for register 0x12, RF_TX_INTER advance:
-                            bit7 RF ramp smoothing, [5:0] x 100 us before
-                            the own burst. 0 = driver default (0x98, the
-                            OEM init word: 2.4 ms with smoothing); 0x15 is
-                            the OpenGD77 word. The opMode handler fills it
+                            bit7 start of the transmit DAC ramp (0 = from
+                            1.65 V, 1 = from 0 V), [5:0] x 100 us before
+                            the own burst. 0 = driver default (0x18:
+                            2.4 ms, ramp from 1.65 V); 0x15 is the
+                            OpenGD77 word. The opMode handler fills it
                             from rtxStatus_t::dmr_rfAdvance, the monitor
                             screen's choice, and the driver writes it after
                             the mode table so that the choice survives a
@@ -204,12 +207,13 @@ struct dmrbbConfig {
 #define DMRBB_MODE_REG_DEFAULT 0x6E
 
 /**
- * Default value for dmrbbConfig::rfAdvance, register 0x12: RF ramp smoothing
- * on, RF_TX_INTER 24 x 100 us = 2.4 ms ahead of the own burst (OEM CS7000
- * init capture; OpenGD77 uses 0x15). UNVERIFIED on hardware, selectable
- * from the monitor screen ("RF advance").
+ * Default value for dmrbbConfig::rfAdvance, register 0x12: RF_TX_INTER
+ * 24 x 100 us = 2.4 ms ahead of the own burst, bit 7 clear so that the
+ * transmit ramp of the modulation DACs starts from 1.65 V (HR_C6000 manual
+ * §4.7.2; OpenGD77 uses 0x15, bit 7 clear as well). UNVERIFIED on hardware,
+ * selectable from the monitor screen ("RF advance").
  */
-#define DMRBB_RF_ADVANCE_DEFAULT 0x98
+#define DMRBB_RF_ADVANCE_DEFAULT 0x18
 
 /**
  * Initialise the DMR modem driver: interrupt lines, ISR mailbox, SPI ports.
@@ -267,9 +271,23 @@ void dmrbb_startTx(bool activeTiming);
 void dmrbb_idle(void);
 
 /**
+ * Set the local colour code of the chip, register 0x1F [7:4] (manual
+ * chapter 8, "LocalEMB ... local CC"): the colour code of the bursts it
+ * transmits and, unless register 0x41 bit3 is set, the one a received
+ * burst must carry to be deframed. dmrbb_configure() programs
+ * dmrbbConfig::colorCode; on a channel whose receive and transmit colour
+ * codes differ the caller sets the receive one before dmrbb_startRx() and
+ * the transmit one before dmrbb_startTx().
+ *
+ * @param cc: colour code, 0 to 15.
+ */
+void dmrbb_setColorCode(uint8_t cc);
+
+/**
  * Program what the chip does in the NEXT timeslot, register 0x41. Must be
  * written within t2 = 27 ms of the TS event (manual Figure 5.12): 0x00
- * nothing, 0x50 receive (see dmrbb_startRx), 0x80 transmit the frame
+ * nothing, 0x50 receive (see dmrbb_startRx), 0x58 receive without the
+ * chip's colour code match (bit3 CC_Match_Ctrl), 0x80 transmit the frame
  * described by 0x50, 0x20 drop sync and search again.
  *
  * @param r41: value for register 0x41, see the DMR::R41_* constants.
@@ -326,35 +344,31 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs);
  * the knobs and counters of the modem driver itself, for the DMR monitor
  * screen: no SPI traffic is generated. Addresses:
  *
- *  - DMRBB_DRV_VOICE_PATH (read/write): transport of the 27-byte voice
- *    payloads, 0 = V_SPI (default, register 0x06 = 0x21, manual §4.6.1),
- *    1 = TX RAM 0x30 / RX RAM 0x30 over the "user" SPI. UNVERIFIED on
- *    hardware, both; the register 0x06 variant (0x01) is written separately
- *    through page 4 by whoever flips this.
+ *  - DMRBB_DRV_LINES_ARMED (read only): bit n set when the interrupt of
+ *    line n (PC0..PC3) is attached. A line that should be armed and is not
+ *    was refused by the interrupt layer: without TIME_SLOT_INTER no slot is
+ *    ever programmed. Drivers without interrupt lines read 0.
  *  - DMRBB_DRV_LINE_COUNT(n) + b (read only): byte b (0 = least significant)
  *    of the 32-bit interrupt counter of EXTI line n, n = 0..3 (PC0..PC3),
  *    for the bring-up of the SYS_INTER pin assignment. The counters of the
  *    mapped lines are also reported in dmrbbSnapshot.
  */
 #define DMRBB_PAGE_DRIVER 0xFF
-#define DMRBB_DRV_VOICE_PATH 0x00
+#define DMRBB_DRV_LINES_ARMED 0x03
 #define DMRBB_DRV_LINE_COUNT(n) (0x10 + ((n) * 4))
 
 /*
  * DMRBB_DRV_SYS_LINE (read/write): EXTI line (PC0..PC3 pin number) the
- * CS7000 driver dispatches as SYS_INTER, a bring-up knob of the DMR monitor
- * screen's "SYS line" action. DMRBB_SYS_LINE_PINMAP (1, PC1, the default:
- * the pinmap constant DMR_SYS_INT from the reverse engineering of the F405
- * CS7000 firmware) or DMRBB_SYS_LINE_SCHEMATIC (3, PC3_C: the CS7000-M17
- * Plus schematic V01, pinmap constant DMR_SYS_INT_ALT); any other value is
- * ignored. The choice survives a reconfiguration and is forgotten at power
- * off. Drivers without selectable lines (emulator, stub) accept the write
- * and do nothing with it. UNVERIFIED on hardware which line each board
- * needs, see docs/dmr_bringup.md checks 1.2 and 3.1.
+ * CS7000 driver dispatches as SYS_INTER, DMRBB_SYS_LINE_PC1 or
+ * DMRBB_SYS_LINE_PC3; any other value is ignored. The driver starts from
+ * the DMR_SYS_INT pin of the target's pinmap.h and the "SYS line" action
+ * of the DMR monitor screen switches to the other one, until power off.
+ * Drivers without selectable lines (emulator, stub) accept the write and
+ * do nothing with it.
  */
 #define DMRBB_DRV_SYS_LINE 0x02
-#define DMRBB_SYS_LINE_PINMAP 1
-#define DMRBB_SYS_LINE_SCHEMATIC 3
+#define DMRBB_SYS_LINE_PC1 1
+#define DMRBB_SYS_LINE_PC3 3
 
 /**
  * Raw register access for the DMR monitor screen only.

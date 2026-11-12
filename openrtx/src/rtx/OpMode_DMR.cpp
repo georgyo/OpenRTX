@@ -10,6 +10,7 @@
 
 #include <cstring>
 #include "core/dmr_lastheard.h"
+#include "core/dmr_trace.h"
 #include "core/state.h"
 #include "interfaces/delays.h"
 #include "interfaces/platform.h"
@@ -39,6 +40,9 @@ OpMode_DMR::OpMode_DMR()
     , tsBusy(0)
     , tsBusyMs(0)
     , rxFrequency(0)
+    , txFrequency(0)
+    , traceStatusMs(0)
+    , tracePtt(false)
     , callTracked(false)
     , trackedSrc(0)
     , trackedDst(0)
@@ -76,6 +80,10 @@ void OpMode_DMR::enable()
     tsBusy = 0;
     callTracked = false;
     audioLink.reset();
+
+    /* The trace starts with a status record at the first update */
+    traceStatusMs = (uint32_t)getTick() - 1000;
+    tracePtt = false;
 
     /* Vocoder backend up, counters cleared, no thread until a call */
     dmrAudio_init();
@@ -214,6 +222,7 @@ void OpMode_DMR::applyConfig(const rtxStatus_t *const status, bool force)
     if (cfgValid && (status->rxFrequency != rxFrequency))
         forgetShortLc();
     rxFrequency = status->rxFrequency;
+    txFrequency = status->txFrequency;
 
     cfg = c;
     bbCfg = bb;
@@ -259,10 +268,27 @@ void OpMode_DMR::reprogramModem(uint32_t nowMs)
      */
     dmrAudio_stop();
     dmrbb_configure(&bbCfg);
+
+    /*
+     * The modem table resets the blocks of the chip: the settings the radio
+     * driver derives from the calibration (modulation amplitudes) are
+     * written again after it, as they are after every other mode setup.
+     */
+    radio_updateConfiguration();
+
+    /*
+     * The table left the transmit colour code in the modem: the port puts
+     * the receive one in when the controller starts receiving, and swaps
+     * the two around every transmission, if they differ.
+     */
+    port.rxColorCode = cfg.colorCode;
+    port.txColorCode = bbCfg.colorCode;
     ctrl.enable(nowMs);
 
     /* The restarted modem starts without a repeater's Short LC */
     forgetShortLc();
+
+    traceConfig(nowMs);
 }
 
 void OpMode_DMR::forgetShortLc()
@@ -296,10 +322,14 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
     uint32_t ev = dmrbb_waitEvent(&snap, 30);
     uint32_t now = (uint32_t)getTick();
 
-    if (ev & DMRBB_EV_TS)
+    if (ev & DMRBB_EV_TS) {
         ctrl.onTimeslot(snap, now);
-    if (ev & DMRBB_EV_SYS)
+        traceSlot(now);
+    }
+    if (ev & DMRBB_EV_SYS) {
         ctrl.onSysEvent(snap, now);
+        traceSys(now);
+    }
     if ((ev & (DMRBB_EV_TS | DMRBB_EV_SYS)) == 0)
         ctrl.onTimeout(now);
 
@@ -311,13 +341,21 @@ void OpMode_DMR::update(rtxStatus_t *const status, const bool newCfg)
         && !ctrl.report().rfKey)
         applyConfig(status, true);
 
-    /* No timeslot interrupt for two seconds: reprogram the modem */
+    /*
+     * The timeslot watchdog found a modem that should be giving timeslot
+     * interrupts silent for two seconds: reprogram it
+     */
     if (ctrl.report().needsReconfigure)
         reprogramModem(now);
 
     followState(now);
-    monitor(ev);
+    monitor(ev, now);
     trackCall(now);
+
+    /* A reader of the trace has just appeared: describe the setup again */
+    if (dmrTrace_dumpRequested())
+        traceConfig(now);
+    traceStatus(now, ptt);
 
     /* A repeater that stopped sending Short LCs is no longer busy */
     if ((tsBusy != 0) && ((now - tsBusyMs) >= TS_BUSY_HOLD_MS))
@@ -343,6 +381,7 @@ void OpMode_DMR::keyRf(bool key, uint32_t nowMs)
          * receiver is put back on, the PTT stays latched until released.
          */
         if (radio_getStatus() != TX) {
+            traceRfKey(nowMs, key);
             ctrl.rfFailed(nowMs);
             radio_enableRx();
             rfState = RF_RX;
@@ -352,6 +391,7 @@ void OpMode_DMR::keyRf(bool key, uint32_t nowMs)
         rfState = RF_TX;
         if (mon.rfKeyed < UINT16_MAX)
             mon.rfKeyed++;
+        traceRfKey(nowMs, key);
     } else if (!key && (rfState != RF_RX)) {
         /*
          * The RF chain is released as the FM and M17 handlers do: the TX
@@ -363,6 +403,7 @@ void OpMode_DMR::keyRf(bool key, uint32_t nowMs)
             radio_disableRtx();
         radio_enableRx();
         rfState = RF_RX;
+        traceRfKey(nowMs, key);
     }
 }
 
@@ -373,7 +414,7 @@ void OpMode_DMR::followState(uint32_t nowMs)
     /*
      * RF stage: keyed from the moment the modem is armed, before the first
      * header slot is programmed, until the terminator (or the wake-up CSBK)
-     * has gone out; released at once by a rejected or aborted transmission.
+     * has gone out; released at once by an aborted transmission.
      * The controller tracks that in its report. An RF stage that refuses
      * to key aborts the transmission here, hence the state is read after.
      */
@@ -494,7 +535,7 @@ void OpMode_DMR::followState(uint32_t nowMs)
     }
 }
 
-void OpMode_DMR::monitor(uint32_t ev)
+void OpMode_DMR::monitor(uint32_t ev, uint32_t nowMs)
 {
     mon.timecode = ctrl.report().timecode;
 
@@ -542,7 +583,7 @@ void OpMode_DMR::monitor(uint32_t ev)
          * parsed fields and to the chip's own CRC verdict.
          */
         bool header = ((snap.irq82 & R82_CTRL_FRAME) != 0)
-                   && ((snap.r51 & R51_SYNC_CLASS_MASK) == R51_CLASS_HEADER);
+                   && ((snap.r51 & R51_SYNC_CLASS_MASK) == R51_CLASS_DATA);
         if (header || ((snap.irq82 & R82_LATE_ENTRY) != 0)) {
             FullLC lc;
             bool parsed = lc.fromChipLc(snap.lc);
@@ -561,11 +602,11 @@ void OpMode_DMR::monitor(uint32_t ev)
          * UNVERIFIED on hardware: the chip reports a received Short LC
          * through 0x82 bit5 with 0x86 bit2 set (G4EML table, "ShortLC
          * received"), the same interrupt as the end of an own
-         * transmission; the driver reads RX RAM 0x24-0x28 on it.
+         * transmission; the driver reads RX RAM 0x2B-0x2F on it.
          */
         if (((snap.irq82 & R82_TX_END) != 0)
             && ((snap.sub86 & R86_SHORT_LC) != 0))
-            parseShortLc((uint32_t)getTick());
+            parseShortLc(nowMs);
     }
 }
 
@@ -634,6 +675,168 @@ void OpMode_DMR::publish(rtxStatus_t *const status)
     status->dmr_tsBusy = tsBusy;
     status->dmr_mon = mon;
     dmrAudio_getStats(&status->dmr_audio);
+}
+
+/*
+ * Bring-up trace. The records are laid out here and nowhere else:
+ * docs/dmr_bringup.md describes them and scripts/dmr_trace.py decodes them.
+ * Without CONFIG_DMR_TRACE dmrTrace_put() is an empty inline function and
+ * the register dump is not compiled.
+ */
+
+static inline void put16(uint8_t *dst, uint32_t value)
+{
+    dst[0] = (uint8_t)(value >> 8);
+    dst[1] = (uint8_t)value;
+}
+
+static inline void put24(uint8_t *dst, uint32_t value)
+{
+    dst[0] = (uint8_t)(value >> 16);
+    put16(&dst[1], value);
+}
+
+static inline void put32(uint8_t *dst, uint32_t value)
+{
+    put16(&dst[0], value >> 16);
+    put16(&dst[2], value);
+}
+
+void OpMode_DMR::traceConfig(uint32_t nowMs)
+{
+    uint8_t d[DMR_TRACE_DATA_BYTES] = { 0 };
+
+    d[0] = cfg.colorCode;
+    d[1] = bbCfg.colorCode;
+    d[2] = cfg.timeslot;
+    d[3] = cfg.monitor;
+    d[4] = cfg.polite ? 1 : 0;
+    d[5] = cfg.repeater ? 1 : 0;
+    d[6] = cfg.callType;
+    d[7] = bbCfg.modeReg;
+    d[8] = bbCfg.rfAdvance;
+    put24(&d[9], cfg.ownId);
+    put24(&d[12], cfg.dstId);
+    put32(&d[15], rxFrequency);
+    put32(&d[19], txFrequency);
+    d[23] = (uint8_t)(cfg.hangTimeMs / 1000);
+    d[24] = state.settings.dmr_testTone;
+    d[25] = dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE);
+    d[26] = dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_LINES_ARMED);
+    dmrTrace_put('E', nowMs, d, 27);
+
+#ifdef CONFIG_DMR_TRACE
+    /*
+     * The modem registers as the chip returns them, sixteen per record:
+     * the configuration and status blocks of the U_SPI page 4, the page the
+     * whole DMR table is written to.
+     */
+    static const uint8_t rows[] = { 0x00, 0x10, 0x20, 0x30, 0x40, 0x50,
+                                    0x60, 0x80, 0xA0, 0xB0, 0xC0, 0xE0 };
+    static constexpr uint8_t PAGE_AUX = 1;
+    static constexpr uint8_t PAGE_CONFIG = 4;
+
+    for (size_t r = 0; r < sizeof(rows); r++) {
+        d[0] = rows[r];
+        for (uint8_t i = 0; i < 16; i++)
+            d[1 + i] = dmrbb_readRegister(PAGE_CONFIG, rows[r] + i);
+        dmrTrace_put('R', nowMs, d, 17);
+    }
+
+    /*
+     * The transmit sync word the chip puts in its bursts, auxiliary
+     * registers 0x04 to 0x09: D5 D7 F7 7F D7 57 for an MS (TS 102 361-1
+     * table 9.2).
+     */
+    for (uint8_t i = 0; i < 6; i++)
+        d[i] = dmrbb_readRegister(PAGE_AUX, 0x04 + i);
+    dmrTrace_put('A', nowMs, d, 6);
+#endif
+}
+
+void OpMode_DMR::traceSlot(uint32_t nowMs)
+{
+    uint8_t d[15];
+
+    d[0] = ctrl.state();
+    d[1] = ctrl.report().timecode;
+    d[2] = ctrl.report().slotLock;
+    d[3] = snap.r52;
+    d[4] = snap.r42;
+    d[5] = port.lastR41;
+    d[6] = port.lastR50;
+    put16(&d[7], snap.tsCount);
+    put16(&d[9], snap.tsTick);
+    put16(&d[11], snap.sysCount);
+    put16(&d[13], snap.rftxCount);
+    dmrTrace_put('T', nowMs, d, sizeof(d));
+
+    port.lastR41 = DmrModemAdapter::NOT_WRITTEN;
+    port.lastR50 = DmrModemAdapter::NOT_WRITTEN;
+}
+
+void OpMode_DMR::traceSys(uint32_t nowMs)
+{
+    uint8_t d[27];
+
+    d[0] = ctrl.state();
+    d[1] = ctrl.report().timecode;
+    d[2] = snap.irq82;
+    d[3] = snap.r51;
+    d[4] = snap.r52;
+    d[5] = snap.r5f;
+    d[6] = snap.r42;
+    d[7] = snap.sub84;
+    d[8] = snap.sub86;
+    d[9] = snap.sub90;
+    d[10] = snap.sub98;
+    put16(&d[11], snap.rssi);
+    d[13] = snap.fskErr;
+    d[14] = snap.voiceValid ? 1 : 0;
+    memcpy(&d[15], snap.lc, sizeof(snap.lc));
+    dmrTrace_put('S', nowMs, d, sizeof(d));
+
+    if (snap.voiceValid)
+        dmrTrace_put('V', nowMs, snap.voice, sizeof(snap.voice));
+}
+
+void OpMode_DMR::traceStatus(uint32_t nowMs, bool ptt)
+{
+    if ((ptt == tracePtt) && ((nowMs - traceStatusMs) < 1000))
+        return;
+
+    tracePtt = ptt;
+    traceStatusMs = nowMs;
+
+    const CallController::Report &r = ctrl.report();
+    uint8_t d[25];
+
+    d[0] = ctrl.state();
+    d[1] = rfState;
+    d[2] = ptt ? 1 : 0;
+    d[3] = markers;
+    d[4] = r.callState;
+    d[5] = r.slotLock;
+    for (unsigned i = 0; i < 4; i++)
+        put16(&d[6 + (2 * i)], snap.lineCount[i]);
+    put16(&d[14], audioLink.txRequests);
+    put16(&d[16], audioLink.txFrames);
+    put16(&d[18], audioLink.rxFrames);
+    put16(&d[20], (uint32_t)(int32_t)radio_getRssi());
+    d[22] = dmrAudio_running() ? 1 : 0;
+    d[23] = (rxAudioFailed ? 0x01 : 0x00) | (txAudioFailed ? 0x02 : 0x00);
+    d[24] = r.txRejected;
+    dmrTrace_put('P', nowMs, d, sizeof(d));
+}
+
+void OpMode_DMR::traceRfKey(uint32_t nowMs, bool key)
+{
+    uint8_t d[3];
+
+    d[0] = key ? 1 : 0;
+    d[1] = rfState;
+    d[2] = (uint8_t)radio_getStatus();
+    dmrTrace_put('K', nowMs, d, sizeof(d));
 }
 
 #endif /* CONFIG_DMR */
