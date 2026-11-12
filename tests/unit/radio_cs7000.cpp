@@ -397,12 +397,13 @@ const struct audioDriver stm32_adc_audio_driver = { adcStart, adcData, adcSync,
 /*
  * Calibration: constant parameters per array, so that the frequency
  * interpolation returns the array's value whatever the frequency and the
- * test can tell which pair fed the modulation registers.
+ * test can tell which arrays fed the modulation registers. Only the arrays
+ * the real nvm_readCalibData() of nvmem_CS7000.c reads from the flash are
+ * filled (0x1000, 0x1020, 0x1044, 0x106C, 0x1074, 0x10C4, 0x10CC, 0x10DC):
+ * the others stay zero, as they are on the radio.
  */
-static constexpr uint8_t CAL_DIG_I = 0x52;
-static constexpr uint8_t CAL_DIG_Q = 0x51;
-static constexpr uint8_t CAL_ANA_I = 0x62;
-static constexpr uint8_t CAL_ANA_Q = 0x61;
+static constexpr uint8_t CAL_MOD2 = 0x51; /* txDigitalPathQ, flash 0x10C4 */
+static constexpr uint8_t CAL_MOD1 = 0x62; /* txAnalogPathI, flash 0x10CC  */
 static constexpr uint8_t CAL_PWR_HI = 0xC8;
 static constexpr uint8_t CAL_PWR_MID = 0x64;
 
@@ -417,10 +418,8 @@ extern "C" void nvm_readCalibData(void *buf)
         cal->rxSensitivity[i] = 0x80;
         cal->txHighPwr[i] = CAL_PWR_HI;
         cal->txMiddlePwr[i] = CAL_PWR_MID;
-        cal->txDigitalPathI[i] = CAL_DIG_I;
-        cal->txDigitalPathQ[i] = CAL_DIG_Q;
-        cal->txAnalogPathI[i] = CAL_ANA_I;
-        cal->txAnalogPathQ[i] = CAL_ANA_Q;
+        cal->txDigitalPathQ[i] = CAL_MOD2;
+        cal->txAnalogPathI[i] = CAL_MOD1;
         cal->errorRate[i] = 0x10;
     }
 }
@@ -728,21 +727,24 @@ TEST_CASE("DMR radio_enableRx drops the PA and retunes, modem untouched",
         REQUIRE(e.type != Ev::REG_WRITE);
 }
 
-TEST_CASE("radio_updateConfiguration feeds 0x45/0x46 from the digital pair",
+TEST_CASE("radio_updateConfiguration feeds 0x45/0x46 from the loaded pair",
           "[radio_cs7000][dmr]")
 {
-    bringUp(OPMODE_DMR);
-    radio_updateConfiguration();
+    /*
+     * DMR, FM and M17 all take 0x45 and 0x46 from the two amplitude arrays
+     * the calibration loader reads: no mode writes a value that comes from
+     * an array left at zero.
+     */
+    for (enum opmode mode : { OPMODE_DMR, OPMODE_FM, OPMODE_M17 }) {
+        INFO("opMode " << static_cast<int>(mode));
+        bringUp(mode);
+        radio_updateConfiguration();
 
-    REQUIRE(has(regWrite(0x45, CAL_DIG_Q)));
-    REQUIRE(has(regWrite(0x46, CAL_DIG_I)));
-    REQUIRE(has(regWrite(0x46, CAL_ANA_I)) == false);
-
-    /* FM keeps mixing the analog I with the digital Q */
-    bringUp(OPMODE_FM);
-    radio_updateConfiguration();
-    REQUIRE(has(regWrite(0x45, CAL_DIG_Q)));
-    REQUIRE(has(regWrite(0x46, CAL_ANA_I)));
+        REQUIRE(has(regWrite(0x45, CAL_MOD2)));
+        REQUIRE(has(regWrite(0x46, CAL_MOD1)));
+        REQUIRE(has(regWrite(0x45, 0x00)) == false);
+        REQUIRE(has(regWrite(0x46, 0x00)) == false);
+    }
 }
 
 TEST_CASE("radio_updateConfiguration while transmitting in DMR re-keys",

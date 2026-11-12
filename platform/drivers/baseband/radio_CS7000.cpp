@@ -592,35 +592,25 @@ void radio_updateConfiguration()
     txpwr_lo = interpParameter(config->txFrequency, calData.txCalFreq, calData.txMiddlePwr);
     txpwr_hi = interpParameter(config->txFrequency, calData.txCalFreq, calData.txHighPwr);
 
-    // HR_C6000 modulation amplitude
-    uint8_t qAmp;
-    uint8_t iAmp;
-    if(config->opMode == OPMODE_DMR)
-    {
-        /*
-         * UNVERIFIED on hardware: which calibration pair drives the 4FSK
-         * deviation. The OEM calibration carries a "digital" and an "analog"
-         * pair of I/Q amplitudes (calibInfo_CS7000.h); FM has always mixed
-         * the analog I with the digital Q, here DMR takes the digital pair
-         * for both two-point outputs. Target: +-1.944kHz symbol deviation,
-         * to be measured on a deviation meter or a DMR test set. The
-         * two-point bias 0x47 / 0x48 / 0x04 (setModOffset, calData
-         * errorRate) is the one written at radio_init(): neither dmrMode()
-         * nor fmMode() rewrite it, and their 0x00 = 0x3F block reset leaves
-         * it alone (FM transmits on frequency with the init-time value).
-         */
-        qAmp = interpParameter(config->txFrequency, calData.txCalFreq,
-                               calData.txDigitalPathQ);
-        iAmp = interpParameter(config->txFrequency, calData.txCalFreq,
-                               calData.txDigitalPathI);
-    }
-    else
-    {
-        qAmp = interpParameter(config->txFrequency, calData.txCalFreq,
-                               calData.txDigitalPathQ);
-        iAmp = interpParameter(config->txFrequency, calData.txCalFreq,
-                               calData.txAnalogPathI);
-    }
+    /*
+     * HR_C6000 modulation amplitude, the same pair in every mode: 0x45 from
+     * the calibration array at flash 0x10C4 and 0x46 from the one at 0x10CC,
+     * the two amplitude arrays nvm_readCalibData() loads. The ratio between
+     * the two points of the modulator is set by the board (VCO against
+     * VCTCXO sensitivity), not by the mode, and this pair is the one the
+     * radio modulates FM and the M17 4FSK with.
+     * UNVERIFIED on hardware: the absolute DMR deviation this pair gives.
+     * Target: +-1.944kHz for the outer symbols, to be measured on a
+     * deviation meter or a DMR test set.
+     * The two-point bias 0x47 / 0x48 / 0x04 (setModOffset, calData
+     * errorRate) is the one written at radio_init(): neither dmrMode() nor
+     * fmMode() rewrite it, and their 0x00 = 0x3F block reset leaves it alone
+     * (FM transmits on frequency with the init-time value).
+     */
+    uint8_t qAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                                   calData.txDigitalPathQ);
+    uint8_t iAmp = interpParameter(config->txFrequency, calData.txCalFreq,
+                                   calData.txAnalogPathI);
 
     C6000.writeCfgRegister(0x45, qAmp);   // Adjustment of Mod2 amplitude
     C6000.writeCfgRegister(0x46, iAmp);   // Adjustment of Mod1 amplitude
