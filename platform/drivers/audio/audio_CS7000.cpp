@@ -96,7 +96,11 @@ void audio_init()
     gpioDev_set(RX_PWR_EN);
     gpioDev_clear(C6K_SLEEP);
     delayMs(10);
-    spiStm32_init(&c6000_spi, 12500000, SPI_FLAG_CPHA);
+
+    // HR_C6000 register port: "SCLK supports up to 4MHz clock rate" (HR_C6000
+    // manual, U_SPI timing figure). The driver rounds down to the nearest
+    // divider: 3.125MHz on the STM32H743, 2.625MHz on the STM32F405
+    spiStm32_init(&c6000_spi, 4000000, SPI_FLAG_CPHA);
     C6000.init();
     C6000.fmMode();
 
