@@ -281,9 +281,12 @@ void HR_Cx000< M >::dmrMode()
     // 0xC0)
     writeReg(M::CONFIG, 0x5F, 0xF0);
 
-    // UNVERIFIED on hardware: packet interface on, FM voice channel closed
-    // (O initSeq2 0x12 minus bit 1)
-    writeReg(M::CONFIG, 0x36, 0x10);
+    // Codec and vocoder interface clocks all running, FM receive voice
+    // channel closed: the reset value. Bit 4 is mcu_pkt_clk_down, the
+    // active-high shut-off of the vocoder packet interface clock (M chapter
+    // 8); GD and OpenMDUV380 run DMR with 0x00. UNVERIFIED on hardware:
+    // whether that clock serves the V_SPI voice port
+    writeReg(M::CONFIG, 0x36, 0x00);
 
     // UNVERIFIED on hardware: DAC power control automatic by slot (O
     // initSeq2, MD-UV3x0/MD-3x0 OEM dmrMode)
@@ -332,7 +335,7 @@ void HR_Cx000< M >::dmrMode()
 template< class M >
 void HR_Cx000< M >::fmMode()
 {
-    writeReg(M::CONFIG, 0x36, 0x10);  // Vocoder codec packet interface enabled
+    writeReg(M::CONFIG, 0x36, 0x10);  // Vocoder packet interface clock off (bit 4, active high)
     writeReg(M::CONFIG, 0x36, 0x12);  // Receiving and opening the voice channel in FM mode Codec switch, 1 means on, 0 means off.
     writeReg(M::CONFIG, 0x20, 0x00);  // Local access policy, important
     writeReg(M::CONFIG, 0x21, 0x01);  // Control enable to clear the data in the vocoder decoding cache buffer
@@ -366,7 +369,7 @@ void HR_Cx000< M >::fmMode()
 
     writeReg(M::CONFIG, 0x81, 0x00); // InterClass1Mask, all interrupts masked
     writeReg(M::CONFIG, 0xE0, 0x83); // CPU controls the codec, Mic_p enabled, HR_C6000 is I2S slave
-    writeReg(M::CONFIG, 0x36, 0x10); // Vocoder codec packet interface enabled
+    writeReg(M::CONFIG, 0x36, 0x10); // Vocoder packet interface clock off (bit 4, active high)
     writeReg(M::CONFIG, 0x36, 0x12); // Receiving and opening the voice channel in FM mode Codec switch, 1 means on, 0 means off.
     writeReg(M::CONFIG, 0xE0, 0xC9); // Codec enabled, LineIn1, LineOut2, I2S slave mode
     writeReg(M::CONFIG, 0x26, 0xFE); // Undocumented register, disable FM audio output
