@@ -64,6 +64,18 @@ static const uint8_t initSeq8[] =
     0xEF, 0x00
 };
 
+/*
+ * Transmit data sync word, AUX 0x04..0x09: MS sourced data sync of ETSI TS
+ * 102 361-1 table 9.2. The chip inserts this field in every burst it builds
+ * and derives the voice sync from it; the reset value in the auxiliary
+ * register table of the HR_C6000 manual is the BS sourced pattern. Same bytes
+ * as OpenGD77 and OpenMDUV380 write there.
+ */
+static const uint8_t dmrTxSync[] =
+{
+    0x01, 0x04, 0xD5, 0xD7, 0xF7, 0x7F, 0xD7, 0x57
+};
+
 
 template class HR_Cx000 < C6000_SpiOpModes >;
 
@@ -175,6 +187,10 @@ void HR_Cx000< M >::dmrMode()
 {
     // Reset DMR and PHY blocks before the mode switch, as fmMode() (G)
     writeReg(M::CONFIG, 0x00, 0x3F);
+
+    // Transmit sync word: an MS sends MS sourced sync (ETSI TS 102 361-1
+    // table 9.2 and clause 5.1.4.5; M auxiliary table 0x04-0x09)
+    sendSequence(dmrTxSync, sizeof(dmrTxSync));
 
     // UNVERIFIED on hardware: mode word. DMR, Tier II, timeslot mode,
     // Layer 2, repeater, aligned, slot 1 (G bit map; M §5.4.3 gives
