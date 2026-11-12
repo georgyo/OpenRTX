@@ -325,7 +325,6 @@ private:
     uint32_t lastTsTick;  /* snapshot tsTick of the last TS event             */
     uint32_t lastBsSyncMs;
     bool wdRestarted;     /* startRx re-run by the watchdog since last TS     */
-    bool skipLc;          /* ignore the first LC read after a mode switch     */
 
     /* Reception */
     uint8_t callSlot;     /* 1, 2 or 0 when unknown (MS sync)                 */

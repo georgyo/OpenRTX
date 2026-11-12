@@ -280,8 +280,11 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
     lc.dst = dst & ADDRESS_MASK;
     lc.src = src & ADDRESS_MASK;
 
-    /* Three headers, TS 102 361-2 §5.2.1.1 */
-    for (unsigned i = 0; i < 3; i++) {
+    /*
+     * One voice LC header: "the voice message begins with a voice LC header
+     * burst" (TS 102 361-1 §5.1.2.2), repeats are the sender's choice
+     */
+    {
         struct dmrbbSnapshot s = bsBurst(cc, ts);
         s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA);
         lc.toChipLc(s.lc);

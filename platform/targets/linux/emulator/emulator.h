@@ -172,7 +172,7 @@ void dmrEmu_pushSys(const struct dmrbbSnapshot *s);
 void dmrEmu_pulseLine(uint8_t line);
 
 /**
- * Script a base-station sourced group voice call: three voice LC headers,
+ * Script a base-station sourced group voice call: one voice LC header,
  * the given number of voice bursts (A..F cycling) and a terminator, each on
  * its own timeslot with the other slot idle in between. In the unit tests
  * the events are played one timeslot per dmrbb_waitEvent() call; in the

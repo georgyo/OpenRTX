@@ -51,7 +51,6 @@ CallController::CallController() : port(nullptr), sink(nullptr), st(OFF)
     lastTsTick = 0;
     lastBsSyncMs = 0;
     wdRestarted = false;
-    skipLc = false;
     callSlot = 0;
     callTimecode = 0;
     callDmo = false;
@@ -121,13 +120,6 @@ void CallController::enable(uint32_t nowMs)
     wdRestarted = false;
     callSlot = 0;
     callDmo = false;
-
-    /*
-     * The RX RAM may still hold the LC of a previous call on the first
-     * system interrupt after the modem was programmed (OpenGD77
-     * observation), so the first LC read is discarded.
-     */
-    skipLc = true;
 
     goRx(nowMs, RX_SEARCH);
     publish();
@@ -418,11 +410,6 @@ void CallController::enterHang(uint32_t nowMs)
 
 bool CallController::tryOpenCall(const struct dmrbbSnapshot &s, uint32_t nowMs)
 {
-    if (skipLc) {
-        skipLc = false;
-        return false;
-    }
-
     uint8_t cc = s.r52 >> 4;
     uint8_t slot = slotOf(s);
 

@@ -396,7 +396,7 @@ private:
 
     /**
      * Feed the last heard list: one entry per received call, inserted when
-     * the controller opens a call (its headers) and again when a call from
+     * the controller opens a call (its header) and again when a call from
      * another source or to another destination takes its place, never per
      * burst. A call reopened after its hang time counts as a new one.
      *

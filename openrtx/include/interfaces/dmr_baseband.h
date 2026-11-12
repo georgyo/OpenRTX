@@ -112,9 +112,9 @@ struct dmrbbSnapshot {
     /*
      * RX RAM bytes 0x00-0x0B (U_SPI page DATA, read opcode 0x82): the 9 LC
      * or 10 CSBK octets followed by the parity/CRC. Read when 0x82 bit3 or
-     * bit4 is set. UNVERIFIED on hardware: the first read after a mode
-     * switch may return the previous call's LC (OpenGD77 observation), the
-     * state machine skips it.
+     * bit4 is set: the chip has just written it when it reports a header,
+     * a terminator or a late entry, so the state machine uses the first
+     * one it gets.
      */
     uint8_t lc[12];
 

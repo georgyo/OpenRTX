@@ -332,16 +332,11 @@ public:
         ctrl.onTimeout(now);
     }
 
-    /* Reach RX_IDLE with a locked timecode: the LC skip is consumed too */
+    /* Reach RX_IDLE with a locked timecode */
     void settle()
     {
         start();
         tsN(6);
-        FullLC stale;
-        stale.clear();
-        stale.src = 1;
-        stale.dst = cfg.dstId;
-        header(R5F_SYNC_MS, 0, cfg.colorCode, stale);
         port.clear();
         sink.rxFrames = 0;
     }
@@ -872,28 +867,42 @@ TEST_CASE("DMR RX late entry opens the call", "[dmr][callctrl]")
     REQUIRE(b.ctrl.report().rxSrc == 1234567);
 }
 
-TEST_CASE("DMR RX: the first LC after a mode switch is stale",
+TEST_CASE("DMR RX: the first header after the modem starts opens the call",
           "[dmr][callctrl]")
 {
+    /*
+     * One voice LC header per transmission is the norm (TS 102 361-1
+     * §5.1.2.2): the first one the chip reports with a good CRC after the
+     * modem was programmed opens the call, and so does the first late entry.
+     */
     Bench b;
     b.start();
     b.tsN(6);
 
     FullLC lc = b.groupCall(1234567, 31665);
     b.header(R5F_SYNC_BS, 2, 1, lc);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+    REQUIRE(b.ctrl.report().rxSrc == 1234567);
+    b.superframe(R5F_SYNC_BS, 2, 1);
+    REQUIRE(b.sink.rxFrames == 6);
 
-    b.ts();
+    /* The same after every restart, with voice bursts seen before it */
+    b.ctrl.disable();
+    b.ctrl.enable(b.now);
+    REQUIRE(b.ctrl.report().lcOk == false);
+    b.tsN(6);
+    b.voice(R5F_SYNC_BS, 2, 1, 1);
+    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
     b.header(R5F_SYNC_BS, 2, 1, lc);
     REQUIRE(b.ctrl.state() == CallController::RX_CALL);
 
-    /* Voice bursts do not consume the skip */
+    /* Header missed: the first late entry opens it */
     b.ctrl.disable();
     b.ctrl.enable(b.now);
     b.tsN(6);
-    b.voice(R5F_SYNC_BS, 2, 1, 1);
-    b.header(R5F_SYNC_BS, 2, 1, lc);
-    REQUIRE(b.ctrl.state() == CallController::RX_IDLE);
+    b.lateEntry(R5F_SYNC_BS, 2, 1, lc);
+    REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+    REQUIRE(b.ctrl.report().rxSrc == 1234567);
 }
 
 TEST_CASE("DMR RX in direct mode opens only the call's slot", "[dmr][callctrl]")

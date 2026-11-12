@@ -404,7 +404,7 @@ TEST_CASE("DMR OpMode: an injected group call is received and published",
     dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 12);
     REQUIRE(dmrEmu_pending() > 0);
 
-    /* The headers open the call */
+    /* The header opens the call */
     REQUIRE(b.runUntil(CallController::RX_CALL));
     REQUIRE(b.status.dmr_callState == DMR_CALL_RX);
     REQUIRE(b.status.dmr_lcOk == true);
@@ -1683,11 +1683,7 @@ TEST_CASE("DMR OpMode TX: a call opening while the RF is still keyed after "
     s.r51 = (uint8_t)((DT_VOICE_LC_HEADER << 4) | R51_CLASS_DATA);
     lc.toChipLc(s.lc);
 
-    /* The first LC after the modem went back to RX is skipped as stale
-     * (goRx()), the second header of the call opens it */
-    dmrEmu_pushSys(&s);
-    dmr.update(&b.status, false);
-    REQUIRE(b.ctrlState() == CallController::RX_HANG);
+    /* The header opens the call */
     dmrEmu_pushSys(&s);
     dmr.update(&b.status, false);
     REQUIRE(b.ctrlState() == CallController::RX_CALL);
@@ -1920,7 +1916,7 @@ TEST_CASE("DMR OpMode: a received call feeds the last heard list once",
     b.ticks(6);
     REQUIRE(dmrLastHeard_count() == 0);
 
-    /* Three headers and twelve bursts: one entry */
+    /* A header and twelve bursts: one entry */
     dmrEmu_injectGroupCall(CALLER, TALKGROUP, 1, 2, 12);
     REQUIRE(b.runUntil(CallController::RX_CALL));
     REQUIRE(dmrLastHeard_count() == 1);
