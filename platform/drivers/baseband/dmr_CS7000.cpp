@@ -45,9 +45,10 @@
  *
  *  - Voice payload. 27 bytes per voice burst (three AMBE+2 frames, manual
  *    §4.6.1) exchanged on the vocoder SPI port ("V_SPI", C6000 slave) with
- *    a bit-banged master on the spi_bitbang driver: read command 0x83,
- *    address 0x00, 27 bytes; write command 0x03, address 0x00, 27 bytes, one
- *    operation per chip select. UNVERIFIED on hardware, with the TX RAM
+ *    a bit-banged master (voc_spi of the target's hwconfig.c, data valid at
+ *    the falling clock edge): read command 0x83, address 0x00, 27 bytes;
+ *    write command 0x03, address 0x00, 27 bytes, one operation per chip
+ *    select. UNVERIFIED on hardware, with the TX RAM
  *    0x30 / RX RAM 0x30 transport over the "user" SPI as the selectable
  *    alternative (DMRBB_PAGE_DRIVER / DMRBB_DRV_VOICE_PATH).
  *
@@ -104,6 +105,13 @@
 static constexpr uint8_t VSPI_CMD_READ = 0x83;
 static constexpr uint8_t VSPI_CMD_WRITE = 0x03;
 static constexpr uint8_t VSPI_ADDR = 0x00;
+
+/*
+ * Time between the V_SPI chip select going low and the first clock edge, in
+ * microseconds: the figure OpenGD77 runs the port with. The manual gives
+ * none.
+ */
+static constexpr unsigned int VSPI_CS_SETUP_US = 2;
 
 /* TX/RX RAM address of the 216-bit voice payload (manual Table 5.2) */
 static constexpr uint8_t RAM_VOICE_ADDR = 0x30;
@@ -185,9 +193,8 @@ static const struct gpioPin irqPins[NUM_LINES] = {
     { &GpioC, 3 },
 };
 
-/* V_SPI chip select and clock, driven by hand around each transfer */
+/* V_SPI chip select, driven by hand around each transfer */
 static const struct gpioPin vocCs = { &GpioB, PIN_NUMBER(VOC_CS) };
-static const struct gpioPin vocSck = { &GpioB, PIN_NUMBER(VOC_SCK) };
 
 /* Interrupt mailbox, written in ISR context and read under interrupt lock */
 static volatile uint32_t pending = 0;
@@ -286,7 +293,8 @@ static void attachLines()
 
 /**
  * V_SPI read of one voice burst: command 0x83, address 0x00, then 27 bytes
- * with the chip select held low (manual §4.6.1).
+ * with the chip select held low (manual §4.6.1). The clock idles low and
+ * the target's transfer function leaves it there after the last bit.
  * UNVERIFIED on hardware: command format, clock phase and pin orientation.
  *
  * @param buf: destination of the 27 bytes.
@@ -299,15 +307,9 @@ static void vspiRead(uint8_t *buf)
 
     spi_acquire(spi);
     gpioPin_clear(&vocCs);
+    delayUs(VSPI_CS_SETUP_US);
     spi_send(spi, cmd, sizeof(cmd));
     spi_receive(spi, buf, 27);
-
-    /*
-     * The bit-bang driver leaves the clock high after the last bit: put it
-     * back to the idle level of SPI mode 0 before the chip select rises,
-     * so that the next transfer does not open with a falling edge.
-     */
-    gpioPin_clear(&vocSck);
     gpioPin_set(&vocCs);
     spi_release(spi);
 }
@@ -327,15 +329,9 @@ static void vspiWrite(const uint8_t *buf)
 
     spi_acquire(spi);
     gpioPin_clear(&vocCs);
+    delayUs(VSPI_CS_SETUP_US);
     spi_send(spi, cmd, sizeof(cmd));
     spi_send(spi, buf, 27);
-
-    /*
-     * The bit-bang driver leaves the clock high after the last bit: put it
-     * back to the idle level of SPI mode 0 before the chip select rises,
-     * so that the next transfer does not open with a falling edge.
-     */
-    gpioPin_clear(&vocSck);
     gpioPin_set(&vocCs);
     spi_release(spi);
 }

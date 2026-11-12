@@ -15,6 +15,7 @@
 #include "drivers/baseband/SKY72310.h"
 #include "drivers/baseband/AK2365A.h"
 #include "core/gps.h"
+#include "interfaces/delays.h"
 
 /**
  * SPI bitbang function for SN74HC595 gpio extender.
@@ -78,13 +79,10 @@ static const struct spiConfig spiPllCfg =
 };
 
 /*
- * HR_C6000 vocoder SPI port (V_SPI), bit-banged SPI master, mode 0 (clock
- * idle low, data sampled on the rising edge), about 500kHz with the 1us
- * half-period of the bitbang driver: the manual (§4.6.1) allows up to 4MHz.
- * UNVERIFIED on hardware: the clock phase. The manual's timing figure is
- * missing from the translation; the "user" SPI of the same chip is driven
- * with SPI_FLAG_CPHA (see audio_CS7000.cpp), so flipping the flag here is the
- * first thing to try if the 27-byte voice reads come back as zeros.
+ * HR_C6000 vocoder SPI port (V_SPI) pins and timing: bit-banged SPI master,
+ * about 500kHz with a 1us half period, the manual (§4.6.1) allows up to
+ * 4MHz. The pins are set up by spiBitbang_init(), the transfer is done by
+ * spiVoc_func() below.
  */
 static const struct spiConfig spiVocCfg =
 {
@@ -95,6 +93,46 @@ static const struct spiConfig spiVocCfg =
     .flags     = 0
 };
 
+/**
+ * SPI bitbang function for the HR_C6000 vocoder port (V_SPI).
+ *
+ * Figure 4.16 of the HR_C6000 manual (§4.6.1) draws V_SCLK idle low with
+ * both data lines changing at its rising edge: the chip puts a new V_SDO bit
+ * out on the rising edge and samples V_SDI on the falling one. OpenGD77
+ * clocks the port the same way (clock idle low, data valid on the second
+ * edge). For each bit, MSB first, the clock rises, MOSI is set and, half a
+ * period later, the clock falls and MISO is read; the clock is left low.
+ * UNVERIFIED on hardware.
+ */
+static uint8_t spiVoc_func(const void *priv, uint8_t value)
+{
+    const struct spiConfig *cfg = (const struct spiConfig *) priv;
+    uint8_t incoming = 0;
+
+    for(uint8_t cnt = 0; cnt < 8; cnt++)
+    {
+        // Rising edge: the chip shifts its next bit out
+        gpio_setPin(cfg->clk.port, cfg->clk.pin);
+
+        if((value & (0x80 >> cnt)) != 0)
+            gpio_setPin(cfg->mosi.port, cfg->mosi.pin);
+        else
+            gpio_clearPin(cfg->mosi.port, cfg->mosi.pin);
+
+        delayUs(cfg->clkPeriod);
+
+        // Falling edge: the chip samples MOSI, its own bit is stable
+        gpio_clearPin(cfg->clk.port, cfg->clk.pin);
+
+        incoming <<= 1;
+        incoming |= gpio_readPin(cfg->miso.port, cfg->miso.pin);
+
+        delayUs(cfg->clkPeriod);
+    }
+
+    return incoming;
+}
+
 static const struct gpioPin shiftRegStrobe = { GPIOEXT_STR };
 static pthread_mutex_t adc1Mutex;
 static pthread_mutex_t c6000_mutex;
@@ -102,7 +140,7 @@ static pthread_mutex_t c6000_mutex;
 SPI_CUSTOM_DEVICE_DEFINE(spiSr, spiSr_func, NULL, NULL)
 SPI_BITBANG_DEVICE_DEFINE(det_spi, spiDetCfg, NULL)
 SPI_BITBANG_DEVICE_DEFINE(pll_spi, spiPllCfg, NULL)
-SPI_BITBANG_DEVICE_DEFINE(voc_spi, spiVocCfg, NULL)
+SPI_CUSTOM_DEVICE_DEFINE(voc_spi, spiVoc_func, &spiVocCfg, NULL)
 SPI_STM32_DEVICE_DEFINE(flash_spi, SPI4, NULL)
 SPI_STM32_DEVICE_DEFINE(c6000_spi, SPI2, &c6000_mutex)
 GPIO_SHIFTREG_DEVICE_DEFINE(extGpio, (const struct spiDevice *) &spiSr, shiftRegStrobe, 24)
