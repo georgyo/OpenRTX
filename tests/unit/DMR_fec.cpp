@@ -803,31 +803,38 @@ TEST_CASE("Short LC CRC and chip layout", "[dmr][fec][shortlc]")
     /* The CRC is the one of clause B.3.7 over the 28 message bits */
     REQUIRE(ShortLc::crc(msg) == Crc::crc8Bits(msg, 28));
 
-    /* RX RAM 0x24..0x28: 28 bits left aligned, CRC in the fifth byte */
+    /*
+     * RX RAM 0x2B..0x2F (manual Table 5.3): 36 bits in a row, the 28
+     * message bits then the CRC, the low nibble of the fifth byte unused
+     */
     uint8_t bytes[5];
+    uint8_t check = ShortLc::crc(msg);
     ShortLc::toChipBytes(msg, bytes);
     REQUIRE(bytes[0] == (uint8_t)(msg >> 20));
     REQUIRE(bytes[1] == (uint8_t)(msg >> 12));
     REQUIRE(bytes[2] == (uint8_t)(msg >> 4));
-    REQUIRE(bytes[3] == (uint8_t)((msg & 0x0F) << 4));
-    REQUIRE(bytes[4] == ShortLc::crc(msg));
+    REQUIRE(bytes[3] == (uint8_t)(((msg & 0x0F) << 4) | (check >> 4)));
+    REQUIRE(bytes[4] == (uint8_t)(check << 4));
 
     uint32_t back = 0;
     REQUIRE(ShortLc::fromChipBytes(bytes, back) == true);
     REQUIRE(back == msg);
 
-    /* A wrong CRC, or a flipped message bit, is rejected */
-    bytes[4] ^= 0x01;
+    /* A wrong CRC, in either nibble, or a flipped message bit is rejected */
+    bytes[4] ^= 0x10;
     back = 0xFFFFFFFF;
     REQUIRE(ShortLc::fromChipBytes(bytes, back) == false);
     REQUIRE(back == 0xFFFFFFFF);
-    bytes[4] ^= 0x01;
+    bytes[4] ^= 0x10;
+    bytes[3] ^= 0x01;
+    REQUIRE(ShortLc::fromChipBytes(bytes, back) == false);
+    bytes[3] ^= 0x01;
     bytes[1] ^= 0x40;
     REQUIRE(ShortLc::fromChipBytes(bytes, back) == false);
 
-    /* The low nibble of 0x27 is not part of the message */
+    /* The low nibble of 0x2F is not part of the message */
     bytes[1] ^= 0x40;
-    bytes[3] |= 0x0F;
+    bytes[4] |= 0x0F;
     REQUIRE(ShortLc::fromChipBytes(bytes, back) == true);
     REQUIRE(back == msg);
 }

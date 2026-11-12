@@ -119,21 +119,19 @@ struct dmrbbSnapshot {
     uint8_t lc[12];
 
     /*
-     * RX RAM bytes 0x24-0x28 (U_SPI page DATA): the Short LC of the last
+     * RX RAM bytes 0x2B-0x2F (U_SPI page DATA): the Short LC of the last
      * completed CACH cycle as the chip decodes it, i.e. after the BPTC of
-     * TS 102 361-1 §B.2.3: the 28 message bits in 0x24-0x26 and the upper
-     * nibble of 0x27, the 8-bit CRC in 0x28. The address comes from the
-     * TX-side RAM allocation of the HR_C6000 manual (Table 5.2, "Short LC
-     * 0x24~0x28", the RAM the MCU fills for the chip to transmit): the
-     * RX-side table (5.3) is omitted in the translation, so the RX RAM is
-     * assumed to mirror the TX map, as lc[] at 0x00 already assumes. Read
-     * when 0x82 bit5 is set together with 0x86 bit2. UNVERIFIED on
-     * hardware: the RX address and layout (the manual's worked examples
-     * never read it back), the interrupt reporting, and whether the chip
-     * verifies the CRC itself: the opMode handler verifies it again
-     * (DMR::FEC::ShortLc::fromChipBytes()) and drops the message on a
-     * mismatch. Zero on the emulator unless a test injects one, and on
-     * the stub.
+     * TS 102 361-1 §B.2.3. HR_C6000 manual, Table 5.3 (RX side RAM
+     * allocation): "ShortLC 0x2b~0x2f, 36bit ShortLC data, the low 4 bits
+     * of 0x2F are unused": the 28 message bits in 0x2B-0x2D and the upper
+     * nibble of 0x2E, the 8-bit CRC in the lower nibble of 0x2E and the
+     * upper nibble of 0x2F. Read when 0x82 bit5 is set together with 0x86
+     * bit2. UNVERIFIED on hardware: the order of the 36 bits (the
+     * manual's worked examples never read them back), the interrupt
+     * reporting, and whether the chip verifies the CRC itself: the opMode
+     * handler verifies it again (DMR::FEC::ShortLc::fromChipBytes()) and
+     * drops the message on a mismatch. Zero on the emulator unless a test
+     * injects one, and on the stub.
      */
     uint8_t shortLc[5];
 
@@ -141,7 +139,7 @@ struct dmrbbSnapshot {
      * Voice payload of the burst, 27 bytes (216 bits, three AMBE+2 frames,
      * TS 102 361-1 §6.1), read over V_SPI with command 0x83 when the sync
      * class is voice and the CRC is good. voiceValid is false otherwise.
-     * UNVERIFIED on hardware: V_SPI (0x06 = 0x21) versus RX RAM 0x30.
+     * UNVERIFIED on hardware.
      */
     uint8_t voice[27];
     bool voiceValid;
@@ -328,11 +326,9 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs);
  * the knobs and counters of the modem driver itself, for the DMR monitor
  * screen: no SPI traffic is generated. Addresses:
  *
- *  - DMRBB_DRV_VOICE_PATH (read/write): transport of the 27-byte voice
- *    payloads, 0 = V_SPI (default, register 0x06 = 0x21, manual §4.6.1),
- *    1 = TX RAM 0x30 / RX RAM 0x30 over the "user" SPI. UNVERIFIED on
- *    hardware, both; the register 0x06 variant (0x01) is written separately
- *    through page 4 by whoever flips this.
+ *  - DMRBB_DRV_VOICE_PATH (read only): transport of the 27-byte voice
+ *    payloads, always 0 = V_SPI (register 0x06 = 0x21, manual §4.6.1), the
+ *    only one the driver implements.
  *  - DMRBB_DRV_LINE_COUNT(n) + b (read only): byte b (0 = least significant)
  *    of the 32-bit interrupt counter of EXTI line n, n = 0..3 (PC0..PC3),
  *    for the bring-up of the SYS_INTER pin assignment. The counters of the

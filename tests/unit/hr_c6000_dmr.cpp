@@ -315,7 +315,6 @@ extern "C" long long getTick()
 static void resetAll()
 {
     dmrbb_terminate();
-    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 0);
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE,
                         DMRBB_SYS_LINE_PC1);
 
@@ -652,20 +651,16 @@ TEST_CASE("dmrbb_writeVoice uses V_SPI, or the TX RAM when selected",
     requireTx(vspi.log[0], expected);
     REQUIRE(vspi.csLow == false);
 
-    /* Fallback: TX RAM 0x30 over the "user" SPI */
+    /* V_SPI is the only transport: the driver knob reads 0 and stays 0 */
     REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH) == 0);
     dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 1);
-    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH) == 1);
+    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH) == 0);
 
     vspi.log.clear();
     dmrbb_writeVoice(ambe);
-    REQUIRE(vspi.log.empty());
-    REQUIRE(uspi.log.size() == 1);
-    expected = { 0x02, 0x30 };
-    expected.insert(expected.end(), ambe, ambe + 27);
-    requireTx(uspi.log[0], expected);
+    REQUIRE(uspi.log.empty());
+    REQUIRE(vspi.log.size() == 1);
 
-    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 0);
     dmrbb_terminate();
 }
 
@@ -879,28 +874,10 @@ TEST_CASE("dmrbb_waitEvent reads the voice payload of a good voice burst",
     REQUIRE(s.voiceValid == false);
     REQUIRE(vspi.log.empty());
 
-    /* RX RAM 0x30 alternative when selected */
-    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 1);
-    uspi.log.clear();
-    uspi.pages[4][0x51] = 0x21;
-    for (uint8_t i = 0; i < 27; i++)
-        uspi.pages[2][0x30 + i] = (uint8_t)(0x40 + i);
+    /* The RX RAM (raw 264-bit bursts at 0x30 / 0x60) is never read */
+    for (const auto &t : uspi.log)
+        REQUIRE(!((t.tx[0] == 0x82) && (t.tx[1] >= 0x30)));
 
-    fireLine(1);
-    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
-    REQUIRE(s.voiceValid == true);
-    REQUIRE(vspi.log.empty());
-    for (uint8_t i = 0; i < 27; i++)
-        REQUIRE(s.voice[i] == (uint8_t)(0x40 + i));
-
-    bool ramRead = false;
-    for (const auto &t : uspi.log) {
-        if ((t.tx[0] == 0x82) && (t.tx[1] == 0x30) && (t.rxBytes == 27))
-            ramRead = true;
-    }
-    REQUIRE(ramRead);
-
-    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 0);
     dmrbb_terminate();
 }
 
@@ -1262,7 +1239,7 @@ TEST_CASE("dmrbb_configure rewrites 0x12 only for a non-default RF advance",
     dmrbb_terminate();
 }
 
-TEST_CASE("dmrbb_waitEvent reads the Short LC from RX RAM 0x24 when 0x86 "
+TEST_CASE("dmrbb_waitEvent reads the Short LC from RX RAM 0x2B when 0x86 "
           "reports one",
           "[dmr_cs7000]")
 {
@@ -1272,7 +1249,7 @@ TEST_CASE("dmrbb_waitEvent reads the Short LC from RX RAM 0x24 when 0x86 "
     uspi.pages[4][0x82] = 0x20;
     uspi.pages[4][0x86] = 0x04;
     for (uint8_t i = 0; i < 5; i++)
-        uspi.pages[2][0x24 + i] = (uint8_t)(0x91 + i);
+        uspi.pages[2][0x2B + i] = (uint8_t)(0x91 + i);
 
     struct dmrbbSnapshot s;
     memset(&s, 0, sizeof(s));
@@ -1285,14 +1262,14 @@ TEST_CASE("dmrbb_waitEvent reads the Short LC from RX RAM 0x24 when 0x86 "
         REQUIRE(s.shortLc[i] == (uint8_t)(0x91 + i));
 
     /*
-     * Read order: 0x82, 0x86, then the five RX RAM bytes at 0x24 in one
+     * Read order: 0x82, 0x86, then the five RX RAM bytes at 0x2B in one
      * chip select, before the status registers and the acknowledge.
      */
     requireTx(uspi.log[0], { 0x84, 0x82, 0x00 });
     requireTx(uspi.log[1], { 0x84, 0x86, 0x00 });
     REQUIRE(uspi.log[2].tx.size() == 7);
     REQUIRE(uspi.log[2].tx[0] == 0x82);
-    REQUIRE(uspi.log[2].tx[1] == 0x24);
+    REQUIRE(uspi.log[2].tx[1] == 0x2B);
     REQUIRE(uspi.log[2].rxBytes == 5);
     requireTx(uspi.log[3], { 0x84, 0x51, 0x00 });
     requireTx(uspi.log.back(), cfgWrite(0x83, 0x20));
@@ -1300,14 +1277,14 @@ TEST_CASE("dmrbb_waitEvent reads the Short LC from RX RAM 0x24 when 0x86 "
     /* The 12-byte LC RAM is not read: no control frame flag */
     for (const auto &t : uspi.log) {
         if (t.tx[0] == 0x82)
-            REQUIRE(t.tx[1] == 0x24);
+            REQUIRE(t.tx[1] == 0x2B);
     }
 
     /* TX end without the Short LC bit: the snapshot keeps the old bytes */
     uspi.log.clear();
     uspi.pages[4][0x86] = 0x80;
     for (uint8_t i = 0; i < 5; i++)
-        uspi.pages[2][0x24 + i] = 0xEE;
+        uspi.pages[2][0x2B + i] = 0xEE;
 
     fireLine(1);
     REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
@@ -1325,7 +1302,7 @@ TEST_CASE("dmrbb_waitEvent reads the Short LC from RX RAM 0x24 when 0x86 "
     REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
     for (const auto &t : uspi.log) {
         REQUIRE(!((t.tx[0] == 0x84) && (t.tx[1] == 0x86)));
-        REQUIRE(!((t.tx[0] == 0x82) && (t.tx[1] == 0x24)));
+        REQUIRE(!((t.tx[0] == 0x82) && (t.tx[1] == 0x2B)));
     }
     for (uint8_t i = 0; i < 5; i++)
         REQUIRE(s.shortLc[i] == (uint8_t)(0x91 + i));

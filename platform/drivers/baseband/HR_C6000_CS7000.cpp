@@ -211,8 +211,7 @@ void HR_Cx000< M >::dmrMode()
     writeReg(M::CONFIG, 0x09, 0x00);
 
     // V_SPI vocoder (bits 7:6 = 00), DMRFrom = V_SPI, MCU controls the
-    // vocoder (M §4.6.1, G, O initSeq1). UNVERIFIED on hardware:
-    // alternative 0x01 with voice through TX RAM 0x30
+    // vocoder (M §4.6.1, G, O initSeq1). UNVERIFIED on hardware
     writeReg(M::CONFIG, 0x06, 0x21);
 
     // Vocoder decoder started, encoder stopped: the value init() ends with

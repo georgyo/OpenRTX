@@ -48,9 +48,8 @@
  *    a bit-banged master (voc_spi of the target's hwconfig.c, data valid at
  *    the falling clock edge): read command 0x83, address 0x00, 27 bytes;
  *    write command 0x03, address 0x00, 27 bytes, one operation per chip
- *    select. UNVERIFIED on hardware, with the TX RAM
- *    0x30 / RX RAM 0x30 transport over the "user" SPI as the selectable
- *    alternative (DMRBB_PAGE_DRIVER / DMRBB_DRV_VOICE_PATH).
+ *    select, as OpenGD77 and OpenMDUV380 exchange them. UNVERIFIED on
+ *    hardware.
  *
  *  - Transmission. The RF chain (TX VCO, PLL lock, APC, PA) is keyed by
  *    radio_enableTx() of radio_CS7000.cpp, which in DMR mode writes nothing
@@ -113,23 +112,20 @@ static constexpr uint8_t VSPI_ADDR = 0x00;
  */
 static constexpr unsigned int VSPI_CS_SETUP_US = 2;
 
-/* TX/RX RAM address of the 216-bit voice payload (manual Table 5.2) */
-static constexpr uint8_t RAM_VOICE_ADDR = 0x30;
+/* TX and RX RAM address of the link control (manual Tables 5.2 and 5.3) */
 static constexpr uint8_t RAM_LC_ADDR = 0x00;
 
 /*
- * RX RAM address of the CACH Short LC: 0x24-0x26 plus bits 7:4 of 0x27 hold
- * the 28 control bits (SLCO and 24 payload bits, TS 102 361-1 §7.1.4,
- * §9.1.7), 0x28 the 8 check bits (CRC-8, Annex B.3.7). The address is the
- * one of the TX-side RAM allocation (manual Table 5.2, "Short LC
- * 0x24~0x28", the RAM the MCU fills for a transmission): the RX-side table
- * (5.3) is omitted in the translated manual, so the RX RAM is assumed to
- * mirror the TX map, as RAM_LC_ADDR at 0x00 already assumes. Five bytes are
- * read as they are, the decoding is left to the protocol layer. UNVERIFIED
- * on hardware: the RX address and layout, and whether 0x28 is the CRC as
- * received or the chip's own check byte.
+ * RX RAM address of the CACH Short LC, manual Table 5.3 (RX side RAM
+ * allocation): "ShortLC 0x2b~0x2f, 36bit ShortLC data of the receiving end
+ * CACH field, the low 4 bits of 0x2F are unused". The 36 bits are the 28
+ * control bits (SLCO and 24 payload bits, TS 102 361-1 §7.1.4, §9.1.7)
+ * and the 8 check bits (CRC-8, Annex B.3.7). Five bytes are read as they
+ * are, the decoding is left to the protocol layer. UNVERIFIED on hardware:
+ * the order of the 36 bits, and whether the check bits are the CRC as
+ * received or the chip's own.
  */
-static constexpr uint8_t RAM_SHORT_LC_ADDR = 0x24;
+static constexpr uint8_t RAM_SHORT_LC_ADDR = 0x2B;
 static constexpr uint8_t SHORT_LC_BYTES = 5;
 
 /* Register 0x82 flags, manual §5.1.1, see HR_C6000::Irq82 */
@@ -153,10 +149,6 @@ static constexpr uint8_t R51_CLASS_VOICE = 0x01;
 static constexpr uint8_t R51_VOICE_SEQ_SHIFT = 4;
 static constexpr uint8_t R51_VOICE_SEQ_MASK = 0x07;
 static constexpr uint8_t R51_VOICE_SEQ_MAX = 6;
-
-/* Voice payload transport, DMRBB_DRV_VOICE_PATH */
-static constexpr uint8_t VOICE_PATH_VSPI = 0;
-static constexpr uint8_t VOICE_PATH_RAM = 1;
 
 /* Polling period of dmrbb_waitEvent(), milliseconds */
 static constexpr unsigned WAIT_POLL_MS = 1;
@@ -210,7 +202,6 @@ static volatile uint16_t rftxLead = 0;
 static struct dmrbbConfig config;
 static bool active = false;
 static bool attached = false;
-static volatile uint8_t voicePath = VOICE_PATH_VSPI;
 
 /*
  * Line dispatched as SYS_INTER, read in interrupt context: SYS_LINE unless
@@ -369,11 +360,10 @@ static bool readSysEvent(struct dmrbbSnapshot *s)
         /*
          * Short LC of the CACH: the manual files "Short LC received" under
          * the end-of-transmission sub-status (0x82 bit 5, 0x86 bit 2); the
-         * 36 bits are read from RX RAM 0x24-0x28, the TX-side address of
-         * Table 5.2 assumed to be mirrored on the RX side. Read right
-         * away, before anything else could overwrite the RAM; the snapshot
-         * keeps the previous value when the flag is clear. UNVERIFIED on
-         * hardware, see RAM_SHORT_LC_ADDR.
+         * 36 bits are read from RX RAM 0x2B-0x2F (manual Table 5.3). Read
+         * right away, before anything else could overwrite the RAM; the
+         * snapshot keeps the previous value when the flag is clear.
+         * UNVERIFIED on hardware, see RAM_SHORT_LC_ADDR.
          */
         if (s->sub86 & SUB86_SHORT_LC)
             C6000.readDataRam(RAM_SHORT_LC_ADDR, s->shortLc, SHORT_LC_BYTES);
@@ -404,11 +394,7 @@ static bool readSysEvent(struct dmrbbSnapshot *s)
     if ((irq & IRQ_RX_DATA)
         && ((cls == R51_CLASS_NONE) || (cls == R51_CLASS_VOICE)) && (seq >= 1)
         && (seq <= R51_VOICE_SEQ_MAX)) {
-        if (voicePath == VOICE_PATH_RAM)
-            C6000.readDataRam(RAM_VOICE_ADDR, s->voice, sizeof(s->voice));
-        else
-            vspiRead(s->voice);
-
+        vspiRead(s->voice);
         s->voiceValid = true;
     }
 
@@ -571,14 +557,10 @@ void dmrbb_writeVoice(const uint8_t ambe[27])
         return;
 
     /*
-     * UNVERIFIED on hardware: V_SPI is the transport selected by register
-     * 0x06 = 0x21; the TX RAM 0x30-0x4A alternative (manual Table 5.2) is
-     * reachable from the monitor screen through DMRBB_DRV_VOICE_PATH.
+     * V_SPI is the transport selected by register 0x06 = 0x21 (manual
+     * §4.6.1). UNVERIFIED on hardware.
      */
-    if (voicePath == VOICE_PATH_RAM)
-        C6000.writeDataRam(RAM_VOICE_ADDR, ambe, 27);
-    else
-        vspiWrite(ambe);
+    vspiWrite(ambe);
 }
 
 uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
@@ -627,9 +609,6 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs)
 uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
 {
     if (page == DMRBB_PAGE_DRIVER) {
-        if (addr == DMRBB_DRV_VOICE_PATH)
-            return voicePath;
-
         if (addr == DMRBB_DRV_SYS_LINE)
             return sysLine;
 
@@ -692,9 +671,6 @@ uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
 void dmrbb_writeRegister(uint8_t page, uint8_t addr, uint8_t v)
 {
     if (page == DMRBB_PAGE_DRIVER) {
-        if (addr == DMRBB_DRV_VOICE_PATH)
-            voicePath = (v != 0) ? VOICE_PATH_RAM : VOICE_PATH_VSPI;
-
         /*
          * SYS_INTER line: only the two candidates are accepted, a pulse on
          * the line already latched between the check and the store is

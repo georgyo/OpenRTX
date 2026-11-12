@@ -124,7 +124,9 @@ bool ShortLc::fromChipBytes(const uint8_t bytes[CHIP_BYTES], uint32_t &message)
     uint32_t decoded = ((uint32_t)bytes[0] << 20) | ((uint32_t)bytes[1] << 12)
                      | ((uint32_t)bytes[2] << 4) | (bytes[3] >> 4);
 
-    if (bytes[4] != crc(decoded))
+    uint8_t check = (uint8_t)((bytes[3] << 4) | (bytes[4] >> 4));
+
+    if (check != crc(decoded))
         return false;
 
     message = decoded;
@@ -137,6 +139,8 @@ void ShortLc::toChipBytes(uint32_t message, uint8_t bytes[CHIP_BYTES])
     bytes[0] = (uint8_t)(message >> 20);
     bytes[1] = (uint8_t)(message >> 12);
     bytes[2] = (uint8_t)(message >> 4);
-    bytes[3] = (uint8_t)(message << 4);
-    bytes[4] = crc(message);
+    uint8_t check = crc(message);
+
+    bytes[3] = (uint8_t)((message << 4) | (check >> 4));
+    bytes[4] = (uint8_t)(check << 4);
 }

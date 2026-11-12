@@ -241,11 +241,10 @@ public:
     /*
      * Register 0x86 bit 2 "Short LC received" (manual §5.1.1 register 0x82
      * bit 5 description, G4EML "ShortLC"): the CACH Short LC is then read
-     * from RX RAM 0x24-0x28, the address of the TX-side allocation (manual
-     * Table 5.2) assumed to be mirrored by the RX-side RAM, whose table
-     * (5.3) is omitted in the translation. UNVERIFIED on hardware: the RX
-     * address, and whether the flag fires on a receiving radio, the manual
-     * lists it among the end-of-transmission sub-status bits.
+     * from RX RAM 0x2B-0x2F, the "ShortLC" entry of the RX-side RAM
+     * allocation (manual Table 5.3). UNVERIFIED on hardware: whether the
+     * flag fires on a receiving radio, the manual lists it among the
+     * end-of-transmission sub-status bits.
      */
     static constexpr uint8_t SUB86_SHORT_LC       = 0x04;
 
