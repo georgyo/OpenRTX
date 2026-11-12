@@ -1109,8 +1109,9 @@ TEST_CASE("DMR OpMode: the bring-up counters are published", "[dmr][rtx]")
     REQUIRE(mon->tsCount == 6);
     REQUIRE(mon->sysCount == 0);
     REQUIRE(mon->rftxCount == 0);
-    REQUIRE(mon->r52 == 0x14);
-    /* The fake's TC starts at 0 and toggles per slot: the sixth carries 1 */
+    /* The fake's TC starts at 0 and toggles per slot: the sixth slot has
+     * 1, register 0x52 still showing the 0 of the fifth at its interrupt */
+    REQUIRE(mon->r52 == 0x10);
     REQUIRE(mon->timecode == 1);
     REQUIRE(b.status.dmr_slotLock == 2);
 
@@ -1662,6 +1663,8 @@ TEST_CASE("DMR OpMode TX: a repeater answering the wake-up gets the call "
     REQUIRE(b.rf->disableRtx == 1);
 
     /* The repeater comes up: BS sourced bursts lock the timecode */
+    uint32_t wakeupTs1 = b.rec->txSlotsTs[0];
+    uint32_t wakeupTs2 = b.rec->txSlotsTs[1];
     dmrEmu_injectGroupCall(CALLER, 9, 1, 1, 30);
     REQUIRE(b.runUntil(CallController::TX_HEADER, 100));
     REQUIRE(b.rec->startTxCount == 2);
@@ -1684,6 +1687,13 @@ TEST_CASE("DMR OpMode TX: a repeater answering the wake-up gets the call "
     }
     b.ticks(2);
     REQUIRE(b.rf->disableRtx == 2);
+
+    /* Headers, voice and terminator all went out in the repeater's
+     * timeslot 2 slots, the configured timeslot, none in timeslot 1 */
+    REQUIRE(b.status.dmr_timeslot == 2);
+    REQUIRE(b.rec->terminators == 1);
+    REQUIRE(b.rec->txSlotsTs[0] == wakeupTs1);
+    REQUIRE(b.rec->txSlotsTs[1] == wakeupTs2 + 3 + b.rec->voiceBursts + 1);
     b.drain();
 }
 

@@ -233,16 +233,15 @@ uint32_t CallController::missedSlots(const struct dmrbbSnapshot &s) const
 void CallController::trackTimecode(uint8_t rxTc)
 {
     /*
-     * The local timecode toggles at every timeslot interrupt and is compared
-     * with the CACH TC the chip reports in register 0x52 bit2, which is
-     * taken as the TC of the slot starting at this interrupt (UNVERIFIED on
-     * hardware: if the chip still reports the previous slot's CACH at the
-     * interrupt, invert rxTc here). Lock after TIMECODE_LOCK_COUNT agreeing
-     * slots, re-align after TIMECODE_DROP_COUNT disagreeing ones (OpenGD77
-     * practice). The re-alignment is suspended while a direct mode call is
-     * open and while transmitting: there is no CACH to follow in DMO
-     * (TS 102 361-1 §4.2.2, the CACH exists on the BS outbound only) and
-     * the slot parity of an ongoing call or transmission must never flip.
+     * The local timecode is the one of the slot starting at this timeslot
+     * interrupt: it toggles at every interrupt and is compared with rxTc,
+     * what the chip says about that slot. Lock after TIMECODE_LOCK_COUNT
+     * agreeing slots, re-align after TIMECODE_DROP_COUNT disagreeing ones
+     * (OpenGD77 practice). The re-alignment is suspended while a direct
+     * mode call is open and while transmitting: there is no CACH to follow
+     * in DMO (TS 102 361-1 §4.2.2, the CACH exists on the BS outbound
+     * only) and the slot parity of an ongoing call or transmission must
+     * never flip.
      */
     if (!tcValid) {
         timecode = rxTc;
@@ -1026,7 +1025,16 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
     lastTsCount = s.tsCount;
     lastTsTick = s.tsTick;
 
-    trackTimecode((s.r52 & R52_TC) ? 1 : 0);
+    /*
+     * Register 0x52 bit2 read at a timeslot interrupt is the CACH TC of the
+     * slot that just ended, so the slot starting now has the other one.
+     * This is how OpenGD77 and OpenMDUV380 use it on repeaters: they write
+     * 0x41 = 0x80 at the interrupt where the bit reads their own timeslot,
+     * for the burst of the slot starting at the next interrupt, and take a
+     * received burst as one of their timeslot when the bit reads it at the
+     * interrupt that ended the burst's slot. UNVERIFIED on hardware.
+     */
+    trackTimecode((s.r52 & R52_TC) ? 0 : 1);
     runTimers(nowMs);
 
     uint8_t next = timecode ^ 1;

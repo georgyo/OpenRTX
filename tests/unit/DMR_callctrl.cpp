@@ -202,15 +202,20 @@ public:
         return s;
     }
 
-    /* One timeslot interrupt: the chip reports the CACH TC of the slot */
+    /*
+     * One timeslot interrupt. Register 0x52 still holds the CACH TC of the
+     * slot that just ended, the complement of the one of the slot starting
+     * (the reading OpenGD77 and OpenMDUV380 rely on); 'agree' false makes
+     * the chip report the other value.
+     */
     void ts(bool agree = true)
     {
         now += BURST_MS;
         tsCount++;
         tsTick += BURST_MS;
         dmrbbSnapshot s = blank();
-        uint8_t rxTc = agree ? timecode : (timecode ^ 1);
-        s.r52 = (uint8_t)((cfg.colorCode << 4) | (rxTc ? R52_TC : 0));
+        uint8_t slotTc = agree ? timecode : (timecode ^ 1);
+        s.r52 = (uint8_t)((cfg.colorCode << 4) | (slotTc ? 0 : R52_TC));
         s.tsCount = tsCount;
         s.tsTick = tsTick;
         ctrl.onTimeslot(s, now);
@@ -3130,5 +3135,62 @@ TEST_CASE("DMR RX: the monitor on any colour code opens the chip's colour "
         b.cfg.monitor = 0;
         b.ctrl.configure(b.cfg);
         REQUIRE(b.port.writes.empty());
+    }
+}
+
+TEST_CASE("DMR TX repeater mode: the own slot is programmed at the timeslot "
+          "interrupt reporting the own timecode",
+          "[dmr][callctrl]")
+{
+    /*
+     * Raw register values, no bench convention: OpenGD77 and OpenMDUV380
+     * write 0x41 = 0x80 at the timeslot interrupt where register 0x52 bit 2
+     * reads their own timeslot (0 for TS1, 1 for TS2), the bit being the
+     * CACH TC of the slot that just ended, and idle the slot at the others.
+     */
+    for (uint8_t ts = 1; ts <= 2; ts++) {
+        Bench b;
+        b.cfg.timeslot = ts;
+        b.cfg.repeater = true;
+        b.start();
+
+        uint8_t tcBit = 0;
+        auto slot = [&]() {
+            tcBit ^= 1;
+            b.now += BURST_MS;
+            dmrbbSnapshot s = Bench::blank();
+            s.r52 = (uint8_t)((1 << 4) | (tcBit ? R52_TC : 0));
+            s.tsCount = ++b.tsCount;
+            s.tsTick = (b.tsTick += BURST_MS);
+            b.ctrl.onTimeslot(s, b.now);
+        };
+
+        /* The repeater's carrier, until the timecode is locked */
+        for (unsigned i = 0; i < 8; i++) {
+            slot();
+            b.dataBurst(R5F_SYNC_BS, 1, 1, DT_IDLE);
+        }
+        REQUIRE(b.ctrl.report().slotLock == 2);
+
+        b.ctrl.setPtt(true, b.now);
+        REQUIRE(b.port.last(W_R40)->value == R40_TX_RMO);
+
+        unsigned txSlots = 0;
+        for (unsigned i = 0; i < 40; i++) {
+            b.port.clear();
+            slot();
+            REQUIRE(b.port.count(W_R41) == 1);
+            if (tcBit == (uint8_t)(ts - 1)) {
+                REQUIRE(b.port.last(W_R41)->value == R41_TX);
+                txSlots++;
+            } else {
+                REQUIRE(b.port.last(W_R41)->value == R41_IDLE);
+            }
+        }
+        REQUIRE(txSlots == 20);
+        REQUIRE(b.ctrl.state() == CallController::TX_VOICE);
+
+        /* The local timecode is the one of the slot that has just started */
+        REQUIRE(b.ctrl.report().timecode == (tcBit ^ 1));
     }
 }

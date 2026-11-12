@@ -112,6 +112,12 @@ struct dmrEmuRecord {
     uint32_t terminators; /* TX slots with 0x50 = terminator         */
     uint32_t csbks;       /* TX slots with 0x50 = CSBK               */
 
+    /*
+     * TX slots by the timeslot they go out in, index 0 for timeslot 1: the
+     * timecode of the slot starting at the next timeslot event.
+     */
+    uint32_t txSlotsTs[2];
+
     uint32_t initCount;
     uint32_t terminateCount;
     uint32_t configureCount;
@@ -150,7 +156,8 @@ void dmrEmu_setInitResult(int result);
 
 /**
  * Queue one idle timeslot event. The CACH timecode reported in register
- * 0x52 alternates at every timeslot, the colour code is the configured one.
+ * 0x52, the one of the slot that just ended, alternates at every timeslot;
+ * the colour code is the configured one.
  */
 void dmrEmu_pushTs(void);
 

@@ -181,7 +181,12 @@ void pushTsEvent(uint8_t cc)
     Event e;
     memset(&e, 0x00, sizeof(e));
     e.mask = DMRBB_EV_TS;
-    e.snap.r52 = (uint8_t)((cc << 4) | (tcNext ? R52_TC : 0));
+    /*
+     * Register 0x52 at a timeslot interrupt still holds the CACH TC of the
+     * slot that just ended, the complement of the one starting (what
+     * OpenGD77 and OpenMDUV380 rely on, UNVERIFIED on the CS7000)
+     */
+    e.snap.r52 = (uint8_t)((cc << 4) | (tcNext ? 0 : R52_TC));
     tsCount++;
     fillCounters(&e.snap);
     /*
@@ -342,6 +347,7 @@ void scriptGroupCall(uint32_t src, uint32_t dst, uint8_t cc, uint8_t ts,
 void classifyTxSlot()
 {
     rec.txSlots++;
+    rec.txSlotsTs[tcNext & 1]++;
     if (rec.r50 == R50_VOICE_LC_HEADER)
         rec.headers++;
     else if (rec.r50 == R50_TERMINATOR)
