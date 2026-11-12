@@ -679,6 +679,12 @@ TEST_CASE("dmrbb slot and mode control emit the documented bytes",
         requireTx(uspi.log[i], expected[i]);
     }
 
+    /* The local colour code alone, register 0x1F, high nibble */
+    uspi.log.clear();
+    dmrbb_setColorCode(7);
+    REQUIRE(uspi.log.size() == 1);
+    requireTx(uspi.log[0], cfgWrite(0x1F, 0x70));
+
     /* Impolite access policy in startTx */
     struct dmrbbConfig cfg = defaultConfig();
     cfg.polite = false;
@@ -948,6 +954,15 @@ TEST_CASE("dmrbb_waitEvent reads the voice payload of a good voice burst",
     uspi.log.clear();
     vspi.log.clear();
     uspi.pages[4][0x51] = 0x22;
+    fireLine(SYS_PIN);
+    REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
+    REQUIRE(s.voiceValid == false);
+    REQUIRE(vspi.log.empty());
+
+    /* A voice burst with the check flag 0x51[2] set is not read */
+    uspi.log.clear();
+    vspi.log.clear();
+    uspi.pages[4][0x51] = 0x24;
     fireLine(SYS_PIN);
     REQUIRE(dmrbb_waitEvent(&s, 30) == DMRBB_EV_SYS);
     REQUIRE(s.voiceValid == false);
