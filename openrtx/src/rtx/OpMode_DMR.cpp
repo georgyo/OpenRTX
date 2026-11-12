@@ -602,7 +602,7 @@ void OpMode_DMR::monitor(uint32_t ev)
          * UNVERIFIED on hardware: the chip reports a received Short LC
          * through 0x82 bit5 with 0x86 bit2 set (G4EML table, "ShortLC
          * received"), the same interrupt as the end of an own
-         * transmission; the driver reads RX RAM 0x24-0x28 on it.
+         * transmission; the driver reads RX RAM 0x2B-0x2F on it.
          */
         if (((snap.irq82 & R82_TX_END) != 0)
             && ((snap.sub86 & R86_SHORT_LC) != 0))
@@ -722,7 +722,7 @@ void OpMode_DMR::traceConfig(uint32_t nowMs)
     d[23] = (uint8_t)(cfg.hangTimeMs / 1000);
     d[24] = state.settings.dmr_testTone;
     d[25] = dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_SYS_LINE);
-    d[26] = dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH);
+    d[26] = dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_LINES_ARMED);
     dmrTrace_put('E', nowMs, d, 27);
 
 #ifdef CONFIG_DMR_TRACE
@@ -733,6 +733,7 @@ void OpMode_DMR::traceConfig(uint32_t nowMs)
      */
     static const uint8_t rows[] = { 0x00, 0x10, 0x20, 0x30, 0x40, 0x50,
                                     0x60, 0x80, 0xA0, 0xB0, 0xC0, 0xE0 };
+    static constexpr uint8_t PAGE_AUX = 1;
     static constexpr uint8_t PAGE_CONFIG = 4;
 
     for (size_t r = 0; r < sizeof(rows); r++) {
@@ -741,6 +742,15 @@ void OpMode_DMR::traceConfig(uint32_t nowMs)
             d[1 + i] = dmrbb_readRegister(PAGE_CONFIG, rows[r] + i);
         dmrTrace_put('R', nowMs, d, 17);
     }
+
+    /*
+     * The transmit sync word the chip puts in its bursts, auxiliary
+     * registers 0x04 to 0x09: D5 D7 F7 7F D7 57 for an MS (TS 102 361-1
+     * table 9.2).
+     */
+    for (uint8_t i = 0; i < 6; i++)
+        d[i] = dmrbb_readRegister(PAGE_AUX, 0x04 + i);
+    dmrTrace_put('A', nowMs, d, 6);
 #endif
 }
 
@@ -799,7 +809,7 @@ void OpMode_DMR::traceStatus(uint32_t nowMs, bool ptt)
     traceStatusMs = nowMs;
 
     const CallController::Report &r = ctrl.report();
-    uint8_t d[24];
+    uint8_t d[25];
 
     d[0] = ctrl.state();
     d[1] = rfState;
@@ -815,6 +825,7 @@ void OpMode_DMR::traceStatus(uint32_t nowMs, bool ptt)
     put16(&d[20], (uint32_t)(int32_t)radio_getRssi());
     d[22] = dmrAudio_running() ? 1 : 0;
     d[23] = (rxAudioFailed ? 0x01 : 0x00) | (txAudioFailed ? 0x02 : 0x00);
+    d[24] = r.txRejected;
     dmrTrace_put('P', nowMs, d, sizeof(d));
 }
 

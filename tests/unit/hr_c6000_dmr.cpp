@@ -735,11 +735,6 @@ TEST_CASE("dmrbb_writeVoice uses V_SPI, or the TX RAM when selected",
     requireTx(vspi.log[0], expected);
     REQUIRE(vspi.csLow == false);
 
-    /* V_SPI is the only transport: the driver knob reads 0 and stays 0 */
-    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH) == 0);
-    dmrbb_writeRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH, 1);
-    REQUIRE(dmrbb_readRegister(DMRBB_PAGE_DRIVER, DMRBB_DRV_VOICE_PATH) == 0);
-
     vspi.log.clear();
     dmrbb_writeVoice(ambe);
     REQUIRE(uspi.log.empty());

@@ -30,11 +30,6 @@
  *    interrupt only while it is the chosen line.
  *    The knob survives a reconfiguration and is forgotten at power off.
  *
- *  - DMRBB_DRV_LINES_ARMED (read only): bit n set when the interrupt of
- *    line n (PC0..PC3) is attached. A line that should be armed and is not
- *    was refused by the gpio interrupt shim: without TIME_SLOT_INTER no
- *    slot is ever programmed.
- *
  *  - DMRBB_DRV_RFTX_TICK(b) (read only): byte b (0 = least significant) of
  *    the 32-bit getTick() value latched by the last RF_TX_INTER interrupt.
  *  - DMRBB_DRV_RFTX_LEAD(b) (read only): byte b of the 16-bit distance, in
@@ -43,7 +38,6 @@
  *    the default 0x18: the interrupt should land ~27.6 ms after the slot
  *    tick, i.e. 0x12[5:0] x 100 us before the next burst).
  */
-#define DMRBB_DRV_LINES_ARMED 0x03
 #define DMRBB_DRV_RFTX_TICK(b) (0x20 + (b))
 #define DMRBB_DRV_RFTX_LEAD(b) (0x24 + (b))
 

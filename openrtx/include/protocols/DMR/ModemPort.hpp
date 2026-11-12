@@ -160,8 +160,8 @@ static constexpr uint8_t R82_PHY_RX = 0x01;        /* test mode only     */
  * manual §5.4.4, multiplexed on SYS_INTER), bit3 a data fragment needing
  * feedback sent, bit2 short LC. Only bit7 marks the end of a transmission:
  * the others, bit4 in particular, come while the last burst is still on
- * the air. UNVERIFIED on hardware: which of them the CS7000 driver's
- * 0x87 = 0xFF mask actually lets through.
+ * the air. The CS7000 driver enables bit7 and bit2 only (0x87 = 0x84).
+ * UNVERIFIED on hardware.
  */
 static constexpr uint8_t R86_TX_COMPLETE = 0x80; /* service TX finished  */
 static constexpr uint8_t R86_RDY_LST = 0x10;     /* per-slot deadline    */

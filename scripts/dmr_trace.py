@@ -86,12 +86,17 @@ def decode(kind, d):
         return ("config cc rx=%d tx=%d ts=%d monitor=%d polite=%d "
                 "repeater=%d callType=%d 0x10=%02X 0x12=%02X own=%d dst=%d "
                 "rx=%d Hz tx=%d Hz hang=%ds tone=%d sysLine=PC%d "
-                "voicePath=%d" % (
+                "linesArmed=%X" % (
                     d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8],
                     be(d[9:12]), be(d[12:15]), be(d[15:19]), be(d[19:23]),
                     d[23], d[24], d[25], d[26]))
     if kind == "R":
         return "reg %02X: %s" % (d[0], " ".join("%02X" % v for v in d[1:]))
+    if kind == "A":
+        word = d[0:6].hex().upper()
+        names = {"D5D7F77FD757": "MS data sync, right for a handheld",
+                 "DFF57D75DF5D": "BS data sync, wrong for a handheld"}
+        return "tx sync word %s (%s)" % (word, names.get(word, "unknown"))
     if kind == "T":
         r41 = "--" if d[5] == 0xFF else "%02X" % d[5]
         r50 = "--" if d[6] == 0xFF else "%02X" % d[6]
@@ -120,11 +125,12 @@ def decode(kind, d):
             rssi -= 0x10000
         return ("stat %-9s rf=%s ptt=%d markers=%02X call=%d lock=%d "
                 "PC0#%d PC1#%d PC2#%d PC3#%d txBursts=%d txFilled=%d "
-                "rxVoice=%d rssi=%d dBm audio=%d audioFail=%02X" % (
+                "rxVoice=%d rssi=%d dBm audio=%d audioFail=%02X "
+                "txRejected=%d" % (
                     state(d[0]), RF_STATES[d[1]] if d[1] < 3 else "?", d[2],
                     d[3], d[4], d[5], be(d[6:8]), be(d[8:10]), be(d[10:12]),
                     be(d[12:14]), be(d[14:16]), be(d[16:18]), be(d[18:20]),
-                    rssi, d[22], d[23]))
+                    rssi, d[22], d[23], d[24]))
     return "? " + d.hex().upper()
 
 

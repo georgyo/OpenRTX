@@ -424,7 +424,7 @@ private:
 
     /**
      * Parse the Short LC of a system event, when the modem reports one:
-     * the 28 bits and the CRC of the snapshot (RX RAM 0x24-0x28) are
+     * the 28 bits and the CRC of the snapshot (RX RAM 0x2B-0x2F) are
      * verified, an Activity Update (TS 102 361-2 §7.1.3.2) sets the TS1/TS2
      * busy hints, and the message and its counters go to the monitor block.
      *

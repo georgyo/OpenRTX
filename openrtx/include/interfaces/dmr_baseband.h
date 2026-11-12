@@ -344,16 +344,17 @@ uint32_t dmrbb_waitEvent(struct dmrbbSnapshot *s, unsigned timeoutMs);
  * the knobs and counters of the modem driver itself, for the DMR monitor
  * screen: no SPI traffic is generated. Addresses:
  *
- *  - DMRBB_DRV_VOICE_PATH (read only): transport of the 27-byte voice
- *    payloads, always 0 = V_SPI (register 0x06 = 0x21, manual §4.6.1), the
- *    only one the driver implements.
+ *  - DMRBB_DRV_LINES_ARMED (read only): bit n set when the interrupt of
+ *    line n (PC0..PC3) is attached. A line that should be armed and is not
+ *    was refused by the interrupt layer: without TIME_SLOT_INTER no slot is
+ *    ever programmed. Drivers without interrupt lines read 0.
  *  - DMRBB_DRV_LINE_COUNT(n) + b (read only): byte b (0 = least significant)
  *    of the 32-bit interrupt counter of EXTI line n, n = 0..3 (PC0..PC3),
  *    for the bring-up of the SYS_INTER pin assignment. The counters of the
  *    mapped lines are also reported in dmrbbSnapshot.
  */
 #define DMRBB_PAGE_DRIVER 0xFF
-#define DMRBB_DRV_VOICE_PATH 0x00
+#define DMRBB_DRV_LINES_ARMED 0x03
 #define DMRBB_DRV_LINE_COUNT(n) (0x10 + ((n) * 4))
 
 /*

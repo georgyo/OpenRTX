@@ -1953,7 +1953,7 @@ TEST_CASE("DMR OpMode: Short LC activity updates raise and expire the TS "
     REQUIRE(b.status.dmr_tsBusy == 0);
     REQUIRE(b.status.dmr_mon.shortLcOk == 0);
 
-    /* 0x82 bit5 with 0x86 bit2: the driver read RX RAM 0x24-0x28 */
+    /* 0x82 bit5 with 0x86 bit2: the driver read RX RAM 0x2B-0x2F */
     struct dmrbbSnapshot s;
     memset(&s, 0x00, sizeof(s));
     s.irq82 = R82_TX_END;
@@ -2185,11 +2185,13 @@ TEST_CASE("DMR OpMode: bring-up trace of the configuration and the slots",
 
     /*
      * Mode entry: the modem is put in reception, then the configuration
-     * record, the twelve register rows and the first status record.
+     * record, the twelve register rows, the transmit sync word and the
+     * first status record.
      */
     REQUIRE(countKind(lines, 'W') == 1);
     REQUIRE(countKind(lines, 'E') == 1);
     REQUIRE(countKind(lines, 'R') == 12);
+    REQUIRE(countKind(lines, 'A') == 1);
     REQUIRE(countKind(lines, 'P') == 1);
     REQUIRE(lines[0].substr(7) == "01\n");
 
