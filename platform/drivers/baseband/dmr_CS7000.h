@@ -23,9 +23,17 @@
  *    interfaces/dmr_baseband.h so that the monitor screen's "SYS line"
  *    action can write it): EXTI line the driver dispatches as SYS_INTER,
  *    DMRBB_SYS_LINE_PC1 or DMRBB_SYS_LINE_PC3. The default is the DMR_SYS_INT
- *    pin of the target's pinmap.h, the other one is DMR_SYS_INT_ALT. All
- *    four lines PC0..PC3 stay attached and counted whatever the choice.
+ *    pin of the target's pinmap.h, the other one is DMR_SYS_INT_ALT. The
+ *    line not chosen stays attached and counted, unless the target's
+ *    pinmap.h declares the alternative an analogue node
+ *    (CONFIG_DMR_SYS_INT_ALT_ANALOG): that pin is a digital input with an
+ *    interrupt only while it is the chosen line.
  *    The knob survives a reconfiguration and is forgotten at power off.
+ *
+ *  - DMRBB_DRV_LINES_ARMED (read only): bit n set when the interrupt of
+ *    line n (PC0..PC3) is attached. A line that should be armed and is not
+ *    was refused by the gpio interrupt shim: without TIME_SLOT_INTER no
+ *    slot is ever programmed.
  *
  *  - DMRBB_DRV_RFTX_TICK(b) (read only): byte b (0 = least significant) of
  *    the 32-bit getTick() value latched by the last RF_TX_INTER interrupt.
@@ -35,6 +43,7 @@
  *    the default 0x18: the interrupt should land ~27.6 ms after the slot
  *    tick, i.e. 0x12[5:0] x 100 us before the next burst).
  */
+#define DMRBB_DRV_LINES_ARMED 0x03
 #define DMRBB_DRV_RFTX_TICK(b) (0x20 + (b))
 #define DMRBB_DRV_RFTX_LEAD(b) (0x24 + (b))
 

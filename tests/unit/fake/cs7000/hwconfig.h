@@ -49,10 +49,21 @@ extern const struct gpioDev GpioC;
 #define VOC_SDO_C6K GPIOB, 4
 #define VOC_SDI_C6K GPIOB, 5
 
+/*
+ * Interrupt lines: the CS7000 assignment by default, the CS7000-PLUS one
+ * (SYS_INTER on PC3, PC1 an analogue node of the board) when the test is
+ * built with FAKE_CS7000_PLUS.
+ */
 #define DMR_TS_INT GPIOC, 0
-#define DMR_SYS_INT GPIOC, 1
 #define DMR_TX_INT GPIOC, 2
+#ifdef FAKE_CS7000_PLUS
+#define DMR_SYS_INT GPIOC, 3
+#define DMR_SYS_INT_ALT GPIOC, 1
+#define CONFIG_DMR_SYS_INT_ALT_ANALOG
+#else
+#define DMR_SYS_INT GPIOC, 1
 #define DMR_SYS_INT_ALT GPIOC, 3
+#endif
 
 /* Fake V_SPI device, defined by the test program */
 extern const struct spiCustomDevice voc_spi;

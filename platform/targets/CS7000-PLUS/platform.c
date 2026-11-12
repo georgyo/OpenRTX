@@ -66,6 +66,9 @@ void platform_init()
      * through the analogue switches of SYSCFG_PMCR (RM0433 §12.3.1): close
      * them, whatever the reset value or the bootloader left there. Nothing
      * on this board uses the ADC inputs behind the two pads.
+     * PC1, the alternative SYS line of the DMR monitor screen, is the 2T/5T
+     * analogue node of this board (schematic V01): it stays in analogue
+     * mode, the DMR modem driver makes it an input only when selected.
      */
     RCC->APB4ENR |= RCC_APB4ENR_SYSCFGEN;
     __DSB();
@@ -74,7 +77,7 @@ void platform_init()
     gpio_setMode(DMR_TS_INT,      INPUT);
     gpio_setMode(DMR_SYS_INT,     INPUT);
     gpio_setMode(DMR_TX_INT,      INPUT);
-    gpio_setMode(DMR_SYS_INT_ALT, INPUT);
+    gpio_setMode(DMR_SYS_INT_ALT, ANALOG);
 
     spi_init((const struct spiDevice *) &spiSr);
     gpioShiftReg_init(&extGpio);

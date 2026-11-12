@@ -126,14 +126,18 @@
  *
  * CS7000-M17 Plus schematic V01: TIME_SLOT_INTER on PC0, RF_TX_INTER on
  * PC2_C, SYS_INTER on PC3_C; RF_RX_INTER is not wired to the MCU. PC1 is
- * the 2T/5T analogue tone input, not a C6000 line: the PC1 assignment of
- * SYS_INTER inherited from the CS7000 (STM32F405) pinmap is kept as the
- * alternative the DMR monitor screen can switch to ("SYS line" action).
+ * the 2T/5T net, an analogue receive audio node, not a C6000 line: the PC1
+ * assignment of SYS_INTER inherited from the CS7000 (STM32F405) pinmap is
+ * kept as the alternative the DMR monitor screen can switch to ("SYS line"
+ * action). CONFIG_DMR_SYS_INT_ALT_ANALOG tells the DMR modem driver that
+ * the alternative is such a node: PC1 stays in analogue mode, without
+ * interrupt, unless that action selects it.
  */
 #define DMR_TS_INT      GPIOC,0
 #define DMR_SYS_INT     GPIOC,3
 #define DMR_TX_INT      GPIOC,2
 #define DMR_SYS_INT_ALT GPIOC,1   // SYS_INTER on the CS7000 (STM32F405)
+#define CONFIG_DMR_SYS_INT_ALT_ANALOG
 
 /* AK2365A */
 #define DET_PDN       &extGpio,6

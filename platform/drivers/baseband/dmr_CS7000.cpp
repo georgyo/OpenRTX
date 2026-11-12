@@ -22,12 +22,15 @@
  *    events with ~300ns active-low pulses (manual §4.4) caught by the
  *    falling-edge EXTI shim of gpio_irq_stm32.cpp. The callbacks run in
  *    interrupt context and only latch: an event bit in `pending`, a counter
- *    per line and the tick of the slot interrupt. PC0..PC3 are all four
- *    attached, each with its own counter: TIME_SLOT_INTER and RF_TX_INTER
- *    are dispatched with the pinmap constants DMR_TS_INT / DMR_TX_INT,
- *    SYS_INTER with DMR_SYS_INT unless the monitor screen's "SYS line"
- *    action switched it to DMR_SYS_INT_ALT (DMRBB_DRV_SYS_LINE,
- *    interfaces/dmr_baseband.h); the line not chosen only counts.
+ *    per line and the tick of the slot interrupt. TIME_SLOT_INTER and
+ *    RF_TX_INTER are dispatched with the pinmap constants DMR_TS_INT /
+ *    DMR_TX_INT, SYS_INTER with DMR_SYS_INT unless the monitor screen's
+ *    "SYS line" action switched it to DMR_SYS_INT_ALT (DMRBB_DRV_SYS_LINE,
+ *    interfaces/dmr_baseband.h). PC0..PC3 are attached, each with its own
+ *    counter, and the SYS candidate not chosen only counts; on a target
+ *    whose pinmap declares the alternative an analogue node
+ *    (CONFIG_DMR_SYS_INT_ALT_ANALOG) that pin is left in analogue mode,
+ *    without interrupt, until it is chosen.
  *
  *  - Bus access. All the SPI traffic happens in the thread calling
  *    dmrbb_waitEvent() (the rtx thread): the "user" SPI is shared with the
@@ -154,9 +157,9 @@ static constexpr uint8_t R51_VOICE_SEQ_MAX = 6;
 static constexpr unsigned WAIT_POLL_MS = 1;
 
 /*
- * Interrupt lines. The four EXTI lines PC0..PC3 are all attached; the
- * mapping of the C6000 pins on them comes from pinmap.h, with the SYS_INTER
- * line selectable at runtime between DMR_SYS_INT (SYS_LINE, default) and
+ * Interrupt lines, among the four EXTI lines PC0..PC3; the mapping of the
+ * C6000 pins on them comes from pinmap.h, with the SYS_INTER line
+ * selectable at runtime between DMR_SYS_INT (SYS_LINE, default) and
  * DMR_SYS_INT_ALT (ALT_LINE), see DMRBB_DRV_SYS_LINE.
  */
 static constexpr unsigned NUM_LINES = 4;
@@ -177,6 +180,17 @@ static_assert((ALT_LINE == DMRBB_SYS_LINE_PC1)
               "DMR_SYS_INT_ALT must be PC1 or PC3");
 static_assert(SYS_LINE != ALT_LINE,
               "DMR_SYS_INT and DMR_SYS_INT_ALT must differ");
+
+/*
+ * A target whose DMR_SYS_INT_ALT pin is an analogue node of the board says
+ * so in its pinmap: that pin is then a digital input with an interrupt only
+ * while it is the line selected as SYS_INTER.
+ */
+#ifdef CONFIG_DMR_SYS_INT_ALT_ANALOG
+static constexpr bool ALT_LINE_ANALOG = true;
+#else
+static constexpr bool ALT_LINE_ANALOG = false;
+#endif
 
 static const struct gpioPin irqPins[NUM_LINES] = {
     { &GpioC, 0 },
@@ -202,6 +216,13 @@ static volatile uint16_t rftxLead = 0;
 static struct dmrbbConfig config;
 static bool active = false;
 static bool attached = false;
+
+/*
+ * Lines whose interrupt is attached, bit n for line n: the ones the shim
+ * accepted, reported at DMRBB_DRV_LINES_ARMED. Written by the rtx thread
+ * and by the monitor screen's "SYS line" action.
+ */
+static uint8_t armedLines = 0;
 
 /*
  * Line dispatched as SYS_INTER, read in interrupt context: SYS_LINE unless
@@ -247,6 +268,60 @@ static void lineIsr(void *arg)
 }
 
 /**
+ * Whether a line is armed while the modem is configured: all four, except
+ * an alternative SYS line on an analogue node of the board, which is left
+ * alone unless it is the line selected as SYS_INTER.
+ *
+ * @param line: line number, 0..3.
+ * @return true when the line is to be armed.
+ */
+static bool lineWanted(const unsigned line)
+{
+    if (ALT_LINE_ANALOG && (line == ALT_LINE))
+        return sysLine == ALT_LINE;
+
+    return true;
+}
+
+/**
+ * Disarm one line: interrupt detached if this driver attached it, and an
+ * analogue alternative SYS line back to analogue mode.
+ *
+ * @param line: line number, 0..3.
+ */
+static void disarmLine(const unsigned line)
+{
+    const uint8_t bit = static_cast<uint8_t>(1U << line);
+
+    if ((armedLines & bit) != 0) {
+        gpioIrq_detach(&irqPins[line]);
+        armedLines = armedLines & static_cast<uint8_t>(~bit);
+    }
+
+    if (ALT_LINE_ANALOG && (line == ALT_LINE))
+        gpioPin_setMode(&irqPins[line], ANALOG);
+}
+
+/**
+ * Arm one line: digital input, falling edge interrupt. A line the interrupt
+ * shim refuses (already in use by another pin of the same number) stays out
+ * of armedLines.
+ *
+ * @param line: line number, 0..3.
+ */
+static void armLine(const unsigned line)
+{
+    gpioPin_setMode(&irqPins[line], INPUT);
+
+    if (gpioIrq_attach(&irqPins[line], GPIO_IRQ_FALLING, lineIsr,
+                       reinterpret_cast<void *>(static_cast<uintptr_t>(line)))
+        == 0)
+        armedLines = armedLines | static_cast<uint8_t>(1U << line);
+    else
+        disarmLine(line);
+}
+
+/**
  * Detach the interrupt lines.
  */
 static void detachLines()
@@ -255,13 +330,13 @@ static void detachLines()
         return;
 
     for (unsigned i = 0; i < NUM_LINES; i++)
-        gpioIrq_detach(&irqPins[i]);
+        disarmLine(i);
 
     attached = false;
 }
 
 /**
- * Attach the four interrupt lines, falling edge, dropping whatever is still
+ * Attach the interrupt lines, falling edge, dropping whatever is still
  * pending from a previous configuration.
  */
 static void attachLines()
@@ -274,9 +349,10 @@ static void attachLines()
     }
 
     for (unsigned i = 0; i < NUM_LINES; i++) {
-        gpioPin_setMode(&irqPins[i], INPUT);
-        gpioIrq_attach(&irqPins[i], GPIO_IRQ_FALLING, lineIsr,
-                       reinterpret_cast<void *>(static_cast<uintptr_t>(i)));
+        if (lineWanted(i))
+            armLine(i);
+        else
+            disarmLine(i);
     }
 
     attached = true;
@@ -612,6 +688,9 @@ uint8_t dmrbb_readRegister(uint8_t page, uint8_t addr)
         if (addr == DMRBB_DRV_SYS_LINE)
             return sysLine;
 
+        if (addr == DMRBB_DRV_LINES_ARMED)
+            return armedLines;
+
         if ((addr >= DMRBB_DRV_RFTX_TICK(0))
             && (addr <= DMRBB_DRV_RFTX_LEAD(1))) {
             uint32_t tick;
@@ -674,11 +753,22 @@ void dmrbb_writeRegister(uint8_t page, uint8_t addr, uint8_t v)
         /*
          * SYS_INTER line: only the two candidates are accepted, a pulse on
          * the line already latched between the check and the store is
-         * counted on the old assignment, which is harmless.
+         * counted on the old assignment, which is harmless. An analogue
+         * alternative line is armed when it is selected and put back to
+         * analogue mode when it no longer is, at once if the modem is
+         * configured, otherwise by the next dmrbb_configure().
          */
         if ((addr == DMRBB_DRV_SYS_LINE)
-            && ((v == SYS_LINE) || (v == ALT_LINE)))
+            && ((v == SYS_LINE) || (v == ALT_LINE))) {
             sysLine = v;
+
+            if (ALT_LINE_ANALOG && attached) {
+                if (lineWanted(ALT_LINE) == false)
+                    disarmLine(ALT_LINE);
+                else if ((armedLines & (1U << ALT_LINE)) == 0)
+                    armLine(ALT_LINE);
+            }
+        }
 
         return;
     }
