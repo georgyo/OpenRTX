@@ -171,7 +171,9 @@ struct dmrbbSnapshot {
  * Static configuration of the modem, applied by dmrbb_configure().
  */
 struct dmrbbConfig {
-    uint8_t colorCode; /**< Colour code 0-15, register 0x1F [7:4]          */
+    uint8_t colorCode; /**< Transmit colour code 0-15, register 0x1F
+                            [7:4]; see dmrbb_setColorCode() for a channel
+                            that receives on another one                   */
     uint8_t timeslot;  /**< Timeslot 1 or 2, kept for the driver's record  */
     uint32_t ownId;    /**< Own DMR ID, registers 0x14-0x16 (UNVERIFIED on
                             hardware: G4EML says L/M/H byte order, the MD-3x0
@@ -269,9 +271,23 @@ void dmrbb_startTx(bool activeTiming);
 void dmrbb_idle(void);
 
 /**
+ * Set the local colour code of the chip, register 0x1F [7:4] (manual
+ * chapter 8, "LocalEMB ... local CC"): the colour code of the bursts it
+ * transmits and, unless register 0x41 bit3 is set, the one a received
+ * burst must carry to be deframed. dmrbb_configure() programs
+ * dmrbbConfig::colorCode; on a channel whose receive and transmit colour
+ * codes differ the caller sets the receive one before dmrbb_startRx() and
+ * the transmit one before dmrbb_startTx().
+ *
+ * @param cc: colour code, 0 to 15.
+ */
+void dmrbb_setColorCode(uint8_t cc);
+
+/**
  * Program what the chip does in the NEXT timeslot, register 0x41. Must be
  * written within t2 = 27 ms of the TS event (manual Figure 5.12): 0x00
- * nothing, 0x50 receive (see dmrbb_startRx), 0x80 transmit the frame
+ * nothing, 0x50 receive (see dmrbb_startRx), 0x58 receive without the
+ * chip's colour code match (bit3 CC_Match_Ctrl), 0x80 transmit the frame
  * described by 0x50, 0x20 drop sync and search again.
  *
  * @param r41: value for register 0x41, see the DMR::R41_* constants.

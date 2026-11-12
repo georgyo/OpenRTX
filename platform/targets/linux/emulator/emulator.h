@@ -93,6 +93,8 @@ struct dmrEmuRecord {
     uint8_t r41;       /* last dmrbb_setNextSlot() value                   */
     uint8_t r50;       /* last dmrbb_setTxFrameType() value                */
     uint8_t r21;       /* last access policy written by dmrbb_startTx()    */
+    uint8_t colorCode; /* local colour code of the fake chip (0x1F): from
+                          dmrbb_configure(), then dmrbb_setColorCode()     */
     uint8_t lc[12];    /* last dmrbb_writeTxLc() payload              */
     uint8_t voice[27]; /* last dmrbb_writeVoice() payload             */
     bool activeTiming; /* last dmrbb_startTx() argument               */
@@ -101,6 +103,7 @@ struct dmrEmuRecord {
     uint32_t r40Writes;
     uint32_t r41Writes;
     uint32_t r50Writes;
+    uint32_t colorCodeWrites; /* dmrbb_setColorCode() calls          */
     uint32_t lcWrites;
     uint32_t voiceWrites;
     uint32_t txSlots;     /* dmrbb_setNextSlot(0x80) calls           */
@@ -176,7 +179,10 @@ void dmrEmu_pulseLine(uint8_t line);
  * the given number of voice bursts (A..F cycling) and a terminator, each on
  * its own timeslot with the other slot idle in between. In the unit tests
  * the events are played one timeslot per dmrbb_waitEvent() call; in the
- * emulator at the 30 ms cadence.
+ * emulator at the 30 ms cadence. As the chip does (register 0x41 bit3,
+ * manual chapter 8), the fake modem reports a scripted burst only when its
+ * colour code is the local one or the last receive slot was programmed
+ * without the colour code match.
  *
  * @param src: source radio ID.
  * @param dst: destination talkgroup.

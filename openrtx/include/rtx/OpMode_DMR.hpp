@@ -71,9 +71,17 @@ public:
         dmrbb_writeVoice(ambe);
     }
 
+    /*
+     * The chip has one colour code register for both directions: on a
+     * channel whose two colour codes differ it holds the receive one while
+     * receiving and the transmit one for a transmission. With equal codes
+     * the value programmed by dmrbb_configure() is left alone.
+     */
     void startRx() override
     {
         traceControl(TRACE_START_RX);
+        if (rxColorCode != txColorCode)
+            dmrbb_setColorCode(rxColorCode);
         dmrbb_startRx();
     }
 
@@ -81,6 +89,8 @@ public:
     {
         traceControl(activeTiming ? TRACE_START_TX_ACTIVE :
                                     TRACE_START_TX_PASSIVE);
+        if (rxColorCode != txColorCode)
+            dmrbb_setColorCode(txColorCode);
         dmrbb_startTx(activeTiming);
     }
 
@@ -103,6 +113,8 @@ public:
 
     uint8_t lastR41 = NOT_WRITTEN; ///< Last next-slot word, for the trace
     uint8_t lastR50 = NOT_WRITTEN; ///< Last TX frame type, for the trace
+    uint8_t rxColorCode = 0;       ///< Colour code of the modem while in RX
+    uint8_t txColorCode = 0;       ///< Colour code of the modem while in TX
 
 private:
     void traceControl(uint8_t what)

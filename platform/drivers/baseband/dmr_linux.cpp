@@ -140,6 +140,7 @@ pthread_t clockThread;
  */
 bool running = false; /* 0x40 has TxEn/RxEn                   */
 bool axis = false;    /* the chip has a time axis             */
+bool anyCc = false;   /* last RX slot command had 0x41 bit3   */
 uint8_t tcNext = 0;   /* CACH TC of the next timeslot started */
 uint32_t tsCount = 0;
 uint32_t sysCount = 0;
@@ -233,8 +234,16 @@ void tick()
         pushTsEvent(cc);
     }
 
+    /*
+     * Colour code gate of the chip: "0, reception needs a colour code match
+     * for the deframing; 1, reception deframes without a colour code match"
+     * (register 0x41 bit3, manual chapter 8). A burst that is not deframed
+     * raises no system event.
+     */
     while (!script.empty() && ((script.front().mask & DMRBB_EV_TS) == 0)) {
-        pushSysEvent(script.front().snap);
+        const struct dmrbbSnapshot &s = script.front().snap;
+        if (anyCc || ((s.r52 >> 4) == rec.colorCode))
+            pushSysEvent(s);
         script.pop();
     }
 }
@@ -498,10 +507,12 @@ void dmrbb_configure(const struct dmrbbConfig *cfg)
     rec.configureCount++;
     rec.keyedAtConfigure = radioEmu_record()->keyed;
     rec.config = *cfg;
+    rec.colorCode = cfg->colorCode & 0x0F;
     rec.r40 = R40_IDLE;
     rec.r41 = R41_IDLE;
     running = false;
     axis = false;
+    anyCc = false;
     pthread_mutex_unlock(&mtx);
 
     if (clockEnabled)
@@ -522,6 +533,7 @@ void dmrbb_startRx(void)
     rec.r41Writes++;
     running = true;
     axis = false;
+    anyCc = false;
     pthread_mutex_unlock(&mtx);
     emuLog("startRx() called");
 }
@@ -554,11 +566,21 @@ void dmrbb_idle(void)
     emuLog("idle() called");
 }
 
+void dmrbb_setColorCode(uint8_t cc)
+{
+    pthread_mutex_lock(&mtx);
+    rec.colorCode = cc & 0x0F;
+    rec.colorCodeWrites++;
+    pthread_mutex_unlock(&mtx);
+}
+
 void dmrbb_setNextSlot(uint8_t r41)
 {
     pthread_mutex_lock(&mtx);
     rec.r41 = r41;
     rec.r41Writes++;
+    if ((r41 & R41_RX) == R41_RX)
+        anyCc = ((r41 & R41_NO_CC_MATCH) != 0);
     if (r41 == R41_TX)
         classifyTxSlot();
     pthread_mutex_unlock(&mtx);
@@ -675,6 +697,7 @@ void dmrEmu_reset(void)
     initResult = 0;
     running = false;
     axis = false;
+    anyCc = false;
     tcNext = 0;
     tsCount = 0;
     sysCount = 0;

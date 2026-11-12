@@ -46,8 +46,11 @@ static constexpr uint8_t R40_TX_DMO = 0xE3; /* DMO TX: active timing
  * Register 0x41, what to do in the next slot (G4EML; manual §5.4.5): bit7
  * TxNxtSlotEn, bit6 RxNxtSlotEn, bit5 SyncFail (drop the sync and search
  * again), bit4 begin_v_layer2 (route the received voice to the vocoder
- * port), bit3 CC_Match_Ctrl (chip-side colour code gating, not used: the
- * MCU filters).
+ * port), bit3 CC_Match_Ctrl: "0, reception needs a colour code match for
+ * the deframing; 1, reception deframes without a colour code match" (manual
+ * chapter 8), the match being against the local colour code of register
+ * 0x1F. With bit3 clear the chip therefore filters the colour code before
+ * the MCU does; it is set when the monitor accepts any colour code.
  */
 static constexpr uint8_t R41_IDLE = 0x00;   /* nothing in the next slot   */
 static constexpr uint8_t R41_RX = 0x50;     /* receive + voice to vocoder.
@@ -57,6 +60,15 @@ static constexpr uint8_t R41_RX = 0x50;     /* receive + voice to vocoder.
                                                OpenGD77 uses 0x50         */
 static constexpr uint8_t R41_TX = 0x80;     /* transmit the 0x50 frame    */
 static constexpr uint8_t R41_RESYNC = 0x20; /* force a new sync search    */
+
+/*
+ * R41_RX with CC_Match_Ctrl set: receive whatever the colour code.
+ * UNVERIFIED on hardware: the OEM power-on table writes 0x04, bit2, to this
+ * register, noted "No CC match for RX" in HR_C6000_CS7000.cpp, while the
+ * manual puts CC_Match_Ctrl at bit3 and describes no bit2.
+ */
+static constexpr uint8_t R41_NO_CC_MATCH = 0x08;
+static constexpr uint8_t R41_RX_ANY_CC = R41_RX | R41_NO_CC_MATCH;
 
 /*
  * Register 0x50, LocalDataType of the next TX burst (manual Table 5.5;
@@ -229,7 +241,8 @@ public:
     /**
      * Program register 0x41 for the next slot, see dmrbb_setNextSlot().
      *
-     * @param r41: one of R41_IDLE, R41_RX, R41_TX, R41_RESYNC.
+     * @param r41: one of R41_IDLE, R41_RX, R41_RX_ANY_CC, R41_TX,
+     * R41_RESYNC.
      */
     virtual void setNextSlot(uint8_t r41) = 0;
 

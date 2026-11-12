@@ -275,6 +275,14 @@ void OpMode_DMR::reprogramModem(uint32_t nowMs)
      * written again after it, as they are after every other mode setup.
      */
     radio_updateConfiguration();
+
+    /*
+     * The table left the transmit colour code in the modem: the port puts
+     * the receive one in when the controller starts receiving, and swaps
+     * the two around every transmission, if they differ.
+     */
+    port.rxColorCode = cfg.colorCode;
+    port.txColorCode = bbCfg.colorCode;
     ctrl.enable(nowMs);
 
     /* The restarted modem starts without a repeater's Short LC */

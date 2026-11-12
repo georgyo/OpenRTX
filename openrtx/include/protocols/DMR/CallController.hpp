@@ -106,10 +106,11 @@ public:
         uint32_t ownId;         /* own DMR ID, 0 = TX refused          */
         uint32_t dstId;         /* talkgroup (GROUP) or target (PRIVATE) */
         uint8_t callType;       /* dmrContactType_t GROUP/PRIVATE/ALL  */
-        uint8_t colorCode;      /* 0-15                                */
+        uint8_t colorCode;      /* receive colour code, 0-15           */
         uint8_t timeslot;       /* 1 or 2                              */
         uint8_t monitor;        /* 0 CC+TS+address, 1 CC+TS any address,
-                                   2 anything                          */
+                                   2 anything: the chip's colour code
+                                   gate is opened too (R41_RX_ANY_CC)  */
         bool polite;            /* channel access polite to own CC     */
         bool repeater;          /* repeater channel: TX in RMO, waking
                                    the repeater up when it is silent   */
@@ -284,6 +285,7 @@ private:
 
     bool isTx() const;
     bool carrierPresent(uint32_t nowMs) const;
+    uint8_t rxSlot() const;
     uint8_t slotOf(const struct dmrbbSnapshot &s) const;
     bool burstIsCall(const struct dmrbbSnapshot &s) const;
     bool voiceOfCall(const struct dmrbbSnapshot &s) const;

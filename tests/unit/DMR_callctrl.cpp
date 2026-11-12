@@ -400,6 +400,7 @@ TEST_CASE("DMR register constants", "[dmr][callctrl]")
 {
     REQUIRE(R41_IDLE == 0x00);
     REQUIRE(R41_RX == 0x50);
+    REQUIRE(R41_RX_ANY_CC == 0x58);
     REQUIRE(R41_TX == 0x80);
     REQUIRE(R41_RESYNC == 0x20);
     REQUIRE(R50_VOICE_LC_HEADER == 0x10);
@@ -3010,4 +3011,124 @@ TEST_CASE("DMR TX: a silent channel after an own transmission is left "
         c.timeout(30);
     REQUIRE(c.port.writes.empty());
     REQUIRE(c.ctrl.report().needsReconfigure == false);
+}
+
+TEST_CASE("DMR RX: the monitor on any colour code opens the chip's colour "
+          "code gate",
+          "[dmr][callctrl]")
+{
+    /*
+     * Register 0x41 bit 3, CC_Match_Ctrl: with the bit clear the chip
+     * deframes only bursts carrying its local colour code, so the receive
+     * slot command is 0x58 instead of 0x50 while monitor is 2.
+     */
+    FullLC lc;
+    lc.clear();
+    lc.flco = FLCO_GRP_V_CH_USR;
+    lc.src = 1234567;
+    lc.dst = 31665;
+
+    SECTION("monitor 0 and 1: 0x50 everywhere")
+    {
+        for (uint8_t monitor = 0; monitor <= 1; monitor++) {
+            Bench b;
+            b.cfg.monitor = monitor;
+            b.start();
+            b.tsN(30);
+            b.header(R5F_SYNC_MS, 0, 1, lc);
+            b.superframe(R5F_SYNC_MS, 0, 1);
+            b.ts();
+            b.ts();
+            b.terminator(R5F_SYNC_MS, 0, 1, &lc);
+            b.tsN(4);
+            REQUIRE(b.port.count(W_R41, R41_RX_ANY_CC) == 0);
+            REQUIRE(b.port.count(W_R41, R41_RX) > 30);
+        }
+    }
+
+    SECTION("monitor 2: 0x58 on every receive slot")
+    {
+        Bench b;
+        b.cfg.monitor = 2;
+        b.start();
+
+        /* The search itself: the driver's sequence, then the gate */
+        REQUIRE(b.port.values(W_R41)
+                == std::vector<uint8_t>{ R41_RESYNC, R41_RX, R41_RX_ANY_CC });
+
+        /* Idle slots, the search started again in between */
+        b.port.clear();
+        b.tsN(30);
+        std::vector<uint8_t> r41 = b.port.values(W_R41);
+        REQUIRE(b.port.count(W_R41, R41_RESYNC) == 1);
+        REQUIRE(r41.back() == R41_RX_ANY_CC);
+        for (size_t i = 0; i < r41.size(); i++) {
+            if (r41[i] == R41_RX)
+                REQUIRE(r41[i - 1] == R41_RESYNC);
+            if (r41[i] == R41_RESYNC)
+                REQUIRE(r41[i + 2] == R41_RX_ANY_CC);
+        }
+        REQUIRE(b.port.count(W_R41, R41_RX) == 1);
+
+        /* A direct mode call on another colour code: gated slots */
+        b.port.clear();
+        b.ts();
+        b.header(R5F_SYNC_MS, 0, 9, lc);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+        for (unsigned i = 0; i < 6; i++) {
+            b.ts();
+            b.ts();
+            b.voice(R5F_SYNC_MS, 0, 9, (uint8_t)(i + 1));
+        }
+        REQUIRE(b.sink.rxFrames == 6);
+        REQUIRE(b.port.count(W_R41, R41_RX) == 0);
+        REQUIRE(b.port.count(W_R41, R41_RX_ANY_CC) >= 6);
+        REQUIRE(b.port.count(W_R41, R41_IDLE) >= 5);
+
+        /* A transmission and the return to reception */
+        b.ctrl.setPtt(true, b.now);
+        b.tsN(8);
+        b.ctrl.setPtt(false, b.now);
+        unsigned n = 0;
+        while (b.ctrl.state() >= CallController::TX_ARM) {
+            b.ts();
+            REQUIRE(++n < 16);
+        }
+        REQUIRE(b.port.last(W_R41)->value == R41_RX_ANY_CC);
+    }
+
+    SECTION("a monitor change reaches a searching receiver at once")
+    {
+        Bench b;
+        b.start();
+        REQUIRE(b.ctrl.state() == CallController::RX_SEARCH);
+        b.port.clear();
+
+        b.cfg.monitor = 2;
+        b.ctrl.configure(b.cfg);
+        REQUIRE(b.port.values(W_R41) == std::vector<uint8_t>{ R41_RX_ANY_CC });
+        b.ctrl.configure(b.cfg);
+        REQUIRE(b.port.count(W_R41) == 1);
+
+        b.cfg.monitor = 1;
+        b.ctrl.configure(b.cfg);
+        REQUIRE(b.port.last(W_R41)->value == R41_RX);
+        REQUIRE(b.port.count(W_R41) == 2);
+
+        /* With slots ticking the next one takes it */
+        b.ts();
+        b.port.clear();
+        b.cfg.monitor = 2;
+        b.ctrl.configure(b.cfg);
+        REQUIRE(b.port.writes.empty());
+        b.ts();
+        REQUIRE(b.port.values(W_R41) == std::vector<uint8_t>{ R41_RX_ANY_CC });
+
+        /* Nothing is written to a controller that is off */
+        b.ctrl.disable();
+        b.port.clear();
+        b.cfg.monitor = 0;
+        b.ctrl.configure(b.cfg);
+        REQUIRE(b.port.writes.empty());
+    }
 }

@@ -86,6 +86,8 @@ void CallController::setVoiceSink(VoiceSink *s)
 
 void CallController::configure(const Config &c)
 {
+    uint8_t rxWas = rxSlot();
+
     cfg = c;
     if (cfg.timeslot < 1)
         cfg.timeslot = 1;
@@ -94,6 +96,13 @@ void CallController::configure(const Config &c)
     cfg.colorCode &= 0x0F;
     if (cfg.lcssMode > LCSS_MODE_MANUAL)
         cfg.lcssMode = LCSS_MODE_CHIP;
+
+    /*
+     * The slots of a receiver that has slot interrupts take the new
+     * colour code gate at the next one; a searching receiver has none
+     */
+    if ((port != nullptr) && (st == RX_SEARCH) && (rxSlot() != rxWas))
+        port->setNextSlot(rxSlot());
 }
 
 void CallController::enable(uint32_t nowMs)
@@ -340,6 +349,16 @@ void CallController::publish()
  * Reception
  */
 
+uint8_t CallController::rxSlot() const
+{
+    /*
+     * Monitor "any colour code": the chip itself must stop requiring its
+     * local colour code on what it deframes (register 0x41 bit3), the
+     * software filter of colorCodeAccepted() comes after it.
+     */
+    return (cfg.monitor >= 2) ? R41_RX_ANY_CC : R41_RX;
+}
+
 uint8_t CallController::slotOf(const struct dmrbbSnapshot &s) const
 {
     /*
@@ -427,6 +446,8 @@ void CallController::goRx(uint32_t nowMs, State next)
      * UNVERIFIED on hardware.
      */
     port->startRx();
+    if (rxSlot() != R41_RX)
+        port->setNextSlot(rxSlot());
     resetTiming();
     requestAxis(nowMs);
     idleSlots = 0;
@@ -826,10 +847,10 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
                     if (st == TX_WAKEUP)
                         txSlot(nowMs, ownSlot);
                     else
-                        port->setNextSlot(R41_RX);
+                        port->setNextSlot(rxSlot());
                     return;
                 } else {
-                    port->setNextSlot(R41_RX);
+                    port->setNextSlot(rxSlot());
                     return;
                 }
             }
@@ -873,7 +894,7 @@ void CallController::txSlot(uint32_t nowMs, bool ownSlot)
                         armTx(nowMs, false);
                         txSlot(nowMs, ownSlot);
                     } else {
-                        port->setNextSlot(R41_RX);
+                        port->setNextSlot(rxSlot());
                     }
                     break;
             }
@@ -1021,7 +1042,7 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
                 break;
 
             st = rep.hangActive ? RX_HANG : RX_IDLE;
-            port->setNextSlot(R41_RX);
+            port->setNextSlot(rxSlot());
             break;
 
         case RX_IDLE:
@@ -1043,7 +1064,7 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
                 goRx(nowMs, RX_SEARCH);
             } else {
                 idleSlots = (uint8_t)(idleSlots + missed + 1);
-                port->setNextSlot(R41_RX);
+                port->setNextSlot(rxSlot());
             }
             break;
 
@@ -1060,7 +1081,7 @@ void CallController::onTimeslot(const struct dmrbbSnapshot &s, uint32_t nowMs)
                 && (elapsed(nowMs, lastVoiceMs) < DMO_GATE_HOLD_MS))
                 port->setNextSlot(R41_IDLE);
             else
-                port->setNextSlot(R41_RX);
+                port->setNextSlot(rxSlot());
             break;
 
         default:

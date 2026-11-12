@@ -600,6 +600,14 @@ void dmrbb_idle(void)
     C6000.dmrIdle();
 }
 
+void dmrbb_setColorCode(uint8_t cc)
+{
+    if (active == false)
+        return;
+
+    C6000.setColorCode(cc);
+}
+
 void dmrbb_setNextSlot(uint8_t r41)
 {
     if (active == false)

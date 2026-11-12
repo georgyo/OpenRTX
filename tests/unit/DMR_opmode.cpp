@@ -505,27 +505,129 @@ TEST_CASE("DMR OpMode: a silent channel after a direct mode call is left "
     }
 }
 
-TEST_CASE("DMR OpMode: a call on another colour code is ignored", "[dmr][rtx]")
+TEST_CASE("DMR OpMode: a call on another colour code is received only with "
+          "the monitor on any colour code",
+          "[dmr][rtx]")
 {
     Bench b;
+    state.settings.dmr_hangTime = 1;
     b.start();
     b.ticks(6);
+    REQUIRE(b.rec->r41 == R41_RX);
 
+    /*
+     * Receive slots are programmed with the chip's colour code match on
+     * (0x41 = 0x50): the modem deframes nothing of a call on another
+     * colour code, no system event reaches the handler
+     */
+    uint32_t sysEvents = b.rec->sysDelivered;
     dmrEmu_injectGroupCall(CALLER, TALKGROUP, 5, 2, 6);
     b.drain();
-    REQUIRE(b.ctrlState() == CallController::RX_IDLE);
+    REQUIRE(b.rec->sysDelivered == sysEvents);
+    REQUIRE(b.ctrlState() != CallController::RX_CALL);
     REQUIRE(b.status.dmr_callState == DMR_CALL_IDLE);
     REQUIRE(b.status.dmr_lcOk == false);
     REQUIRE(dmr.audio().rxFrames == 0);
-    REQUIRE(b.status.dmr_rxColorCodeSeen == 5);
+    REQUIRE(b.status.dmr_rxColorCodeSeen == 0);
 
-    /* Monitor "all": the same call is accepted */
+    /*
+     * Monitor "all": the match is switched off in the chip (0x41 = 0x58)
+     * without reprogramming the modem, the same call is received
+     */
     b.status.dmr_monitor = 2;
     dmr.update(&b.status, true);
     REQUIRE(b.rec->configureCount == 1);
+    b.ticks(2);
+    REQUIRE(b.rec->r41 == R41_RX_ANY_CC);
     dmrEmu_injectGroupCall(CALLER, TALKGROUP, 5, 2, 6);
     REQUIRE(b.runUntil(CallController::RX_CALL));
     REQUIRE(b.status.dmr_rxSrcId == CALLER);
+    REQUIRE(b.status.dmr_rxColorCodeSeen == 5);
+    REQUIRE(b.runUntil(CallController::RX_HANG));
+    REQUIRE(dmr.audio().rxFrames == 6);
+    REQUIRE(b.rec->r41 == R41_RX_ANY_CC);
+    b.drain();
+
+    /* Monitor off: the match is back on at the next slot */
+    b.status.dmr_monitor = 0;
+    dmr.update(&b.status, true);
+    b.tick();
+    REQUIRE(b.rec->r41 == R41_RX);
+    REQUIRE(b.rec->configureCount == 1);
+}
+
+TEST_CASE("DMR OpMode: the modem holds the RX colour code while receiving "
+          "and the TX one for a transmission",
+          "[dmr][rtx]")
+{
+    /* One transmission, from the PTT press to the modem back in RX */
+    auto transmit = [](Bench &b) {
+        emulator_state.PTTstatus = true;
+        b.tick();
+        REQUIRE(b.ctrlState() >= CallController::TX_ARM);
+    };
+
+    auto release = [](Bench &b) {
+        emulator_state.PTTstatus = false;
+        unsigned n = 0;
+        while (b.ctrlState() >= CallController::TX_ARM) {
+            b.tick();
+            REQUIRE(++n < 40);
+        }
+    };
+
+    /* Different colour codes: register 0x1F follows the direction */
+    {
+        Bench b;
+        b.status.dmr_rxColorCode = 3;
+        b.status.dmr_txColorCode = 5;
+        b.start();
+        REQUIRE(b.rec->config.colorCode == 5);
+        REQUIRE(dmr.controller().config().colorCode == 3);
+        REQUIRE(b.rec->colorCode == 3);
+        REQUIRE(b.rec->colorCodeWrites == 1);
+
+        /* The chip matches on the RX colour code: that call is received */
+        b.ticks(6);
+        dmrEmu_injectGroupCall(CALLER, TALKGROUP, 3, 2, 6);
+        REQUIRE(b.runUntil(CallController::RX_CALL));
+        b.drain();
+        REQUIRE(b.rec->colorCode == 3);
+
+        transmit(b);
+        REQUIRE(b.rec->colorCode == 5);
+        REQUIRE(b.rec->colorCodeWrites == 2);
+        b.ticks(10);
+        REQUIRE(b.rec->headers == 3);
+        REQUIRE(b.rec->colorCode == 5);
+
+        release(b);
+        REQUIRE(b.rec->terminators == 1);
+        REQUIRE(b.rec->colorCode == 3);
+        REQUIRE(b.rec->colorCodeWrites == 3);
+
+        /* A transmission given up before its first burst as well */
+        transmit(b);
+        REQUIRE(b.rec->colorCode == 5);
+        release(b);
+        REQUIRE(b.rec->colorCode == 3);
+    }
+
+    /* Equal colour codes: the value of the modem table is never touched */
+    {
+        Bench b;
+        b.status.dmr_rxColorCode = 7;
+        b.status.dmr_txColorCode = 7;
+        b.start();
+        b.ticks(6);
+        transmit(b);
+        b.ticks(10);
+        release(b);
+        b.ticks(30);
+        REQUIRE(b.rec->colorCode == 7);
+        REQUIRE(b.rec->colorCodeWrites == 0);
+        REQUIRE(b.rec->startRxCount >= 2);
+    }
 }
 
 TEST_CASE("DMR OpMode: a modem parameter change reprograms the modem once",
