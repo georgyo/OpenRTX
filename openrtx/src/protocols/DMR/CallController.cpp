@@ -1020,8 +1020,16 @@ void CallController::onSysEvent(const struct dmrbbSnapshot &s, uint32_t nowMs)
     if ((irq & R82_LATE_ENTRY) && (st != RX_CALL))
         tryOpenCall(s, nowMs);
 
-    if ((irq & R82_ABNORMAL_EXIT) && (st == RX_CALL))
-        enterHang(nowMs);
+    /*
+     * The "abnormal voice exit" interrupt (0x82 bit1, cause in 0x98) does
+     * not end a call: it is the chip's own voice sync timer, one per slot
+     * (manual chapter 8, registers 0x0D and 0x98), and it fires while a
+     * call goes on: OpenGD77 reads 0x98 and does nothing, OpenMDUV380
+     * mutes one frame when the cause names the call's slot. A call ends
+     * on its terminator, on another data burst in its slot or after
+     * VOICE_TIMEOUT_MS without voice. The cause stays in the snapshot for
+     * the bring-up trace.
+     */
 
     publish();
 }

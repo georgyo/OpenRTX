@@ -593,7 +593,8 @@ TEST_CASE("DMR RX call: new header during hang reopens the call",
     REQUIRE(b.ctrl.report().hangActive == false);
 }
 
-TEST_CASE("DMR RX call ends on voice loss, data burst or abnormal exit",
+TEST_CASE("DMR RX call ends on voice loss or a data burst, not on the "
+          "abnormal exit flag",
           "[dmr][callctrl]")
 {
     Bench b;
@@ -634,13 +635,44 @@ TEST_CASE("DMR RX call ends on voice loss, data burst or abnormal exit",
         REQUIRE(b.ctrl.state() == CallController::RX_CALL);
     }
 
-    SECTION("abnormal exit flag")
+    SECTION("abnormal exit flag: the call goes on")
     {
+        /*
+         * The chip's voice sync timer of either slot (0x98 bit 1 slot 0,
+         * bit 2 slot 1) fires during a call: voice keeps being forwarded,
+         * the call still ends on its terminator or on the voice timeout.
+         */
         b.settle();
         b.ts();
         b.header(R5F_SYNC_BS, 2, 1, lc);
+        for (uint8_t cause = 0x01; cause <= 0x04; cause <<= 1) {
+            b.ts();
+            dmrbbSnapshot s = Bench::blank();
+            s.irq82 = R82_ABNORMAL_EXIT;
+            s.sub98 = cause;
+            b.sys(s);
+            REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+            REQUIRE(b.ctrl.report().hangActive == false);
+        }
+        b.superframe(R5F_SYNC_BS, 2, 1);
+        REQUIRE(b.sink.rxFrames == 6);
+
+        /* Raised together with a voice burst: the burst still counts */
         b.ts();
-        b.flags(R82_ABNORMAL_EXIT);
+        b.ts();
+        dmrbbSnapshot v = b.burst(R5F_SYNC_BS, 2, 1);
+        v.irq82 |= R82_ABNORMAL_EXIT;
+        v.sub98 = 0x04;
+        v.r51 = (uint8_t)((1 << 4) | R51_CLASS_VOICE);
+        v.voiceValid = true;
+        b.sys(v);
+        REQUIRE(b.sink.rxFrames == 7);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+
+        /* Real loss is still caught by the voice timeout */
+        b.tsN(24);
+        REQUIRE(b.ctrl.state() == CallController::RX_CALL);
+        b.ts();
         REQUIRE(b.ctrl.state() == CallController::RX_HANG);
     }
 
